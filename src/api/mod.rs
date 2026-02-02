@@ -1,6 +1,8 @@
+pub mod auth;
 pub mod crypto;
 pub mod health;
 pub mod market;
+pub mod orderbook;
 pub mod signals;
 
 use axum::Router;
@@ -13,4 +15,6 @@ pub fn router() -> Router<AppState> {
         .nest("/api/crypto", crypto::router())
         .nest("/api/market", market::router())
         .nest("/api/signals", signals::router())
+        .nest("/api/auth", auth::router())
+        .nest("/api/orderbook", orderbook::router())
 }

@@ -207,18 +207,30 @@ impl SignalStore {
     }
 
     /// Record predictions for accuracy tracking.
+    /// Only creates new predictions if there isn't already a recent unvalidated one.
     async fn record_predictions(&self, signals: &SymbolSignals, current_price: f64) {
+        let now = chrono::Utc::now().timestamp_millis();
+        // Cooldown: don't create new prediction if one exists within last 5 minutes
+        let prediction_cooldown_ms = 300_000i64;
+
         for signal in &signals.signals {
             // Only record non-neutral predictions
             if signal.score.abs() >= 20 {
-                let prediction = SignalPrediction::new(
-                    signals.symbol.clone(),
-                    signal.name.clone(),
-                    signal.direction,
-                    signal.score,
-                    current_price,
-                );
-                self.prediction_store.add_prediction(prediction).await;
+                // Check if there's already a recent unvalidated prediction for this indicator
+                let should_create = self
+                    .prediction_store
+                    .should_create_prediction(&signals.symbol, &signal.name, prediction_cooldown_ms);
+
+                if should_create {
+                    let prediction = SignalPrediction::new(
+                        signals.symbol.clone(),
+                        signal.name.clone(),
+                        signal.direction,
+                        signal.score,
+                        current_price,
+                    );
+                    self.prediction_store.add_prediction(prediction).await;
+                }
             }
         }
     }
@@ -284,11 +296,17 @@ impl SignalStore {
                     // Also consider sample size (more samples = more reliable)
                     let sample_weight = (sample_size as f64 / 50.0).min(1.0);
                     (acc_weight * (0.5 + sample_weight * 0.5), true)
+                } else if sample_size >= 1 && accuracy < 40.0 {
+                    // Only reduce weight when we have BAD accuracy data
+                    (0.5, false)
                 } else {
-                    (0.3, false) // Low weight for new indicators
+                    // Full weight for new indicators without enough data
+                    (1.0, false)
                 }
             } else {
-                (0.3, false) // Low weight for no accuracy data
+                // Full weight for indicators without accuracy data
+                // Don't dampen scores when we have no history
+                (1.0, false)
             };
 
             weighted_sum += signal.score as f64 * weight;
@@ -300,8 +318,13 @@ impl SignalStore {
             }
         }
 
-        let weighted_score = if total_weight > 0.0 {
+        // If less than 3 indicators have accuracy data, use raw composite score
+        // This prevents over-dampening when accuracy data is sparse
+        let weighted_score = if indicators_with_accuracy >= 3 && total_weight > 0.0 {
             weighted_sum / total_weight
+        } else if total_weight > 0.0 {
+            // Use raw composite score when accuracy data is sparse
+            signals.composite_score as f64
         } else {
             0.0
         };

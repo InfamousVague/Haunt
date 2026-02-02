@@ -389,6 +389,34 @@ impl ChartStore {
         }
     }
 
+    /// Get 24h volume for a symbol (cached or calculated from trades).
+    pub fn get_volume_24h(&self, symbol: &str) -> Option<f64> {
+        let symbol_lower = symbol.to_lowercase();
+        let entry = self.data.get(&symbol_lower)?;
+
+        // Return cached authoritative volume if available
+        if let Some(vol) = entry.volume_24h {
+            if vol > 0.0 {
+                return Some(vol);
+            }
+        }
+
+        // Otherwise calculate from 5-minute buckets over last 24 hours
+        let now = chrono::Utc::now().timestamp();
+        let start_time = now - 86400; // 24 hours ago
+        let data = entry.five_minute.get_data(start_time);
+
+        let total_volume: f64 = data.iter()
+            .filter_map(|p| p.volume)
+            .sum();
+
+        if total_volume > 0.0 {
+            Some(total_volume)
+        } else {
+            None
+        }
+    }
+
     /// Get the current price for a symbol.
     pub fn get_current_price(&self, symbol: &str) -> Option<f64> {
         self.data

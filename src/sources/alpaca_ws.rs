@@ -17,11 +17,9 @@ use tracing::{debug, error, info, warn};
 // IEX feed (free) - use SIP for paid real-time data
 const ALPACA_WS_URL: &str = "wss://stream.data.alpaca.markets/v2/iex";
 
-/// Stocks to subscribe to.
+/// Stocks to subscribe to (limited for free tier - max ~10 symbols).
 pub const STOCK_SYMBOLS: &[&str] = &[
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "V",
-    "JNJ", "UNH", "HD", "PG", "MA", "DIS", "ADBE", "CRM", "NFLX", "PYPL",
-    "SPY", "QQQ", "VOO", "IWM", "DIA",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "SPY", "QQQ",
 ];
 
 /// Alpaca authentication message.

@@ -66,7 +66,7 @@ pub struct Profile {
 }
 
 /// User settings stored in profile.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSettings {
     /// Default trading timeframe
@@ -78,6 +78,16 @@ pub struct ProfileSettings {
     /// Notification preferences
     #[serde(default)]
     pub notifications_enabled: bool,
+}
+
+impl Default for ProfileSettings {
+    fn default() -> Self {
+        Self {
+            default_timeframe: "day_trading".to_string(),
+            preferred_indicators: Vec::new(),
+            notifications_enabled: false,
+        }
+    }
 }
 
 fn default_timeframe() -> String {

@@ -3,10 +3,12 @@ use super::{AggregatedPrice, GlobalMetrics, PriceSource, SignalDirection, TradeD
 
 /// Incoming WebSocket message from client.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     Subscribe { assets: Vec<String> },
     Unsubscribe { assets: Vec<String> },
+    /// Set throttle interval in milliseconds (0 = no throttling)
+    SetThrottle { throttle_ms: u64 },
 }
 
 /// Outgoing WebSocket message to client.
@@ -19,6 +21,7 @@ pub enum ServerMessage {
     SignalUpdate { data: SignalUpdateData },
     Subscribed { assets: Vec<String> },
     Unsubscribed { assets: Vec<String> },
+    ThrottleSet { throttle_ms: u64 },
     Error { error: String },
 }
 

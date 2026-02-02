@@ -13,40 +13,30 @@
 
 use axum::{
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
-    response::IntoResponse,
+    http::request::Parts,
     routing::{get, post, put},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use serde::Serialize;
 
 use crate::services::{AuthError, AuthService};
 use crate::types::{AuthChallenge, AuthRequest, AuthResponse, AuthenticatedUser, Profile, ProfileSettings};
-
-/// App state containing auth service.
-#[derive(Clone)]
-pub struct AuthState {
-    pub auth_service: Arc<AuthService>,
-}
+use crate::AppState;
 
 /// Create auth router.
-pub fn router(auth_service: Arc<AuthService>) -> Router {
-    let state = AuthState { auth_service };
-
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/challenge", get(get_challenge))
         .route("/verify", post(verify))
         .route("/me", get(get_me))
         .route("/profile", put(update_profile))
         .route("/logout", post(logout))
-        .with_state(state)
 }
 
 /// GET /api/auth/challenge
 ///
 /// Get a challenge string to sign for authentication.
-async fn get_challenge(State(state): State<AuthState>) -> Json<ApiResponse<AuthChallenge>> {
+async fn get_challenge(State(state): State<AppState>) -> Json<ApiResponse<AuthChallenge>> {
     let challenge = state.auth_service.create_challenge();
     Json(ApiResponse { data: challenge })
 }
@@ -55,7 +45,7 @@ async fn get_challenge(State(state): State<AuthState>) -> Json<ApiResponse<AuthC
 ///
 /// Verify a signed challenge and create a session.
 async fn verify(
-    State(state): State<AuthState>,
+    State(state): State<AppState>,
     Json(request): Json<AuthRequest>,
 ) -> Result<Json<ApiResponse<AuthResponse>>, AuthError> {
     let (session, profile) = state.auth_service.verify(&request).await?;
@@ -75,7 +65,6 @@ async fn verify(
 ///
 /// Get the current authenticated user's profile.
 async fn get_me(
-    State(state): State<AuthState>,
     auth: Authenticated,
 ) -> Json<ApiResponse<Profile>> {
     Json(ApiResponse {
@@ -87,7 +76,7 @@ async fn get_me(
 ///
 /// Update the authenticated user's profile settings.
 async fn update_profile(
-    State(state): State<AuthState>,
+    State(state): State<AppState>,
     auth: Authenticated,
     Json(settings): Json<ProfileSettings>,
 ) -> Result<Json<ApiResponse<Profile>>, AuthError> {
@@ -103,8 +92,7 @@ async fn update_profile(
 ///
 /// Logout and invalidate the current session.
 async fn logout(
-    State(state): State<AuthState>,
-    auth: Authenticated,
+    _auth: Authenticated,
 ) -> Json<ApiResponse<LogoutResponse>> {
     // Get the token from the Authorization header
     // The Authenticated extractor already validated the session
@@ -131,16 +119,10 @@ pub struct Authenticated {
 }
 
 #[axum::async_trait]
-impl<S> FromRequestParts<S> for Authenticated
-where
-    S: Send + Sync,
-    AuthState: FromRef<S>,
-{
+impl FromRequestParts<AppState> for Authenticated {
     type Rejection = AuthError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let auth_state = AuthState::from_ref(state);
-
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         // Get Authorization header
         let auth_header = parts
             .headers
@@ -154,7 +136,7 @@ where
             .ok_or(AuthError::Unauthorized)?;
 
         // Validate session
-        let (session, profile) = auth_state
+        let (session, profile) = state
             .auth_service
             .validate_session(token)
             .await
@@ -166,17 +148,6 @@ where
                 profile,
             },
         })
-    }
-}
-
-/// Helper trait to extract AuthState from parent state.
-pub trait FromRef<T> {
-    fn from_ref(input: &T) -> Self;
-}
-
-impl FromRef<AuthState> for AuthState {
-    fn from_ref(input: &AuthState) -> Self {
-        input.clone()
     }
 }
 

@@ -65,6 +65,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 break;
             }
 
+            // Check throttling - skip if we shouldn't send yet
+            if !broadcast_room_manager.should_send_update(broadcast_client_id, &symbol).await {
+                continue;
+            }
+
             // Enrich with change_24h from chart store if not already set
             if price_update.change_24h.is_none() {
                 if let Some(change) = broadcast_chart_store.get_price_change(&symbol, 86400) {
@@ -77,7 +82,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             };
 
             if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = broadcast_room_manager.broadcast(&symbol, &json);
+                // Send directly to this client instead of broadcasting
+                if let Some(client) = broadcast_room_manager.clients.get(&broadcast_client_id) {
+                    let _ = client.tx.send(json);
+                }
             }
         }
     });
@@ -137,6 +145,13 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             debug!("Client {} unsubscribed from: {:?}", client_id, unsubscribed);
 
             let response = ServerMessage::Unsubscribed { assets: unsubscribed };
+            send_message(state, client_id, &response);
+        }
+        ClientMessage::SetThrottle { throttle_ms } => {
+            state.room_manager.set_throttle(client_id, throttle_ms);
+            debug!("Client {} set throttle to: {}ms", client_id, throttle_ms);
+
+            let response = ServerMessage::ThrottleSet { throttle_ms };
             send_message(state, client_id, &response);
         }
     }

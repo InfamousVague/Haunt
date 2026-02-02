@@ -5,7 +5,7 @@
 
 use crate::error::{AppError, Result};
 use crate::services::ChartStore;
-use crate::sources::{AlphaVantageClient, FinnhubClient};
+use crate::sources::{AlphaVantageClient, YahooFinanceClient};
 use crate::sources::finnhub::{STOCK_SYMBOLS, ETF_SYMBOLS};
 use dashmap::DashMap;
 use redis::{aio::ConnectionManager, AsyncCommands};
@@ -200,6 +200,7 @@ pub struct HistoricalDataService {
     coingecko_api_key: Option<String>,
     cryptocompare_api_key: Option<String>,
     alphavantage_client: Option<Arc<AlphaVantageClient>>,
+    yahoo_client: YahooFinanceClient,
 }
 
 impl HistoricalDataService {
@@ -225,6 +226,7 @@ impl HistoricalDataService {
             coingecko_api_key,
             cryptocompare_api_key,
             alphavantage_client,
+            yahoo_client: YahooFinanceClient::new(),
         })
     }
 
@@ -816,70 +818,102 @@ impl HistoricalDataService {
         }
     }
 
-    /// Seed historical data for stocks/ETFs using Alpha Vantage.
+    /// Seed historical data for stocks/ETFs using Alpha Vantage with Yahoo Finance fallback.
     async fn seed_stock_historical_data(&self, symbol_lower: &str, symbol_upper: &str) {
-        let Some(ref av_client) = self.alphavantage_client else {
-            warn!("Alpha Vantage client not configured, cannot seed stock data for {}", symbol_upper);
-            self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Failed);
-            self.update_progress(symbol_lower, 0, 0, Some("Alpha Vantage not configured".to_string()));
-            return;
-        };
+        self.update_progress(symbol_lower, 10, 0, Some("Fetching historical data...".to_string()));
 
-        self.update_progress(symbol_lower, 10, 0, Some("Fetching from Alpha Vantage...".to_string()));
+        let mut ohlc_points: Vec<OhlcDataPoint> = Vec::new();
+        let mut source = "unknown";
 
-        // Fetch daily time series (compact = last 100 trading days)
-        match av_client.get_daily_time_series(symbol_upper, "compact").await {
-            Ok(points) => {
-                info!("[AlphaVantage] Fetched {} daily points for {}", points.len(), symbol_upper);
+        // Try Alpha Vantage first (if configured)
+        if let Some(ref av_client) = self.alphavantage_client {
+            self.update_progress(symbol_lower, 15, 0, Some("Trying Alpha Vantage...".to_string()));
 
-                if points.is_empty() {
-                    warn!("No historical data from Alpha Vantage for {}", symbol_upper);
-                    self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Failed);
-                    self.update_progress(symbol_lower, 0, 0, Some("No data available".to_string()));
-                    return;
+            match av_client.get_daily_time_series(symbol_upper, "compact").await {
+                Ok(points) if !points.is_empty() => {
+                    info!("[AlphaVantage] Fetched {} daily points for {}", points.len(), symbol_upper);
+                    source = "AlphaVantage";
+
+                    ohlc_points = points
+                        .into_iter()
+                        .map(|p| OhlcDataPoint {
+                            time: p.time / 1000, // Convert from ms to seconds
+                            open: p.open,
+                            high: p.high,
+                            low: p.low,
+                            close: p.close,
+                            volume: p.volume,
+                        })
+                        .collect();
                 }
-
-                self.update_progress(symbol_lower, 50, points.len() as u64, Some("Processing data...".to_string()));
-
-                // Convert to OhlcDataPoint and add to chart store
-                let ohlc_points: Vec<OhlcDataPoint> = points
-                    .into_iter()
-                    .map(|p| OhlcDataPoint {
-                        time: p.time / 1000, // Convert from ms to seconds
-                        open: p.open,
-                        high: p.high,
-                        low: p.low,
-                        close: p.close,
-                        volume: p.volume,
-                    })
-                    .collect();
-
-                // Add to chart store
-                for point in &ohlc_points {
-                    let timestamp_ms = point.time * 1000;
-                    self.chart_store.add_price(
-                        symbol_lower,
-                        point.close,
-                        Some(point.volume),
-                        timestamp_ms,
-                    );
+                Ok(_) => {
+                    debug!("[AlphaVantage] No data returned for {}, trying Yahoo Finance", symbol_upper);
                 }
-
-                // Save to Redis
-                if let Err(e) = self.save_to_redis(symbol_lower, &ohlc_points).await {
-                    error!("Failed to save stock historical data to Redis: {}", e);
+                Err(e) => {
+                    debug!("[AlphaVantage] Failed for {}: {}, trying Yahoo Finance", symbol_upper, e);
                 }
-
-                self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Seeded);
-                self.update_progress(symbol_lower, 100, ohlc_points.len() as u64, Some("Complete".to_string()));
-                info!("Completed historical data seed for {} ({} points)", symbol_upper, ohlc_points.len());
-            }
-            Err(e) => {
-                error!("[AlphaVantage] Failed to fetch data for {}: {}", symbol_upper, e);
-                self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Failed);
-                self.update_progress(symbol_lower, 0, 0, Some(format!("Failed: {}", e)));
             }
         }
+
+        // Fallback to Yahoo Finance (no rate limits!)
+        if ohlc_points.is_empty() {
+            self.update_progress(symbol_lower, 30, 0, Some("Trying Yahoo Finance...".to_string()));
+
+            match self.yahoo_client.get_daily_history(symbol_upper).await {
+                Ok(points) if !points.is_empty() => {
+                    info!("[Yahoo] Fetched {} daily points for {}", points.len(), symbol_upper);
+                    source = "Yahoo";
+
+                    ohlc_points = points
+                        .into_iter()
+                        .map(|p| OhlcDataPoint {
+                            time: p.time / 1000, // Convert from ms to seconds
+                            open: p.open,
+                            high: p.high,
+                            low: p.low,
+                            close: p.close,
+                            volume: p.volume,
+                        })
+                        .collect();
+                }
+                Ok(_) => {
+                    warn!("[Yahoo] No data returned for {}", symbol_upper);
+                }
+                Err(e) => {
+                    error!("[Yahoo] Failed to fetch data for {}: {}", symbol_upper, e);
+                }
+            }
+        }
+
+        // Process the data if we got any
+        if ohlc_points.is_empty() {
+            warn!("No historical data available for {} from any source", symbol_upper);
+            self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Failed);
+            self.update_progress(symbol_lower, 0, 0, Some("No data available".to_string()));
+            return;
+        }
+
+        self.update_progress(symbol_lower, 50, ohlc_points.len() as u64, Some("Processing data...".to_string()));
+
+        // Add to chart store
+        for point in &ohlc_points {
+            let timestamp_ms = point.time * 1000;
+            self.chart_store.add_price(
+                symbol_lower,
+                point.close,
+                Some(point.volume),
+                timestamp_ms,
+            );
+        }
+
+        // Save to Redis
+        if let Err(e) = self.save_to_redis(symbol_lower, &ohlc_points).await {
+            error!("Failed to save stock historical data to Redis: {}", e);
+        }
+
+        self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Seeded);
+        self.update_progress(symbol_lower, 100, ohlc_points.len() as u64, Some("Complete".to_string()));
+        info!("Completed historical data seed for {} ({} points from {})", symbol_upper, ohlc_points.len(), source);
     }
 
     /// Load common stock symbols from Redis on startup.

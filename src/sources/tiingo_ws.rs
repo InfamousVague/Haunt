@@ -118,11 +118,13 @@ impl TiingoWs {
         info!("Connected to Tiingo WebSocket");
 
         // Subscribe with authentication
+        // Note: Free tier requires thresholdLevel 5 (top-of-book only)
+        // thresholdLevel 0 (trades) requires paid subscription
         let subscribe_msg = SubscribeMessage {
             event_name: "subscribe".to_string(),
             authorization: self.api_key.clone(),
             event_data: EventData {
-                threshold_level: 0, // 0 = trades only (most efficient)
+                threshold_level: 5, // 5 = top-of-book (free tier)
                 tickers: STOCK_SYMBOLS.iter().map(|s| s.to_string()).collect(),
             },
         };

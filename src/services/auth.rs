@@ -3,8 +3,14 @@
  *
  * Handles signature verification and session management.
  * Uses HMAC-SHA256 to verify signatures (compatible with Web Crypto API).
+ *
+ * Storage:
+ * - SQLite: Profiles (long-term persistence)
+ * - Redis: Sessions (24-hour TTL, ephemeral)
+ * - DashMap: In-memory cache for both
  */
 
+use crate::services::SqliteStore;
 use crate::types::{AuthChallenge, AuthRequest, Profile, Session};
 use dashmap::DashMap;
 use hmac::Hmac;
@@ -21,19 +27,25 @@ pub struct AuthService {
     challenges: Arc<DashMap<String, AuthChallenge>>,
     /// Active sessions (session_token -> Session)
     sessions: Arc<DashMap<String, Session>>,
-    /// User profiles (public_key -> Profile)
+    /// User profiles cache (public_key -> Profile)
     profiles: Arc<DashMap<String, Profile>>,
-    /// Optional Redis connection for persistence
+    /// SQLite store for profile persistence
+    sqlite: Option<Arc<SqliteStore>>,
+    /// Optional Redis connection for session persistence
     redis: Option<redis::aio::ConnectionManager>,
 }
 
 impl AuthService {
     /// Create a new auth service.
-    pub fn new(redis: Option<redis::aio::ConnectionManager>) -> Self {
+    pub fn new(
+        redis: Option<redis::aio::ConnectionManager>,
+        sqlite: Option<Arc<SqliteStore>>,
+    ) -> Self {
         Self {
             challenges: Arc::new(DashMap::new()),
             sessions: Arc::new(DashMap::new()),
             profiles: Arc::new(DashMap::new()),
+            sqlite,
             redis,
         }
     }
@@ -157,43 +169,78 @@ impl AuthService {
     /// Get or create a profile for a public key.
     async fn get_or_create_profile(&self, public_key: &str) -> Profile {
         // Check memory cache first
-        if let Some(profile) = self.profiles.get(public_key) {
-            let mut updated = profile.clone();
+        // Note: We must clone and drop the Ref before calling insert to avoid deadlock
+        if let Some(profile_ref) = self.profiles.get(public_key) {
+            let mut updated = profile_ref.clone();
+            drop(profile_ref); // Release read lock before write
+
             updated.last_seen = chrono::Utc::now().timestamp_millis();
             self.profiles.insert(public_key.to_string(), updated.clone());
+
+            // Update last_seen in SQLite
+            if let Some(ref sqlite) = self.sqlite {
+                let _ = sqlite.update_last_seen(public_key);
+            }
+
             return updated;
         }
 
-        // Check Redis if available
+        // Check SQLite if available (primary profile storage)
+        if let Some(ref sqlite) = self.sqlite {
+            if let Some(mut profile) = sqlite.get_profile(public_key) {
+                profile.last_seen = chrono::Utc::now().timestamp_millis();
+                let _ = sqlite.save_profile(&profile);
+                self.profiles.insert(public_key.to_string(), profile.clone());
+                info!("Loaded profile from SQLite for {}", &public_key[..16.min(public_key.len())]);
+                return profile;
+            }
+        }
+
+        // Fallback: Check Redis if available
         if let Some(ref redis) = self.redis {
             if let Ok(profile) = self.load_profile_from_redis(public_key, redis.clone()).await {
                 let mut updated = profile;
                 updated.last_seen = chrono::Utc::now().timestamp_millis();
                 self.profiles.insert(public_key.to_string(), updated.clone());
+
+                // Migrate to SQLite
+                if let Some(ref sqlite) = self.sqlite {
+                    let _ = sqlite.save_profile(&updated);
+                    info!("Migrated profile from Redis to SQLite for {}", &public_key[..16.min(public_key.len())]);
+                }
+
                 return updated;
             }
         }
 
         // Create new profile
         let profile = Profile::new(public_key.to_string());
-        self.profiles
-            .insert(public_key.to_string(), profile.clone());
-        info!("Created new profile for {}", &public_key[..16]);
+        self.profiles.insert(public_key.to_string(), profile.clone());
+
+        // Save to SQLite
+        if let Some(ref sqlite) = self.sqlite {
+            let _ = sqlite.save_profile(&profile);
+        }
+
+        info!("Created new profile for {}", &public_key[..16.min(public_key.len())]);
         profile
     }
 
     /// Validate a session token.
     pub async fn validate_session(&self, token: &str) -> Option<(Session, Profile)> {
         // Check memory cache
-        if let Some(session) = self.sessions.get(token) {
-            if session.is_expired() {
+        // Note: Clone session data and drop refs to avoid deadlocks
+        let session_data = self.sessions.get(token).map(|s| (s.clone(), s.is_expired()));
+
+        if let Some((session, is_expired)) = session_data {
+            if is_expired {
                 self.sessions.remove(token);
                 return None;
             }
 
             // Get profile
             if let Some(profile) = self.profiles.get(&session.public_key) {
-                return Some((session.clone(), profile.clone()));
+                return Some((session, profile.clone()));
             }
         }
 
@@ -225,11 +272,24 @@ impl AuthService {
             return Some(profile.clone());
         }
 
-        // Check Redis
+        // Check SQLite (primary storage)
+        if let Some(ref sqlite) = self.sqlite {
+            if let Some(profile) = sqlite.get_profile(public_key) {
+                self.profiles.insert(public_key.to_string(), profile.clone());
+                return Some(profile);
+            }
+        }
+
+        // Fallback: Check Redis
         if let Some(ref redis) = self.redis {
             if let Ok(profile) = self.load_profile_from_redis(public_key, redis.clone()).await {
-                self.profiles
-                    .insert(public_key.to_string(), profile.clone());
+                self.profiles.insert(public_key.to_string(), profile.clone());
+
+                // Migrate to SQLite
+                if let Some(ref sqlite) = self.sqlite {
+                    let _ = sqlite.save_profile(&profile);
+                }
+
                 return Some(profile);
             }
         }
@@ -239,10 +299,17 @@ impl AuthService {
 
     /// Update profile settings.
     pub async fn update_profile(&self, profile: Profile) -> Result<Profile, AuthError> {
-        self.profiles
-            .insert(profile.public_key.clone(), profile.clone());
+        self.profiles.insert(profile.public_key.clone(), profile.clone());
 
-        // Persist to Redis
+        // Persist to SQLite (primary storage)
+        if let Some(ref sqlite) = self.sqlite {
+            sqlite.save_profile(&profile).map_err(|e| {
+                warn!("Failed to save profile to SQLite: {}", e);
+                AuthError::ProfileNotFound
+            })?;
+        }
+
+        // Also persist to Redis (for backwards compatibility)
         if let Some(ref redis) = self.redis {
             self.persist_profile(&profile, redis.clone()).await;
         }

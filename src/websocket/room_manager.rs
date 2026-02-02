@@ -1,7 +1,11 @@
 use dashmap::DashMap;
 use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// A client's subscription information.
@@ -10,6 +14,10 @@ pub struct ClientSubscription {
     pub assets: HashSet<String>,
     /// Channel to send messages to the client.
     pub tx: mpsc::UnboundedSender<String>,
+    /// Throttle interval in milliseconds (0 = no throttling).
+    pub throttle_ms: AtomicU64,
+    /// Last update time per symbol for throttling.
+    pub last_updates: RwLock<HashMap<String, Instant>>,
 }
 
 /// Manages WebSocket client subscriptions.
@@ -35,8 +43,61 @@ impl RoomManager {
         self.clients.insert(client_id, ClientSubscription {
             assets: HashSet::new(),
             tx,
+            throttle_ms: AtomicU64::new(0),
+            last_updates: RwLock::new(HashMap::new()),
         });
         client_id
+    }
+
+    /// Set throttle interval for a client.
+    pub fn set_throttle(&self, client_id: Uuid, throttle_ms: u64) {
+        if let Some(client) = self.clients.get(&client_id) {
+            client.throttle_ms.store(throttle_ms, Ordering::Relaxed);
+        }
+    }
+
+    /// Get throttle interval for a client.
+    pub fn get_throttle(&self, client_id: Uuid) -> u64 {
+        self.clients
+            .get(&client_id)
+            .map(|c| c.throttle_ms.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Check if a client should receive an update for a symbol (based on throttling).
+    /// Returns true if the update should be sent, false if throttled.
+    pub async fn should_send_update(&self, client_id: Uuid, symbol: &str) -> bool {
+        if let Some(client) = self.clients.get(&client_id) {
+            let throttle_ms = client.throttle_ms.load(Ordering::Relaxed);
+
+            // No throttling
+            if throttle_ms == 0 {
+                return true;
+            }
+
+            let now = Instant::now();
+            let symbol_lower = symbol.to_lowercase();
+
+            // Check last update time
+            {
+                let last_updates = client.last_updates.read().await;
+                if let Some(last_time) = last_updates.get(&symbol_lower) {
+                    let elapsed = now.duration_since(*last_time).as_millis() as u64;
+                    if elapsed < throttle_ms {
+                        return false;
+                    }
+                }
+            }
+
+            // Update the timestamp
+            {
+                let mut last_updates = client.last_updates.write().await;
+                last_updates.insert(symbol_lower, now);
+            }
+
+            return true;
+        }
+        false
     }
 
     /// Unregister a client and remove from all rooms.

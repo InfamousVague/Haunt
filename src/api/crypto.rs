@@ -181,14 +181,49 @@ async fn get_listings(
         data.retain(|a| a.change_24h <= max);
     }
 
-    // Populate sparklines from chart store if empty
+    // Enrich listings with chart store data (sparklines, calculated changes, volume)
     for listing in &mut data {
+        let symbol = listing.symbol.to_lowercase();
+        let is_stock = listing.asset_type == "stock" || listing.asset_type == "etf";
+
+        // Populate sparklines from chart store if empty
         if listing.sparkline.is_empty() {
-            let symbol = listing.symbol.to_lowercase();
-            let sparkline = state.chart_store.generate_sparkline_from_history(&symbol, 60);
+            let sparkline = if is_stock {
+                // Try 30 points first for stocks (less historical data available)
+                let small = state.chart_store.get_sparkline(&symbol, 30);
+                if small.len() >= 5 {
+                    small
+                } else {
+                    // Fall back to any available data
+                    state.chart_store.get_sparkline(&symbol, 168)
+                }
+            } else {
+                // Crypto - use 168 points for 7 days of hourly data
+                state.chart_store.generate_sparkline_from_history(&symbol, 168)
+            };
+
             if !sparkline.is_empty() {
                 listing.sparkline = sparkline;
             }
+        }
+
+        // Calculate 7d change from chart store if it's 0 (stocks/ETFs)
+        if listing.change_7d == 0.0 {
+            if let Some(change_7d) = state.chart_store.get_price_change(&symbol, 7 * 24 * 60 * 60) {
+                listing.change_7d = change_7d;
+            }
+        }
+
+        // Get 24h volume from chart store if it's 0 (stocks/ETFs without authoritative volume)
+        if is_stock && listing.volume_24h == 0.0 {
+            if let Some(volume) = state.chart_store.get_volume_24h(&symbol) {
+                listing.volume_24h = volume;
+            }
+        }
+
+        // Get trade direction from price cache
+        if listing.trade_direction.is_none() {
+            listing.trade_direction = state.coordinator.price_cache().get_trade_direction(&symbol);
         }
     }
 

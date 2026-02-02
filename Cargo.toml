@@ -48,6 +48,9 @@ dotenvy = "0.15"
 # UUID generation
 uuid = { version = "1.6", features = ["v4", "serde"] }
 
+# SQLite for persistent storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 # Cryptography for signature verification
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 hex = "0.4"

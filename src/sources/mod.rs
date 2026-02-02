@@ -12,6 +12,7 @@ pub mod kraken;
 pub mod kucoin;
 pub mod okx;
 pub mod tiingo_ws;
+pub mod yahoo;
 
 pub use alphavantage::AlphaVantageClient;
 pub use alpaca_ws::AlpacaWs;
@@ -27,3 +28,4 @@ pub use kraken::KrakenClient;
 pub use kucoin::KuCoinClient;
 pub use okx::OkxClient;
 pub use tiingo_ws::TiingoWs;
+pub use yahoo::YahooFinanceClient;

@@ -1,5 +1,6 @@
 //! Prediction recording and validation for accuracy tracking.
 
+use crate::services::SqliteStore;
 use crate::types::{PredictionOutcome, SignalPrediction};
 use dashmap::DashMap;
 use redis::{aio::ConnectionManager, AsyncCommands};
@@ -23,8 +24,10 @@ pub struct PredictionStore {
     pending_1h: DashMap<String, Vec<SignalPrediction>>,
     pending_4h: DashMap<String, Vec<SignalPrediction>>,
     pending_24h: DashMap<String, Vec<SignalPrediction>>,
-    /// Redis connection for persistence.
+    /// Redis connection for caching.
     redis: RwLock<Option<ConnectionManager>>,
+    /// SQLite store for permanent prediction history.
+    sqlite: RwLock<Option<Arc<SqliteStore>>>,
 }
 
 impl PredictionStore {
@@ -37,7 +40,14 @@ impl PredictionStore {
             pending_4h: DashMap::new(),
             pending_24h: DashMap::new(),
             redis: RwLock::new(None),
+            sqlite: RwLock::new(None),
         })
+    }
+
+    /// Connect SQLite store for permanent persistence.
+    pub async fn connect_sqlite(&self, sqlite_store: Arc<SqliteStore>) {
+        info!("PredictionStore connected to SQLite");
+        *self.sqlite.write().await = Some(sqlite_store);
     }
 
     /// Connect to Redis for persistence.
@@ -58,6 +68,29 @@ impl PredictionStore {
         }
     }
 
+    /// Check if we should create a new prediction for this indicator.
+    /// Returns false if there's already a recent unvalidated prediction.
+    pub fn should_create_prediction(&self, symbol: &str, indicator: &str, cooldown_ms: i64) -> bool {
+        let key = format!("{}:{}", symbol.to_lowercase(), indicator);
+        let now = chrono::Utc::now().timestamp_millis();
+
+        if let Some(predictions) = self.predictions.get(&key) {
+            // Check if there's a recent unvalidated prediction
+            for prediction in predictions.iter().rev() {
+                // If prediction is not fully validated and was created within cooldown
+                if !prediction.validated && (now - prediction.timestamp) < cooldown_ms {
+                    return false;
+                }
+                // Only check recent predictions
+                if (now - prediction.timestamp) >= cooldown_ms {
+                    break;
+                }
+            }
+        }
+
+        true
+    }
+
     /// Add a new prediction.
     pub async fn add_prediction(&self, prediction: SignalPrediction) {
         let key = format!("{}:{}", prediction.symbol.to_lowercase(), prediction.indicator);
@@ -66,9 +99,19 @@ impl PredictionStore {
         let mut entry = self.predictions.entry(key.clone()).or_insert_with(VecDeque::new);
         entry.push_back(prediction.clone());
 
-        // Trim if too many
+        // Trim if too many - but prioritize removing unvalidated predictions first
         while entry.len() > MAX_PREDICTIONS_PER_KEY {
-            entry.pop_front();
+            // Find first unvalidated prediction to remove
+            let unvalidated_idx = entry
+                .iter()
+                .position(|p| !p.validated && p.outcome_24h.is_none());
+
+            if let Some(idx) = unvalidated_idx {
+                entry.remove(idx);
+            } else {
+                // All predictions are validated, remove oldest
+                entry.pop_front();
+            }
         }
 
         // Add to pending validation queues
@@ -87,7 +130,14 @@ impl PredictionStore {
         self.pending_24h
             .entry(prediction.symbol.to_lowercase())
             .or_default()
-            .push(prediction);
+            .push(prediction.clone());
+
+        // Archive to SQLite for permanent storage
+        if let Some(sqlite) = self.sqlite.read().await.as_ref() {
+            if let Err(e) = sqlite.archive_prediction(&prediction) {
+                warn!("Failed to archive prediction to SQLite: {}", e);
+            }
+        }
 
         debug!("Added prediction for {}", key);
     }
@@ -189,6 +239,14 @@ impl PredictionStore {
                         }
                     }
 
+                    // Update in SQLite (clone sqlite ref to avoid holding lock)
+                    let sqlite_opt = self.sqlite.read().await.clone();
+                    if let Some(ref sqlite) = sqlite_opt {
+                        if let Err(e) = sqlite.archive_prediction(&prediction) {
+                            warn!("Failed to update prediction in SQLite: {}", e);
+                        }
+                    }
+
                     debug!(
                         "Validated {} prediction for {}: {:?}",
                         timeframe, prediction.indicator, outcome
@@ -224,6 +282,58 @@ impl PredictionStore {
                     let _: Result<(), _> = conn.set_ex(&key, json, 604800).await; // 7 days TTL
                 }
             }
+        }
+    }
+
+    /// Load all predictions from SQLite on startup.
+    pub async fn load_from_sqlite(&self) {
+        let sqlite_guard = self.sqlite.read().await;
+        let Some(ref sqlite) = *sqlite_guard else {
+            warn!("Cannot load predictions: SQLite not connected");
+            return;
+        };
+
+        // Get all unique symbols from SQLite
+        let _conn = match sqlite.get_connection() {
+            Some(c) => c,
+            None => {
+                warn!("Cannot get SQLite connection");
+                return;
+            }
+        };
+
+        // Query all predictions from SQLite (limit to recent ones for memory)
+        let predictions = sqlite.get_all_predictions(500);
+
+        let mut loaded_count = 0;
+        let mut pending_count = 0;
+        for prediction in predictions {
+            let key = format!("{}:{}", prediction.symbol.to_lowercase(), prediction.indicator);
+            let symbol_lower = prediction.symbol.to_lowercase();
+
+            // Add to main storage
+            let mut entry = self.predictions.entry(key).or_insert_with(VecDeque::new);
+            entry.push_back(prediction.clone());
+            loaded_count += 1;
+
+            // Add to pending queues if not yet validated for that timeframe
+            if prediction.outcome_5m.is_none() {
+                self.pending_5m.entry(symbol_lower.clone()).or_default().push(prediction.clone());
+                pending_count += 1;
+            }
+            if prediction.outcome_1h.is_none() {
+                self.pending_1h.entry(symbol_lower.clone()).or_default().push(prediction.clone());
+            }
+            if prediction.outcome_4h.is_none() {
+                self.pending_4h.entry(symbol_lower.clone()).or_default().push(prediction.clone());
+            }
+            if prediction.outcome_24h.is_none() {
+                self.pending_24h.entry(symbol_lower).or_default().push(prediction);
+            }
+        }
+
+        if loaded_count > 0 {
+            info!("Loaded {} predictions from SQLite ({} pending validation)", loaded_count, pending_count);
         }
     }
 
@@ -274,6 +384,7 @@ impl Default for PredictionStore {
             pending_4h: DashMap::new(),
             pending_24h: DashMap::new(),
             redis: RwLock::new(None),
+            sqlite: RwLock::new(None),
         }
     }
 }
