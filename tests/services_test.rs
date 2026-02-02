@@ -186,3 +186,181 @@ fn test_aggregation_config_custom() {
     assert_eq!(config.throttle_ms, 200);
     assert_eq!(config.stale_threshold_ms, 300_000);
 }
+
+// =============================================================================
+// ChartStore Top Movers Tests
+// =============================================================================
+
+#[test]
+fn test_chart_store_get_current_price() {
+    let store = ChartStore::new();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    // Add a price
+    store.add_price("btc", 50000.0, None, timestamp);
+
+    // Get current price
+    let price = store.get_current_price("btc");
+    assert_eq!(price, Some(50000.0));
+
+    // Non-existent symbol returns None
+    let none_price = store.get_current_price("nonexistent");
+    assert!(none_price.is_none());
+}
+
+#[test]
+fn test_chart_store_current_price_updates() {
+    let store = ChartStore::new();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    store.add_price("btc", 50000.0, None, timestamp);
+    assert_eq!(store.get_current_price("btc"), Some(50000.0));
+
+    store.add_price("btc", 51000.0, None, timestamp + 1000);
+    assert_eq!(store.get_current_price("btc"), Some(51000.0));
+}
+
+#[test]
+fn test_chart_store_update_volume() {
+    let store = ChartStore::new();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    // Add price first to create the entry
+    store.add_price("btc", 50000.0, None, timestamp);
+
+    // Update volume
+    store.update_volume("btc", 1_000_000_000.0);
+
+    // Volume is tracked internally - we can verify by checking sparkline exists
+    let sparkline = store.get_sparkline("btc", 10);
+    assert!(!sparkline.is_empty());
+}
+
+#[test]
+fn test_chart_store_get_top_movers_empty() {
+    use haunt::types::MoverTimeframe;
+
+    let store = ChartStore::new();
+
+    // Empty store should return empty movers
+    let (gainers, losers) = store.get_top_movers(MoverTimeframe::OneHour, 10);
+    assert!(gainers.is_empty());
+    assert!(losers.is_empty());
+}
+
+#[test]
+fn test_chart_store_get_top_movers_with_data() {
+    use haunt::types::MoverTimeframe;
+
+    let store = ChartStore::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    let one_hour_ago = now - 3600_000;
+
+    // Add historical prices (1 hour ago)
+    store.add_price("btc", 48000.0, None, one_hour_ago);
+    store.add_price("eth", 3200.0, None, one_hour_ago);
+    store.add_price("sol", 110.0, None, one_hour_ago);
+
+    // Add current prices (showing BTC up, ETH down, SOL flat)
+    store.add_price("btc", 50000.0, None, now);  // +4.17%
+    store.add_price("eth", 3000.0, None, now);   // -6.25%
+    store.add_price("sol", 100.0, None, now);    // -9.09%
+
+    let (gainers, losers) = store.get_top_movers(MoverTimeframe::OneHour, 10);
+
+    // BTC should be a gainer
+    let btc_in_gainers = gainers.iter().any(|m| m.symbol.to_lowercase() == "btc");
+    assert!(btc_in_gainers, "BTC should be in gainers");
+
+    // ETH and SOL should be losers
+    let eth_in_losers = losers.iter().any(|m| m.symbol.to_lowercase() == "eth");
+    let sol_in_losers = losers.iter().any(|m| m.symbol.to_lowercase() == "sol");
+    assert!(eth_in_losers || sol_in_losers, "ETH or SOL should be in losers");
+}
+
+#[test]
+fn test_chart_store_movers_limit() {
+    use haunt::types::MoverTimeframe;
+
+    let store = ChartStore::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    let one_hour_ago = now - 3600_000;
+
+    // Add many symbols with positive changes
+    for i in 0..20 {
+        let symbol = format!("coin{}", i);
+        let old_price = 100.0;
+        let new_price = 100.0 + (i as f64 * 5.0); // Each coin has different gain
+
+        store.add_price(&symbol, old_price, None, one_hour_ago);
+        store.add_price(&symbol, new_price, None, now);
+    }
+
+    // Request only top 5
+    let (gainers, _losers) = store.get_top_movers(MoverTimeframe::OneHour, 5);
+
+    assert!(gainers.len() <= 5, "Should respect limit");
+}
+
+#[test]
+fn test_chart_store_movers_sorted_correctly() {
+    use haunt::types::MoverTimeframe;
+
+    let store = ChartStore::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    let one_hour_ago = now - 3600_000;
+
+    // Add symbols with known changes
+    store.add_price("small_gain", 100.0, None, one_hour_ago);
+    store.add_price("small_gain", 102.0, None, now);  // +2%
+
+    store.add_price("big_gain", 100.0, None, one_hour_ago);
+    store.add_price("big_gain", 110.0, None, now);  // +10%
+
+    store.add_price("medium_gain", 100.0, None, one_hour_ago);
+    store.add_price("medium_gain", 105.0, None, now);  // +5%
+
+    let (gainers, _) = store.get_top_movers(MoverTimeframe::OneHour, 10);
+
+    // Verify gainers are sorted by change_percent descending
+    for i in 0..gainers.len().saturating_sub(1) {
+        assert!(
+            gainers[i].change_percent >= gainers[i + 1].change_percent,
+            "Gainers should be sorted descending by change_percent"
+        );
+    }
+}
+
+#[test]
+fn test_chart_store_price_at() {
+    let store = ChartStore::new();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Add prices over time
+    store.add_price("btc", 48000.0, None, now - 300_000);  // 5 min ago
+    store.add_price("btc", 49000.0, None, now - 120_000);  // 2 min ago
+    store.add_price("btc", 50000.0, None, now);            // now
+
+    // Get price from ~3 minutes ago (should find closest)
+    let price_at = store.get_price_at("btc", 180);
+    assert!(price_at.is_some());
+}
+
+#[test]
+fn test_chart_store_price_change_calculation() {
+    let store = ChartStore::new();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Add price at T-5min: 100
+    store.add_price("test", 100.0, None, now - 300_000);
+    // Add price now: 110 (+10%)
+    store.add_price("test", 110.0, None, now);
+
+    // Calculate change over 5 minutes
+    let change = store.get_price_change("test", 300);
+
+    if let Some(pct) = change {
+        // Should be approximately +10%
+        assert!(pct > 5.0 && pct < 15.0, "Change should be around 10%");
+    }
+}

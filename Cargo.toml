@@ -46,7 +46,14 @@ anyhow = "1.0"
 dotenvy = "0.15"
 
 # UUID generation
-uuid = { version = "1.6", features = ["v4"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Cryptography for signature verification
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+hex = "0.4"
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
 
 [dev-dependencies]
 tokio-test = "0.4"

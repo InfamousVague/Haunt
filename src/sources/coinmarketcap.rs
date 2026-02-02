@@ -107,6 +107,7 @@ impl CoinMarketCapClient {
         loop {
             if let Err(e) = self.fetch_listings().await {
                 error!("CoinMarketCap fetch error: {}", e);
+                self.price_cache.report_source_error(PriceSource::CoinMarketCap, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
@@ -404,6 +405,9 @@ impl CoinMarketCapClient {
             val.filter(|v| v.is_finite()).unwrap_or(0.0)
         }
 
+        // Get trade direction from price cache
+        let trade_direction = self.price_cache.get_trade_direction(&data.symbol);
+
         AssetListing {
             id: data.id,
             rank: data.cmc_rank.unwrap_or(0),
@@ -419,6 +423,10 @@ impl CoinMarketCapClient {
             circulating_supply: 0.0, // CMC listings endpoint doesn't include this
             max_supply: None,
             sparkline: vec![], // Populated after by get_listings
+            trade_direction,
+            asset_type: "crypto".to_string(),
+            exchange: None,
+            sector: None,
         }
     }
 
@@ -445,6 +453,7 @@ impl CoinMarketCapClient {
             name: data.name,
             symbol: data.symbol,
             slug: data.slug,
+            rank: data.cmc_rank,
             logo: Some(format!("https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png", data.id)),
             description: None,
             category: None,

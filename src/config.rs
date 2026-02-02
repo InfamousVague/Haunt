@@ -15,6 +15,26 @@ pub struct Config {
     pub coingecko_api_key: Option<String>,
     /// CryptoCompare API key.
     pub cryptocompare_api_key: Option<String>,
+    /// Binance API key (optional, public endpoints work without).
+    pub binance_api_key: Option<String>,
+    /// Kraken API key (optional).
+    pub kraken_api_key: Option<String>,
+    /// KuCoin API key (optional, public endpoints work without).
+    pub kucoin_api_key: Option<String>,
+    /// OKX API key (optional).
+    pub okx_api_key: Option<String>,
+    /// Huobi API key (optional).
+    pub huobi_api_key: Option<String>,
+    /// Finnhub API key for stock/ETF data.
+    pub finnhub_api_key: Option<String>,
+    /// Alpha Vantage API key for historical stock data.
+    pub alpha_vantage_api_key: Option<String>,
+    /// Alpaca API key for real-time stock data.
+    pub alpaca_api_key: Option<String>,
+    /// Alpaca API secret.
+    pub alpaca_api_secret: Option<String>,
+    /// Tiingo API key for real-time stock data.
+    pub tiingo_api_key: Option<String>,
     /// Price change threshold for updates (percentage).
     pub price_change_threshold: f64,
     /// Throttle interval for price updates (ms).
@@ -36,6 +56,16 @@ impl Config {
             cmc_api_key: env::var("CMC_API_KEY").ok(),
             coingecko_api_key: env::var("COINGECKO_API_KEY").ok(),
             cryptocompare_api_key: env::var("CRYPTOCOMPARE_API_KEY").ok(),
+            binance_api_key: env::var("BINANCE_API_KEY").ok(),
+            kraken_api_key: env::var("KRAKEN_API_KEY").ok(),
+            kucoin_api_key: env::var("KUCOIN_API_KEY").ok(),
+            okx_api_key: env::var("OKX_API_KEY").ok(),
+            huobi_api_key: env::var("HUOBI_API_KEY").ok(),
+            finnhub_api_key: env::var("FINNHUB_API_KEY").ok(),
+            alpha_vantage_api_key: env::var("ALPHA_VANTAGE_API_KEY").ok(),
+            alpaca_api_key: env::var("ALPACA_API_KEY").ok(),
+            alpaca_api_secret: env::var("ALPACA_API_SECRET").ok(),
+            tiingo_api_key: env::var("TIINGO_API_KEY").ok(),
             price_change_threshold: env::var("PRICE_CHANGE_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())

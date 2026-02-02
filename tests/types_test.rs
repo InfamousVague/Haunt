@@ -2,6 +2,7 @@
 
 use haunt::types::*;
 use serde_json;
+use std::str::FromStr;
 
 #[test]
 fn test_price_source_weight() {
@@ -232,4 +233,132 @@ fn test_paginated_response() {
     assert!(json.contains("\"limit\":10"));
     assert!(json.contains("\"total\":100"));
     assert!(json.contains("\"hasMore\":true"));
+}
+
+// =============================================================================
+// MoverTimeframe Tests
+// =============================================================================
+
+#[test]
+fn test_mover_timeframe_from_str() {
+    assert_eq!(MoverTimeframe::from_str("1m").unwrap(), MoverTimeframe::OneMinute);
+    assert_eq!(MoverTimeframe::from_str("5m").unwrap(), MoverTimeframe::FiveMinutes);
+    assert_eq!(MoverTimeframe::from_str("15m").unwrap(), MoverTimeframe::FifteenMinutes);
+    assert_eq!(MoverTimeframe::from_str("1h").unwrap(), MoverTimeframe::OneHour);
+    assert_eq!(MoverTimeframe::from_str("4h").unwrap(), MoverTimeframe::FourHours);
+    assert_eq!(MoverTimeframe::from_str("24h").unwrap(), MoverTimeframe::TwentyFourHours);
+}
+
+#[test]
+fn test_mover_timeframe_from_str_case_insensitive() {
+    assert_eq!(MoverTimeframe::from_str("1M").unwrap(), MoverTimeframe::OneMinute);
+    assert_eq!(MoverTimeframe::from_str("1H").unwrap(), MoverTimeframe::OneHour);
+    assert_eq!(MoverTimeframe::from_str("4H").unwrap(), MoverTimeframe::FourHours);
+    assert_eq!(MoverTimeframe::from_str("24H").unwrap(), MoverTimeframe::TwentyFourHours);
+}
+
+#[test]
+fn test_mover_timeframe_from_str_invalid() {
+    assert!(MoverTimeframe::from_str("invalid").is_err());
+    assert!(MoverTimeframe::from_str("2h").is_err());
+    assert!(MoverTimeframe::from_str("").is_err());
+    assert!(MoverTimeframe::from_str("1d").is_err());
+}
+
+#[test]
+fn test_mover_timeframe_display() {
+    assert_eq!(format!("{}", MoverTimeframe::OneMinute), "1m");
+    assert_eq!(format!("{}", MoverTimeframe::FiveMinutes), "5m");
+    assert_eq!(format!("{}", MoverTimeframe::FifteenMinutes), "15m");
+    assert_eq!(format!("{}", MoverTimeframe::OneHour), "1h");
+    assert_eq!(format!("{}", MoverTimeframe::FourHours), "4h");
+    assert_eq!(format!("{}", MoverTimeframe::TwentyFourHours), "24h");
+}
+
+#[test]
+fn test_mover_timeframe_seconds() {
+    assert_eq!(MoverTimeframe::OneMinute.seconds(), 60);
+    assert_eq!(MoverTimeframe::FiveMinutes.seconds(), 300);
+    assert_eq!(MoverTimeframe::FifteenMinutes.seconds(), 900);
+    assert_eq!(MoverTimeframe::OneHour.seconds(), 3600);
+    assert_eq!(MoverTimeframe::FourHours.seconds(), 14400);
+    assert_eq!(MoverTimeframe::TwentyFourHours.seconds(), 86400);
+}
+
+#[test]
+fn test_mover_timeframe_default() {
+    let default = MoverTimeframe::default();
+    assert_eq!(default, MoverTimeframe::OneHour);
+}
+
+#[test]
+fn test_mover_timeframe_serialization() {
+    let timeframe = MoverTimeframe::OneHour;
+    let json = serde_json::to_string(&timeframe).unwrap();
+    assert_eq!(json, "\"1h\"");
+
+    let parsed: MoverTimeframe = serde_json::from_str("\"24h\"").unwrap();
+    assert_eq!(parsed, MoverTimeframe::TwentyFourHours);
+}
+
+#[test]
+fn test_mover_serialization() {
+    let mover = Mover {
+        symbol: "BTC".to_string(),
+        price: 50000.0,
+        change_percent: 5.25,
+        volume_24h: Some(1000000000.0),
+    };
+
+    let json = serde_json::to_string(&mover).unwrap();
+    assert!(json.contains("\"symbol\":\"BTC\""));
+    assert!(json.contains("\"price\":50000.0"));
+    assert!(json.contains("\"changePercent\":5.25"));
+    assert!(json.contains("\"volume24h\":1000000000.0"));
+}
+
+#[test]
+fn test_mover_without_volume() {
+    let mover = Mover {
+        symbol: "ETH".to_string(),
+        price: 3000.0,
+        change_percent: -2.5,
+        volume_24h: None,
+    };
+
+    let json = serde_json::to_string(&mover).unwrap();
+    assert!(json.contains("\"symbol\":\"ETH\""));
+    assert!(json.contains("\"changePercent\":-2.5"));
+    // volume_24h should be omitted when None
+    assert!(!json.contains("volume24h"));
+}
+
+#[test]
+fn test_movers_response_serialization() {
+    let response = MoversResponse {
+        timeframe: "1h".to_string(),
+        gainers: vec![
+            Mover {
+                symbol: "BTC".to_string(),
+                price: 50000.0,
+                change_percent: 5.0,
+                volume_24h: None,
+            },
+        ],
+        losers: vec![
+            Mover {
+                symbol: "ETH".to_string(),
+                price: 3000.0,
+                change_percent: -3.0,
+                volume_24h: None,
+            },
+        ],
+        timestamp: 1704067200,
+    };
+
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains("\"timeframe\":\"1h\""));
+    assert!(json.contains("\"gainers\":["));
+    assert!(json.contains("\"losers\":["));
+    assert!(json.contains("\"timestamp\":1704067200"));
 }

@@ -65,10 +65,26 @@ pub struct OhlcPoint {
 
 /// Chart data response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChartData {
     pub symbol: String,
     pub range: String,
     pub data: Vec<OhlcPoint>,
+    /// Whether historical data is currently being seeded for this chart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeding: Option<bool>,
+    /// Detailed seeding status: "not_started", "in_progress", "complete", "failed"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeding_status: Option<String>,
+    /// Seeding progress percentage (0-100)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeding_progress: Option<u8>,
+    /// Data completeness for the requested range (0-100)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_completeness: Option<u8>,
+    /// Expected number of points for the requested range
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_points: Option<u32>,
 }
 
 /// Chart resolution for internal storage.
@@ -90,11 +106,12 @@ impl ChartResolution {
     }
 
     /// Get the retention duration in seconds.
+    /// Extended to support historical data seeding.
     pub fn retention_seconds(&self) -> i64 {
         match self {
-            ChartResolution::OneMinute => 3600,      // 1 hour
-            ChartResolution::FiveMinute => 86400,    // 24 hours
-            ChartResolution::OneHour => 2592000,     // 30 days
+            ChartResolution::OneMinute => 14400,      // 4 hours (for short-term charts)
+            ChartResolution::FiveMinute => 604800,    // 7 days (for daily charts)
+            ChartResolution::OneHour => 7776000,      // 90 days (for long-term historical)
         }
     }
 }

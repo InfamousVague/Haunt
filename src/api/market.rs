@@ -175,6 +175,9 @@ pub struct MoversQuery {
     pub timeframe: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Asset type filter: "all", "crypto", "stock"
+    #[serde(default)]
+    pub asset_type: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -186,6 +189,9 @@ async fn get_movers(
     State(state): State<AppState>,
     Query(query): Query<MoversQuery>,
 ) -> Result<Json<ApiResponse<MoversResponse>>> {
+    use crate::sources::finnhub::{STOCK_SYMBOLS, ETF_SYMBOLS};
+    use std::collections::HashSet;
+
     let timeframe = query
         .timeframe
         .as_deref()
@@ -194,7 +200,53 @@ async fn get_movers(
 
     let limit = query.limit.min(50).max(1);
 
-    let (gainers, losers) = state.chart_store.get_top_movers(timeframe, limit);
+    // Build symbol filter based on asset_type
+    let symbol_filter: Option<HashSet<String>> = match query.asset_type.as_deref() {
+        Some("crypto") => {
+            // Exclude stock and ETF symbols - filter will be None (include all)
+            // but we'll create an exclusion set
+            None // For crypto, we don't filter - just exclude stocks in the else branch
+        }
+        Some("stock") => {
+            let filter: HashSet<String> = STOCK_SYMBOLS
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect();
+            Some(filter)
+        }
+        Some("etf") => {
+            let filter: HashSet<String> = ETF_SYMBOLS
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect();
+            Some(filter)
+        }
+        _ => None, // "all" or not specified - include everything
+    };
+
+    // For crypto filter, we need to exclude stocks/ETFs
+    let crypto_exclusion: Option<HashSet<String>> = if query.asset_type.as_deref() == Some("crypto") {
+        let exclusion: HashSet<String> = STOCK_SYMBOLS
+            .iter()
+            .chain(ETF_SYMBOLS.iter())
+            .map(|s| s.to_lowercase())
+            .collect();
+        Some(exclusion)
+    } else {
+        None
+    };
+
+    let (mut gainers, mut losers) = state.chart_store.get_top_movers(timeframe, limit * 2, symbol_filter.as_ref());
+
+    // If crypto filter, exclude stocks/ETFs from results
+    if let Some(ref exclusion) = crypto_exclusion {
+        gainers.retain(|m| !exclusion.contains(&m.symbol.to_lowercase()));
+        losers.retain(|m| !exclusion.contains(&m.symbol.to_lowercase()));
+    }
+
+    // Truncate to requested limit
+    gainers.truncate(limit);
+    losers.truncate(limit);
 
     Ok(Json(ApiResponse {
         data: MoversResponse {

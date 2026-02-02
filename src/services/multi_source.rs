@@ -1,6 +1,9 @@
 use crate::config::Config;
 use crate::services::{ChartStore, PriceCache};
-use crate::sources::{CoinGeckoClient, CoinMarketCapClient, CoinbaseWs, CryptoCompareClient};
+use crate::sources::{
+    BinanceClient, CoinGeckoClient, CoinMarketCapClient, CoinbaseWs, CryptoCompareClient,
+    HuobiClient, KrakenClient, KuCoinClient, OkxClient,
+};
 use crate::types::{AggregatedPrice, AggregationConfig};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -14,6 +17,11 @@ pub struct MultiSourceCoordinator {
     coingecko: Option<CoinGeckoClient>,
     cryptocompare: Option<CryptoCompareClient>,
     coinmarketcap: Option<CoinMarketCapClient>,
+    binance: Option<BinanceClient>,
+    kraken: Option<KrakenClient>,
+    kucoin: Option<KuCoinClient>,
+    okx: Option<OkxClient>,
+    huobi: Option<HuobiClient>,
 }
 
 impl MultiSourceCoordinator {
@@ -44,6 +52,37 @@ impl MultiSourceCoordinator {
             CoinMarketCapClient::new(key.clone(), price_cache.clone(), chart_store.clone())
         });
 
+        // New exchange sources - all work without API keys (public endpoints)
+        let binance = Some(BinanceClient::new(
+            config.binance_api_key.clone(),
+            price_cache.clone(),
+            chart_store.clone(),
+        ));
+
+        let kraken = Some(KrakenClient::new(
+            config.kraken_api_key.clone(),
+            price_cache.clone(),
+            chart_store.clone(),
+        ));
+
+        let kucoin = Some(KuCoinClient::new(
+            config.kucoin_api_key.clone(),
+            price_cache.clone(),
+            chart_store.clone(),
+        ));
+
+        let okx = Some(OkxClient::new(
+            config.okx_api_key.clone(),
+            price_cache.clone(),
+            chart_store.clone(),
+        ));
+
+        let huobi = Some(HuobiClient::new(
+            config.huobi_api_key.clone(),
+            price_cache.clone(),
+            chart_store.clone(),
+        ));
+
         let coordinator = Arc::new(Self {
             price_cache,
             chart_store,
@@ -51,6 +90,11 @@ impl MultiSourceCoordinator {
             coingecko,
             cryptocompare,
             coinmarketcap,
+            binance,
+            kraken,
+            kucoin,
+            okx,
+            huobi,
         });
 
         (coordinator, rx)
@@ -68,7 +112,7 @@ impl MultiSourceCoordinator {
 
     /// Start all price sources.
     pub async fn start(&self) {
-        info!("Starting multi-source coordinator");
+        info!("Starting multi-source coordinator with 9 data sources");
 
         // Start Coinbase WebSocket
         if let Some(ref ws) = self.coinbase_ws {
@@ -98,6 +142,46 @@ impl MultiSourceCoordinator {
 
         // Start CoinMarketCap polling
         if let Some(ref client) = self.coinmarketcap {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.start_polling().await;
+            });
+        }
+
+        // Start Binance polling
+        if let Some(ref client) = self.binance {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.start_polling().await;
+            });
+        }
+
+        // Start Kraken polling
+        if let Some(ref client) = self.kraken {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.start_polling().await;
+            });
+        }
+
+        // Start KuCoin polling
+        if let Some(ref client) = self.kucoin {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.start_polling().await;
+            });
+        }
+
+        // Start OKX polling
+        if let Some(ref client) = self.okx {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.start_polling().await;
+            });
+        }
+
+        // Start Huobi polling
+        if let Some(ref client) = self.huobi {
             let client = client.clone();
             tokio::spawn(async move {
                 client.start_polling().await;

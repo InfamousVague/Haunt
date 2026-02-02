@@ -79,9 +79,11 @@ impl CoinbaseWs {
             match self.run_connection().await {
                 Ok(_) => {
                     warn!("Coinbase WebSocket disconnected, reconnecting...");
+                    self.price_cache.report_source_error(PriceSource::Coinbase, "WebSocket disconnected");
                 }
                 Err(e) => {
                     error!("Coinbase WebSocket error: {}, reconnecting...", e);
+                    self.price_cache.report_source_error(PriceSource::Coinbase, &e.to_string());
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;

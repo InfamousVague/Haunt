@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use super::TradeDirection;
 
 /// A cryptocurrency asset with full metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,6 +9,8 @@ pub struct Asset {
     pub name: String,
     pub symbol: String,
     pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +95,17 @@ pub struct AssetListing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_supply: Option<f64>,
     pub sparkline: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trade_direction: Option<TradeDirection>,
+    /// Asset type discriminator: "crypto", "stock", "etf"
+    #[serde(default)]
+    pub asset_type: String,
+    /// Exchange name (for stocks/ETFs): "NASDAQ", "NYSE"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exchange: Option<String>,
+    /// Sector (for stocks): "Technology", "Healthcare"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sector: Option<String>,
 }
 
 /// Paginated response wrapper.

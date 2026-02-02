@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use super::{AggregatedPrice, GlobalMetrics, PriceSource};
+use super::{AggregatedPrice, GlobalMetrics, PriceSource, SignalDirection, TradeDirection};
 
 /// Incoming WebSocket message from client.
 #[derive(Debug, Clone, Deserialize)]
@@ -15,9 +15,42 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     PriceUpdate { data: PriceUpdateData },
     MarketUpdate { data: MarketUpdateData },
+    SeedingProgress { data: SeedingProgressData },
+    SignalUpdate { data: SignalUpdateData },
     Subscribed { assets: Vec<String> },
     Unsubscribed { assets: Vec<String> },
     Error { error: String },
+}
+
+/// Signal update payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalUpdateData {
+    pub symbol: String,
+    pub composite_score: i8,
+    pub direction: SignalDirection,
+    pub trend_score: i8,
+    pub momentum_score: i8,
+    pub volatility_score: i8,
+    pub volume_score: i8,
+    pub timestamp: i64,
+}
+
+/// Seeding progress payload for chart data updates.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedingProgressData {
+    pub symbol: String,
+    /// Status: "in_progress", "complete", "failed"
+    pub status: String,
+    /// Progress percentage (0-100)
+    pub progress: u8,
+    /// Total data points when complete
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub points: Option<u64>,
+    /// Optional message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Price update payload.
@@ -33,9 +66,14 @@ pub struct PriceUpdateData {
     pub change_24h: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume_24h: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trade_direction: Option<TradeDirection>,
     pub source: PriceSource,
     pub sources: Vec<PriceSource>,
     pub timestamp: i64,
+    /// Asset type: "crypto", "stock", "etf"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_type: Option<String>,
 }
 
 impl From<AggregatedPrice> for PriceUpdateData {
@@ -47,9 +85,11 @@ impl From<AggregatedPrice> for PriceUpdateData {
             previous_price: price.previous_price,
             change_24h: price.change_24h,
             volume_24h: price.volume_24h,
+            trade_direction: price.trade_direction,
             source: price.source,
             sources: price.sources,
             timestamp: price.timestamp,
+            asset_type: Some("crypto".to_string()), // Default to crypto for existing sources
         }
     }
 }

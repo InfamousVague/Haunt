@@ -61,3 +61,91 @@ impl FearGreedData {
         }
     }
 }
+
+/// Time frame for top movers calculation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MoverTimeframe {
+    #[serde(rename = "1m")]
+    OneMinute,
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "15m")]
+    FifteenMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "4h")]
+    FourHours,
+    #[serde(rename = "24h")]
+    TwentyFourHours,
+}
+
+impl MoverTimeframe {
+    /// Get the number of seconds for this timeframe.
+    pub fn seconds(&self) -> i64 {
+        match self {
+            Self::OneMinute => 60,
+            Self::FiveMinutes => 300,
+            Self::FifteenMinutes => 900,
+            Self::OneHour => 3600,
+            Self::FourHours => 14400,
+            Self::TwentyFourHours => 86400,
+        }
+    }
+}
+
+impl Default for MoverTimeframe {
+    fn default() -> Self {
+        Self::OneHour
+    }
+}
+
+impl std::fmt::Display for MoverTimeframe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OneMinute => write!(f, "1m"),
+            Self::FiveMinutes => write!(f, "5m"),
+            Self::FifteenMinutes => write!(f, "15m"),
+            Self::OneHour => write!(f, "1h"),
+            Self::FourHours => write!(f, "4h"),
+            Self::TwentyFourHours => write!(f, "24h"),
+        }
+    }
+}
+
+impl std::str::FromStr for MoverTimeframe {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "1m" => Ok(Self::OneMinute),
+            "5m" => Ok(Self::FiveMinutes),
+            "15m" => Ok(Self::FifteenMinutes),
+            "1h" => Ok(Self::OneHour),
+            "4h" => Ok(Self::FourHours),
+            "24h" => Ok(Self::TwentyFourHours),
+            _ => Err(format!("Unknown timeframe: {}", s)),
+        }
+    }
+}
+
+/// A single mover entry (gainer or loser).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mover {
+    pub symbol: String,
+    pub price: f64,
+    pub change_percent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_24h: Option<f64>,
+}
+
+/// Response for top movers endpoint.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoversResponse {
+    pub timeframe: String,
+    pub gainers: Vec<Mover>,
+    pub losers: Vec<Mover>,
+    pub timestamp: i64,
+}

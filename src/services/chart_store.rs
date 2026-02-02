@@ -435,7 +435,13 @@ impl ChartStore {
     }
 
     /// Get top movers (gainers and losers) for a time window.
-    pub fn get_top_movers(&self, timeframe: MoverTimeframe, limit: usize) -> (Vec<Mover>, Vec<Mover>) {
+    /// If symbol_filter is Some, only include symbols in the filter set.
+    pub fn get_top_movers(
+        &self,
+        timeframe: MoverTimeframe,
+        limit: usize,
+        symbol_filter: Option<&std::collections::HashSet<String>>,
+    ) -> (Vec<Mover>, Vec<Mover>) {
         let seconds = timeframe.seconds();
         let mut movers: Vec<Mover> = Vec::new();
 
@@ -443,6 +449,13 @@ impl ChartStore {
         for entry in self.data.iter() {
             let symbol = entry.key().clone();
             let chart_data = entry.value();
+
+            // Apply symbol filter if provided
+            if let Some(filter) = symbol_filter {
+                if !filter.contains(&symbol) && !filter.contains(&symbol.to_uppercase()) {
+                    continue;
+                }
+            }
 
             // Skip symbols without current price or recent updates
             let Some(current_price) = chart_data.current_price else {

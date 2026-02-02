@@ -110,6 +110,7 @@ impl CoinGeckoClient {
             // Use simpler price endpoint for ongoing updates
             if let Err(e) = self.fetch_prices().await {
                 error!("CoinGecko fetch error: {}", e);
+                self.price_cache.report_source_error(PriceSource::CoinGecko, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
@@ -154,23 +155,16 @@ impl CoinGeckoClient {
 
         for market in markets {
             if let Some(symbol) = id_to_symbol.get(market.id.as_str()) {
-                // Seed sparkline data (take last 60 points for 1-hour view)
-                if let Some(ref sparkline) = market.sparkline_in_7d {
-                    let prices: Vec<f64> = sparkline.price.iter()
-                        .rev()
-                        .take(60)
-                        .rev()
-                        .copied()
-                        .collect();
-
-                    if !prices.is_empty() {
-                        self.chart_store.seed_sparkline(symbol, &prices);
-                        info!("Seeded {} sparkline points for {}", prices.len(), symbol);
-                    }
-                }
-
-                // Update current price
+                // Update current price - sparkline will build up from real-time updates
+                // Note: We don't seed from CoinGecko's 7-day hourly sparkline data because
+                // our mini charts show minute-level pulse data, not historical trends
                 if let Some(price) = market.current_price {
+                    // Seed sparkline with current price to provide a starting baseline
+                    // (10 points gives a flat line to start)
+                    let baseline: Vec<f64> = vec![price; 10];
+                    self.chart_store.seed_sparkline(symbol, &baseline);
+                    info!("Seeded baseline sparkline for {} at ${:.2}", symbol, price);
+
                     self.price_cache.update_price(
                         symbol,
                         PriceSource::CoinGecko,

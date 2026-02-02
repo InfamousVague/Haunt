@@ -49,8 +49,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let broadcast_client_id = client_id;
     let broadcast_room_manager = room_manager.clone();
 
+    // Clone chart_store for broadcast task to calculate change_24h
+    let broadcast_chart_store = state.chart_store.clone();
+
     let broadcast_task = tokio::spawn(async move {
-        while let Ok(price_update) = price_rx.recv().await {
+        while let Ok(mut price_update) = price_rx.recv().await {
             let symbol = price_update.symbol.clone();
 
             // Check if this client is subscribed to this asset
@@ -60,6 +63,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             } else {
                 break;
+            }
+
+            // Enrich with change_24h from chart store if not already set
+            if price_update.change_24h.is_none() {
+                if let Some(change) = broadcast_chart_store.get_price_change(&symbol, 86400) {
+                    price_update.change_24h = Some(change);
+                }
             }
 
             let msg = ServerMessage::PriceUpdate {

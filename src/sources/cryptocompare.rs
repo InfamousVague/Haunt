@@ -60,6 +60,7 @@ impl CryptoCompareClient {
         loop {
             if let Err(e) = self.fetch_prices().await {
                 error!("CryptoCompare fetch error: {}", e);
+                self.price_cache.report_source_error(PriceSource::CryptoCompare, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }

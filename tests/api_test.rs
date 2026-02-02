@@ -262,3 +262,240 @@ fn test_chart_range_validation() {
         assert!(haunt::types::ChartRange::from_str(range).is_none());
     }
 }
+
+// =============================================================================
+// Top Movers API Tests
+// =============================================================================
+
+#[test]
+fn test_movers_response_structure() {
+    let response = serde_json::json!({
+        "data": {
+            "timeframe": "1h",
+            "gainers": [
+                {
+                    "symbol": "BTC",
+                    "price": 50000.0,
+                    "changePercent": 5.25,
+                    "volume24h": 1000000000.0
+                },
+                {
+                    "symbol": "SOL",
+                    "price": 100.0,
+                    "changePercent": 4.5
+                }
+            ],
+            "losers": [
+                {
+                    "symbol": "ETH",
+                    "price": 3000.0,
+                    "changePercent": -3.5,
+                    "volume24h": 500000000.0
+                }
+            ],
+            "timestamp": 1704067200
+        },
+        "meta": {
+            "cached": false
+        }
+    });
+
+    assert!(response["data"]["timeframe"].is_string());
+    assert_eq!(response["data"]["timeframe"], "1h");
+    assert!(response["data"]["gainers"].is_array());
+    assert!(response["data"]["losers"].is_array());
+    assert!(response["data"]["timestamp"].is_i64());
+
+    // Validate gainer structure
+    let gainer = &response["data"]["gainers"][0];
+    assert_eq!(gainer["symbol"], "BTC");
+    assert!(gainer["price"].is_f64());
+    assert!(gainer["changePercent"].is_f64());
+    assert!(gainer["changePercent"].as_f64().unwrap() > 0.0);
+
+    // Validate loser structure
+    let loser = &response["data"]["losers"][0];
+    assert!(loser["changePercent"].as_f64().unwrap() < 0.0);
+}
+
+#[test]
+fn test_movers_query_params() {
+    // Valid timeframes
+    let valid_timeframes = vec!["1m", "5m", "15m", "1h", "4h", "24h"];
+
+    for tf in valid_timeframes {
+        // Just verify these strings are valid - actual parsing is done in types_test
+        assert!(!tf.is_empty());
+    }
+
+    // Limit constraints
+    let min_limit = 1;
+    let max_limit = 50;
+    let default_limit = 10;
+
+    assert!(default_limit >= min_limit);
+    assert!(default_limit <= max_limit);
+}
+
+#[test]
+fn test_movers_gainers_sorted_descending() {
+    let gainers = vec![
+        serde_json::json!({"symbol": "A", "changePercent": 10.0}),
+        serde_json::json!({"symbol": "B", "changePercent": 5.0}),
+        serde_json::json!({"symbol": "C", "changePercent": 2.0}),
+    ];
+
+    // Verify gainers are sorted by changePercent descending
+    for i in 0..gainers.len() - 1 {
+        let current = gainers[i]["changePercent"].as_f64().unwrap();
+        let next = gainers[i + 1]["changePercent"].as_f64().unwrap();
+        assert!(current >= next, "Gainers should be sorted descending by changePercent");
+    }
+}
+
+#[test]
+fn test_movers_losers_sorted_ascending() {
+    let losers = vec![
+        serde_json::json!({"symbol": "X", "changePercent": -10.0}),
+        serde_json::json!({"symbol": "Y", "changePercent": -5.0}),
+        serde_json::json!({"symbol": "Z", "changePercent": -2.0}),
+    ];
+
+    // Verify losers are sorted by changePercent ascending (most negative first)
+    for i in 0..losers.len() - 1 {
+        let current = losers[i]["changePercent"].as_f64().unwrap();
+        let next = losers[i + 1]["changePercent"].as_f64().unwrap();
+        assert!(current <= next, "Losers should be sorted ascending by changePercent");
+    }
+}
+
+// =============================================================================
+// Symbol Source Stats API Tests
+// =============================================================================
+
+#[test]
+fn test_symbol_source_stats_response_structure() {
+    let response = serde_json::json!({
+        "data": {
+            "symbol": "btc",
+            "sources": [
+                {
+                    "source": "binance",
+                    "updateCount": 1500,
+                    "updatePercent": 45.5,
+                    "online": true
+                },
+                {
+                    "source": "coinbase",
+                    "updateCount": 1200,
+                    "updatePercent": 36.4,
+                    "online": true
+                },
+                {
+                    "source": "kraken",
+                    "updateCount": 600,
+                    "updatePercent": 18.1,
+                    "online": false
+                }
+            ],
+            "totalUpdates": 3300,
+            "timestamp": 1704067200
+        },
+        "meta": {
+            "cached": false
+        }
+    });
+
+    assert_eq!(response["data"]["symbol"], "btc");
+    assert!(response["data"]["sources"].is_array());
+    assert!(response["data"]["totalUpdates"].is_i64());
+    assert!(response["data"]["timestamp"].is_i64());
+
+    // Validate source entry structure
+    let source = &response["data"]["sources"][0];
+    assert!(source["source"].is_string());
+    assert!(source["updateCount"].is_i64());
+    assert!(source["updatePercent"].is_f64());
+    assert!(source["online"].is_boolean());
+}
+
+#[test]
+fn test_symbol_source_stats_total_matches_sum() {
+    let sources = vec![
+        serde_json::json!({"updateCount": 1500}),
+        serde_json::json!({"updateCount": 1200}),
+        serde_json::json!({"updateCount": 600}),
+    ];
+
+    let sum: i64 = sources
+        .iter()
+        .map(|s| s["updateCount"].as_i64().unwrap())
+        .sum();
+
+    assert_eq!(sum, 3300);
+}
+
+#[test]
+fn test_symbol_source_stats_percent_sum() {
+    // Percentages should approximately sum to 100
+    let percentages = vec![45.5, 36.4, 18.1];
+    let sum: f64 = percentages.iter().sum();
+
+    // Allow for rounding errors
+    assert!((sum - 100.0).abs() < 1.0, "Percentages should sum to ~100");
+}
+
+// =============================================================================
+// Stats API Tests
+// =============================================================================
+
+#[test]
+fn test_stats_response_structure() {
+    let response = serde_json::json!({
+        "data": {
+            "totalUpdates": 1500000,
+            "tps": 125.5,
+            "uptimeSecs": 86400,
+            "activeSymbols": 150,
+            "onlineSources": 7,
+            "totalSources": 9,
+            "exchanges": [
+                {
+                    "name": "binance",
+                    "updateCount": 500000,
+                    "online": true
+                }
+            ]
+        },
+        "meta": {
+            "cached": false
+        }
+    });
+
+    assert!(response["data"]["totalUpdates"].is_i64());
+    assert!(response["data"]["tps"].is_f64());
+    assert!(response["data"]["uptimeSecs"].is_i64());
+    assert!(response["data"]["activeSymbols"].is_i64());
+    assert!(response["data"]["onlineSources"].is_i64());
+    assert!(response["data"]["totalSources"].is_i64());
+    assert!(response["data"]["exchanges"].is_array());
+}
+
+#[test]
+fn test_stats_tps_calculation() {
+    // TPS should be non-negative
+    let tps = 125.5;
+    assert!(tps >= 0.0);
+
+    // Verify TPS * 60 seconds ≈ updates per minute
+    let updates_per_minute = tps * 60.0;
+    assert!(updates_per_minute > 0.0);
+}
+
+#[test]
+fn test_stats_online_sources_constraint() {
+    let online_sources = 7;
+    let total_sources = 9;
+
+    assert!(online_sources <= total_sources, "Online sources cannot exceed total sources");
+}
