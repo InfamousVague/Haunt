@@ -198,11 +198,11 @@ struct HuobiDepth {
     asks: Vec<Vec<f64>>,
 }
 
-/// Coinbase depth response
+/// Coinbase depth response (level 2 book has [price, size, num_orders])
 #[derive(Debug, Deserialize)]
 struct CoinbaseDepth {
-    bids: Vec<Vec<String>>,
-    asks: Vec<Vec<String>>,
+    bids: Vec<Vec<serde_json::Value>>,
+    asks: Vec<Vec<serde_json::Value>>,
 }
 
 // ============================================================================
@@ -320,16 +320,14 @@ impl OrderBookService {
                 match resp.json::<CoinbaseDepth>().await {
                     Ok(data) => {
                         let bids: Vec<OrderBookLevel> = data.bids.iter().filter_map(|l| {
-                            Some(OrderBookLevel {
-                                price: l.get(0)?.parse().ok()?,
-                                quantity: l.get(1)?.parse().ok()?,
-                            })
+                            let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
+                            let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
+                            Some(OrderBookLevel { price, quantity })
                         }).take(depth).collect();
                         let asks: Vec<OrderBookLevel> = data.asks.iter().filter_map(|l| {
-                            Some(OrderBookLevel {
-                                price: l.get(0)?.parse().ok()?,
-                                quantity: l.get(1)?.parse().ok()?,
-                            })
+                            let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
+                            let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
+                            Some(OrderBookLevel { price, quantity })
                         }).take(depth).collect();
 
                         Some(ExchangeOrderBook {
