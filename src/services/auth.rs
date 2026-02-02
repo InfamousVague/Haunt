@@ -7,7 +7,7 @@
 
 use crate::types::{AuthChallenge, AuthRequest, Profile, Session};
 use dashmap::DashMap;
-use hmac::{Hmac, Mac};
+use hmac::Hmac;
 use sha2::Sha256;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -100,7 +100,7 @@ impl AuthService {
     fn verify_signature(
         &self,
         public_key: &str,
-        challenge: &str,
+        _challenge: &str,
         signature: &str,
     ) -> Result<bool, AuthError> {
         // Decode the private key from hex (public key is derived from it)
@@ -327,11 +327,11 @@ impl AuthService {
             .unwrap_or_default();
 
         for key in keys {
-            if let Ok(value) = redis::cmd("GET")
+            let result: Result<String, _> = redis::cmd("GET")
                 .arg(&key)
-                .query_async::<String>(&mut redis)
-                .await
-            {
+                .query_async(&mut redis)
+                .await;
+            if let Ok(value) = result {
                 if let Ok(profile) = serde_json::from_str::<Profile>(&value) {
                     self.profiles.insert(profile.public_key.clone(), profile);
                 }

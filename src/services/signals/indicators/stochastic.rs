@@ -77,8 +77,8 @@ impl Signal for Stochastic {
         // Current %K
         let k = *k_values.last().unwrap();
 
-        // %D is SMA of %K
-        let d: f64 = k_values.iter().rev().take(self.d_period).sum::<f64>() / self.d_period as f64;
+        // %D is SMA of %K (calculated for future use)
+        let _d: f64 = k_values.iter().rev().take(self.d_period).sum::<f64>() / self.d_period as f64;
 
         // Score based on %K position
         // Below 20 = oversold = bullish
