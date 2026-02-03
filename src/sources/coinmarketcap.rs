@@ -1,11 +1,11 @@
-use crate::services::{Cache, ChartStore, PriceCache};
+use crate::services::{Cache, ChartStore, FileCache, PriceCache};
 use crate::types::{Asset, AssetListing, FearGreedData, GlobalMetrics, PaginatedResponse, PriceSource, Quote, SearchResult};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 const CMC_API_URL: &str = "https://pro-api.coinmarketcap.com/v1";
 const CMC_API_V2_URL: &str = "https://pro-api.coinmarketcap.com/v2";
@@ -22,7 +22,11 @@ pub struct CoinMarketCapClient {
     asset_cache: Arc<Cache<Asset>>,
     global_cache: Arc<Cache<GlobalMetrics>>,
     fear_greed_cache: Arc<Cache<FearGreedData>>,
+    file_cache: Arc<FileCache>,
 }
+
+/// File cache TTL for listings (24 hours - used as ultimate fallback)
+const FILE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Deserialize)]
 struct CmcResponse<T> {
@@ -97,6 +101,7 @@ impl CoinMarketCapClient {
             asset_cache: Arc::new(Cache::new(Duration::from_secs(60))),
             global_cache: Arc::new(Cache::new(Duration::from_secs(60))),
             fear_greed_cache: Arc::new(Cache::new(Duration::from_secs(3600))),
+            file_cache: Arc::new(FileCache::new()),
         }
     }
 
@@ -116,8 +121,9 @@ impl CoinMarketCapClient {
     /// Fetch paginated listings.
     pub async fn get_listings(&self, page: i32, limit: i32) -> anyhow::Result<PaginatedResponse<AssetListing>> {
         let cache_key = format!("listings_{}_{}", page, limit);
+        let file_cache_key = format!("cmc_listings_{}_{}", page, limit);
 
-        // Check cache first - but still populate sparklines
+        // Check memory cache first - but still populate sparklines
         if let Some(mut cached) = self.listings_cache.get(&cache_key) {
             // Populate sparklines from chart store (these update in real-time)
             for listing in &mut cached {
@@ -138,33 +144,73 @@ impl CoinMarketCapClient {
             CMC_API_URL, start, limit
         );
 
-        let response: CmcResponse<Vec<CmcListingData>> = self.client
-            .get(&url)
-            .header("X-CMC_PRO_API_KEY", &self.api_key)
-            .send()
-            .await?
-            .json()
-            .await?;
+        // Try to fetch from API
+        let api_result = async {
+            let response: CmcResponse<Vec<CmcListingData>> = self.client
+                .get(&url)
+                .header("X-CMC_PRO_API_KEY", &self.api_key)
+                .send()
+                .await?
+                .json()
+                .await?;
 
-        let mut listings: Vec<AssetListing> = response.data
-            .into_iter()
-            .map(|d| self.convert_listing(d))
-            .collect();
+            let listings: Vec<AssetListing> = response.data
+                .into_iter()
+                .map(|d| self.convert_listing(d))
+                .collect();
 
-        // Populate sparklines from chart store
-        for listing in &mut listings {
-            listing.sparkline = self.chart_store.get_sparkline(&listing.symbol, 60);
+            Ok::<Vec<AssetListing>, anyhow::Error>(listings)
+        }.await;
+
+        match api_result {
+            Ok(mut listings) => {
+                // Populate sparklines from chart store
+                for listing in &mut listings {
+                    listing.sparkline = self.chart_store.get_sparkline(&listing.symbol, 60);
+                }
+
+                // Save to both memory and file cache
+                self.listings_cache.set(cache_key, listings.clone());
+                self.file_cache.set(&file_cache_key, &listings);
+
+                Ok(PaginatedResponse {
+                    data: listings,
+                    page,
+                    limit,
+                    total: 10000,
+                    has_more: true,
+                })
+            }
+            Err(e) => {
+                warn!("CMC API failed, trying file cache fallback: {}", e);
+
+                // Try file cache (fresh first, then stale)
+                let file_cached: Option<Vec<AssetListing>> = self.file_cache
+                    .get(&file_cache_key, FILE_CACHE_TTL)
+                    .or_else(|| {
+                        warn!("Using stale file cache for listings");
+                        self.file_cache.get_stale(&file_cache_key)
+                    });
+
+                if let Some(mut cached) = file_cached {
+                    // Update sparklines from chart store
+                    for listing in &mut cached {
+                        listing.sparkline = self.chart_store.get_sparkline(&listing.symbol, 60);
+                    }
+                    info!("Serving {} listings from file cache fallback", cached.len());
+                    return Ok(PaginatedResponse {
+                        data: cached,
+                        page,
+                        limit,
+                        total: 10000,
+                        has_more: true,
+                    });
+                }
+
+                // No cache available, propagate error
+                Err(e)
+            }
         }
-
-        self.listings_cache.set(cache_key, listings.clone());
-
-        Ok(PaginatedResponse {
-            data: listings,
-            page,
-            limit,
-            total: 10000,
-            has_more: true,
-        })
     }
 
     /// Get a single asset by ID.

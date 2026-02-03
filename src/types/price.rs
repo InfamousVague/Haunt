@@ -23,6 +23,7 @@ pub enum PriceSource {
     KuCoin,
     Okx,
     Huobi,
+    Hyperliquid,
     // Stock/ETF sources
     Finnhub,
     AlphaVantage,
@@ -44,6 +45,7 @@ impl PriceSource {
             PriceSource::CoinGecko => 7,
             PriceSource::Huobi => 6,
             PriceSource::CryptoCompare => 6,
+            PriceSource::Hyperliquid => 8, // Decentralized perp exchange, good liquidity
             // Stock/ETF sources
             PriceSource::Finnhub => 9,
             PriceSource::Alpaca => 9,
@@ -72,6 +74,7 @@ impl fmt::Display for PriceSource {
             PriceSource::KuCoin => write!(f, "kucoin"),
             PriceSource::Okx => write!(f, "okx"),
             PriceSource::Huobi => write!(f, "huobi"),
+            PriceSource::Hyperliquid => write!(f, "hyperliquid"),
             PriceSource::Finnhub => write!(f, "finnhub"),
             PriceSource::AlphaVantage => write!(f, "alphavantage"),
             PriceSource::Alpaca => write!(f, "alpaca"),

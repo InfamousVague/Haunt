@@ -100,6 +100,37 @@ fn get_huobi_pair(symbol: &str) -> Option<String> {
     }
 }
 
+fn get_hyperliquid_pair(symbol: &str) -> Option<&'static str> {
+    // Hyperliquid uses uppercase symbols without suffix
+    match symbol {
+        "btc" => Some("BTC"),
+        "eth" => Some("ETH"),
+        "sol" => Some("SOL"),
+        "xrp" => Some("XRP"),
+        "doge" => Some("DOGE"),
+        "ada" => Some("ADA"),
+        "avax" => Some("AVAX"),
+        "dot" => Some("DOT"),
+        "link" => Some("LINK"),
+        "matic" => Some("MATIC"),
+        "ltc" => Some("LTC"),
+        "atom" => Some("ATOM"),
+        "uni" => Some("UNI"),
+        "bch" => Some("BCH"),
+        "near" => Some("NEAR"),
+        "apt" => Some("APT"),
+        "arb" => Some("ARB"),
+        "op" => Some("OP"),
+        "sui" => Some("SUI"),
+        "sei" => Some("SEI"),
+        "inj" => Some("INJ"),
+        "jup" => Some("JUP"),
+        "wif" => Some("WIF"),
+        "pepe" => Some("PEPE"),
+        _ => None,
+    }
+}
+
 fn get_coinbase_pair(symbol: &str) -> Option<&'static str> {
     match symbol {
         "btc" => Some("BTC-USD"),
@@ -205,6 +236,19 @@ struct CoinbaseDepth {
     asks: Vec<Vec<serde_json::Value>>,
 }
 
+/// Hyperliquid L2 book response
+#[derive(Debug, Deserialize)]
+struct HyperliquidL2Response {
+    levels: Vec<Vec<HyperliquidLevel>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperliquidLevel {
+    px: String,  // price
+    sz: String,  // size
+    n: u32,      // number of orders
+}
+
 // ============================================================================
 // Cache entry
 // ============================================================================
@@ -271,12 +315,13 @@ impl OrderBookService {
 
     /// Fetch order books from all exchanges in parallel.
     async fn fetch_all_exchanges(&self, symbol: &str, depth: usize) -> Vec<ExchangeOrderBook> {
-        let (coinbase, kraken, kucoin, okx, huobi) = tokio::join!(
+        let (coinbase, kraken, kucoin, okx, huobi, hyperliquid) = tokio::join!(
             self.fetch_coinbase(symbol, depth),
             self.fetch_kraken(symbol, depth),
             self.fetch_kucoin(symbol, depth),
             self.fetch_okx(symbol, depth),
             self.fetch_huobi(symbol, depth),
+            self.fetch_hyperliquid(symbol, depth),
         );
 
         // Track which exchanges returned data before moving
@@ -285,6 +330,7 @@ impl OrderBookService {
         let has_kucoin = kucoin.is_some();
         let has_okx = okx.is_some();
         let has_huobi = huobi.is_some();
+        let has_hyperliquid = hyperliquid.is_some();
 
         let mut books = Vec::new();
         if let Some(b) = coinbase { books.push(b); }
@@ -292,16 +338,18 @@ impl OrderBookService {
         if let Some(b) = kucoin { books.push(b); }
         if let Some(b) = okx { books.push(b); }
         if let Some(b) = huobi { books.push(b); }
+        if let Some(b) = hyperliquid { books.push(b); }
 
         debug!(
-            "Fetched order books for {}: {} exchanges (Coinbase: {}, Kraken: {}, KuCoin: {}, OKX: {}, Huobi: {})",
+            "Fetched order books for {}: {} exchanges (Coinbase: {}, Kraken: {}, KuCoin: {}, OKX: {}, Huobi: {}, Hyperliquid: {})",
             symbol,
             books.len(),
             has_coinbase,
             has_kraken,
             has_kucoin,
             has_okx,
-            has_huobi
+            has_huobi,
+            has_hyperliquid
         );
 
         books
@@ -587,6 +635,71 @@ impl OrderBookService {
             }
             Err(e) => {
                 warn!("Huobi depth fetch error: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Fetch order book from Hyperliquid.
+    async fn fetch_hyperliquid(&self, symbol: &str, depth: usize) -> Option<ExchangeOrderBook> {
+        let coin = get_hyperliquid_pair(symbol)?;
+        let url = "https://api.hyperliquid.xyz/info";
+
+        // Hyperliquid uses POST with JSON body
+        let body = serde_json::json!({
+            "type": "l2Book",
+            "coin": coin
+        });
+
+        match self.client.post(url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<HyperliquidL2Response>().await {
+                    Ok(data) => {
+                        // Hyperliquid returns levels[0] = bids, levels[1] = asks
+                        let bids: Vec<OrderBookLevel> = data.levels
+                            .get(0)
+                            .map(|levels| {
+                                levels.iter().filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: l.px.parse().ok()?,
+                                        quantity: l.sz.parse().ok()?,
+                                    })
+                                }).take(depth).collect()
+                            })
+                            .unwrap_or_default();
+
+                        let asks: Vec<OrderBookLevel> = data.levels
+                            .get(1)
+                            .map(|levels| {
+                                levels.iter().filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: l.px.parse().ok()?,
+                                        quantity: l.sz.parse().ok()?,
+                                    })
+                                }).take(depth).collect()
+                            })
+                            .unwrap_or_default();
+
+                        Some(ExchangeOrderBook {
+                            exchange: PriceSource::Hyperliquid,
+                            symbol: symbol.to_string(),
+                            bids,
+                            asks,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        })
+                    }
+                    Err(e) => {
+                        warn!("Hyperliquid depth parse error: {}", e);
+                        None
+                    }
+                }
+            }
+            Ok(resp) => {
+                warn!("Hyperliquid depth error: {}", resp.status());
+                None
+            }
+            Err(e) => {
+                warn!("Hyperliquid depth fetch error: {}", e);
                 None
             }
         }
