@@ -19,18 +19,34 @@ pub struct AuthChallenge {
     pub expires_at: i64,
 }
 
+/// Signature type for authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SignatureType {
+    /// Legacy HMAC-SHA256 signature
+    #[default]
+    Hmac,
+    /// Ethereum EIP-191 personal_sign signature
+    Eth,
+}
+
 /// Authentication request from client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthRequest {
-    /// Client's public key (hex-encoded)
+    /// Client's public key or ETH address (hex-encoded)
     pub public_key: String,
     /// The challenge that was signed
     pub challenge: String,
-    /// HMAC signature of the challenge (hex-encoded)
+    /// Signature of the challenge (hex-encoded)
+    /// - For HMAC: raw HMAC-SHA256 output
+    /// - For ETH: EIP-191 personal_sign (0x-prefixed)
     pub signature: String,
     /// Timestamp when signature was created (ms)
     pub timestamp: i64,
+    /// Type of signature (hmac or eth)
+    #[serde(default)]
+    pub signature_type: SignatureType,
 }
 
 /// Authentication response on successful verification.

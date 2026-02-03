@@ -1,5 +1,6 @@
 //! Peer mesh types for multi-server connectivity.
 
+use super::UserPreferences;
 use serde::{Deserialize, Serialize};
 
 /// Peer server configuration.
@@ -80,6 +81,52 @@ pub struct PeerStatus {
     /// Last connection attempt timestamp (milliseconds since epoch).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_attempt_at: Option<i64>,
+    /// Data sync status relative to this peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_status: Option<SyncStatus>,
+}
+
+/// Data sync status between servers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    /// Number of predictions we have that the peer doesn't.
+    pub predictions_ahead: i64,
+    /// Number of predictions the peer has that we don't.
+    pub predictions_behind: i64,
+    /// Number of user preferences we have that are newer.
+    pub preferences_ahead: i64,
+    /// Number of user preferences the peer has that are newer.
+    pub preferences_behind: i64,
+    /// Last sync timestamp (ms since epoch).
+    pub last_sync_at: i64,
+    /// Whether sync is currently in progress.
+    pub syncing: bool,
+}
+
+/// Data counts for sync comparison.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCounts {
+    /// Total prediction count.
+    pub predictions: i64,
+    /// Latest prediction timestamp.
+    pub latest_prediction_at: i64,
+    /// Total user preferences count.
+    pub preferences: i64,
+    /// Latest preference update timestamp.
+    pub latest_preference_at: i64,
+    /// Timestamp when counts were calculated.
+    pub timestamp: i64,
+}
+
+/// Types of data that can be synced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDataType {
+    Predictions,
+    Preferences,
+    All,
 }
 
 /// Message sent between peer servers for ping/pong.
@@ -144,4 +191,49 @@ pub enum PeerMessage {
     },
     /// Request peer list from a connected server (gossip protocol).
     RequestPeers,
+    /// User preferences update for cross-server sync.
+    UserPreferencesUpdate {
+        /// User's address/public key.
+        user_address: String,
+        /// Updated preferences.
+        preferences: UserPreferences,
+        /// Signature from user to verify authenticity.
+        signature: String,
+    },
+    /// Report local data counts for sync comparison.
+    SyncCounts {
+        /// Server reporting the counts.
+        from_id: String,
+        /// Data counts from this server.
+        counts: DataCounts,
+    },
+    /// Request missing data from a peer.
+    SyncRequest {
+        /// What type of data to sync.
+        data_type: SyncDataType,
+        /// Only items after this timestamp (ms).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        since_timestamp: Option<i64>,
+        /// Maximum number of items to return.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<i64>,
+    },
+    /// Batch of predictions for sync.
+    PredictionBatch {
+        /// Server sending the batch.
+        from_id: String,
+        /// Serialized predictions (JSON array).
+        predictions_json: String,
+        /// Whether more batches follow.
+        has_more: bool,
+    },
+    /// Batch of user preferences for sync.
+    PreferencesBatch {
+        /// Server sending the batch.
+        from_id: String,
+        /// List of (user_address, preferences) pairs.
+        preferences_json: String,
+        /// Whether more batches follow.
+        has_more: bool,
+    },
 }

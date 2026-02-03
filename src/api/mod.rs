@@ -5,6 +5,7 @@ pub mod market;
 pub mod orderbook;
 pub mod peers;
 pub mod signals;
+pub mod user;
 
 use axum::Router;
 use crate::AppState;
@@ -20,4 +21,5 @@ pub fn router() -> Router<AppState> {
         .nest("/api/orderbook", orderbook::router())
         .nest("/api/peers", peers::router())
         .nest("/api/mesh", peers::mesh_router())
+        .nest("/api/user", user::router())
 }

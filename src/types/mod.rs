@@ -6,6 +6,7 @@ pub mod orderbook;
 pub mod peer;
 pub mod price;
 pub mod signals;
+pub mod user;
 pub mod ws;
 
 pub use asset::*;
@@ -16,4 +17,5 @@ pub use orderbook::*;
 pub use peer::*;
 pub use price::*;
 pub use signals::*;
+pub use user::*;
 pub use ws::*;

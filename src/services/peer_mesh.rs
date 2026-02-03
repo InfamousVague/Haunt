@@ -15,7 +15,8 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
 // Re-export types from the types module
-pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerInfo, PeerMessage, PeerStatus};
+pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerInfo, PeerMessage, PeerStatus, SyncStatus, DataCounts, SyncDataType};
+use crate::services::{DataSyncService, PreferencesService};
 
 /// Internal peer connection state.
 struct PeerConnection {
@@ -27,6 +28,8 @@ struct PeerConnection {
     last_ping_at: Option<Instant>,
     last_attempt_at: Option<Instant>,
     connected_at: Option<Instant>,
+    /// Sync status with this peer.
+    sync_status: Option<SyncStatus>,
 }
 
 impl PeerConnection {
@@ -40,6 +43,7 @@ impl PeerConnection {
             last_ping_at: None,
             last_attempt_at: None,
             connected_at: None,
+            sync_status: None,
         }
     }
 
@@ -90,7 +94,12 @@ impl PeerConnection {
             uptime_percent: uptime,
             last_ping_at: self.last_ping_at.map(|_| now),
             last_attempt_at: self.last_attempt_at.map(|_| now),
+            sync_status: self.sync_status.clone(),
         }
+    }
+
+    fn set_sync_status(&mut self, status: SyncStatus) {
+        self.sync_status = Some(status);
     }
 }
 
@@ -127,6 +136,10 @@ pub struct PeerMesh {
     shared_key: Option<String>,
     /// Whether authentication is required.
     require_auth: bool,
+    /// Data sync service for cross-server sync.
+    data_sync: Option<Arc<DataSyncService>>,
+    /// Preferences service for preference sync.
+    preferences_service: Option<Arc<PreferencesService>>,
 }
 
 impl PeerMesh {
@@ -152,7 +165,28 @@ impl PeerMesh {
             pending_pings: DashMap::new(),
             shared_key,
             require_auth,
+            data_sync: None,
+            preferences_service: None,
         })
+    }
+
+    /// Set the data sync service for cross-server data synchronization.
+    pub fn set_data_sync_service(self: &Arc<Self>, service: Arc<DataSyncService>) {
+        // Note: This requires interior mutability. We use unsafe here because
+        // the field is only set once at startup before any concurrent access.
+        // In production, consider using Arc<RwLock<Option<...>>> instead.
+        unsafe {
+            let ptr = Arc::as_ptr(self) as *mut Self;
+            (*ptr).data_sync = Some(service);
+        }
+    }
+
+    /// Set the preferences service for preference sync.
+    pub fn set_preferences_service(self: &Arc<Self>, service: Arc<PreferencesService>) {
+        unsafe {
+            let ptr = Arc::as_ptr(self) as *mut Self;
+            (*ptr).preferences_service = Some(service);
+        }
     }
 
     /// Get this server's WebSocket URL.
@@ -763,6 +797,73 @@ impl PeerMesh {
                 debug!("Received peer request from {}", peer_id);
                 // Response will be sent via the write channel
             }
+            PeerMessage::UserPreferencesUpdate { user_address, preferences, signature } => {
+                // Handle incoming preference update from mesh
+                if let Some(ref prefs_service) = self.preferences_service {
+                    let update = crate::services::PreferencesUpdate {
+                        user_address: user_address.clone(),
+                        preferences,
+                        signature,
+                    };
+                    prefs_service.handle_mesh_update(update).await;
+                    debug!("Applied preference update for {} from {}", &user_address[..16.min(user_address.len())], peer_id);
+                }
+            }
+            PeerMessage::SyncCounts { from_id, counts } => {
+                // Handle incoming sync counts from peer
+                if let Some(ref sync_service) = self.data_sync {
+                    sync_service.handle_sync_counts(&from_id, counts);
+
+                    // Update peer's sync status
+                    if let Some(status) = sync_service.get_peer_sync_status(&from_id) {
+                        if let Some(entry) = self.peers.get(&from_id) {
+                            let mut peer = entry.write().await;
+                            peer.set_sync_status(status);
+                        }
+                    }
+                }
+            }
+            PeerMessage::SyncRequest { data_type, since_timestamp, limit } => {
+                // Handle sync request from peer
+                if let Some(ref sync_service) = self.data_sync {
+                    sync_service.handle_sync_request(peer_id, data_type, since_timestamp, limit);
+                }
+            }
+            PeerMessage::PredictionBatch { from_id, predictions_json, has_more } => {
+                // Handle incoming prediction batch
+                if let Some(ref sync_service) = self.data_sync {
+                    sync_service.handle_prediction_batch(&from_id, &predictions_json, has_more);
+
+                    // Update sync status after import
+                    if let Some(status) = sync_service.get_peer_sync_status(&from_id) {
+                        if let Some(entry) = self.peers.get(&from_id) {
+                            let mut peer = entry.write().await;
+                            peer.set_sync_status(status);
+                        }
+                    }
+                }
+            }
+            PeerMessage::PreferencesBatch { from_id, preferences_json, has_more } => {
+                // Handle incoming preferences batch
+                if let Some(ref sync_service) = self.data_sync {
+                    sync_service.handle_preferences_batch(&from_id, &preferences_json, has_more);
+
+                    // Update sync status after import
+                    if let Some(status) = sync_service.get_peer_sync_status(&from_id) {
+                        if let Some(entry) = self.peers.get(&from_id) {
+                            let mut peer = entry.write().await;
+                            peer.set_sync_status(status);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Broadcast sync counts to all connected peers.
+    pub fn broadcast_sync_counts(&self) {
+        if let Some(ref sync_service) = self.data_sync {
+            sync_service.broadcast_counts();
         }
     }
 }
@@ -781,6 +882,8 @@ impl Clone for PeerMesh {
             pending_pings: DashMap::new(),
             shared_key: self.shared_key.clone(),
             require_auth: self.require_auth,
+            data_sync: self.data_sync.clone(),
+            preferences_service: self.preferences_service.clone(),
         }
     }
 }

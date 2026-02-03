@@ -8,7 +8,7 @@
 //! - Sessions (24-hour TTL, ephemeral)
 //! - Recent predictions (7-day TTL, quick access)
 
-use crate::types::{Profile, ProfileSettings, SignalPrediction, PredictionOutcome};
+use crate::types::{Profile, ProfileSettings, SignalPrediction, PredictionOutcome, UserPreferences};
 use rusqlite::{Connection, params};
 use std::path::Path;
 use std::sync::Mutex;
@@ -102,8 +102,28 @@ impl SqliteStore {
             [],
         )?;
 
+        // User preferences table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_preferences (
+                user_address TEXT PRIMARY KEY,
+                theme TEXT DEFAULT 'dark',
+                language TEXT DEFAULT 'en',
+                performance_level TEXT DEFAULT 'balanced',
+                preferred_server TEXT,
+                auto_fastest INTEGER DEFAULT 0,
+                onboarding_progress TEXT DEFAULT '[]',
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         info!("SQLite schema initialized");
         Ok(())
+    }
+
+    /// Get a reference to the connection mutex (for advanced queries).
+    pub fn get_connection(&self) -> &Mutex<Connection> {
+        &self.conn
     }
 
     // ========== Profile Methods ==========
@@ -464,6 +484,85 @@ impl SqliteStore {
         }
 
         Ok(count)
+    }
+
+    // ========== User Preferences Methods ==========
+
+    /// Get user preferences.
+    pub fn get_preferences(&self, user_address: &str) -> Option<UserPreferences> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT theme, language, performance_level, preferred_server,
+                    auto_fastest, onboarding_progress, updated_at
+             FROM user_preferences WHERE user_address = ?1",
+            params![user_address],
+            |row| {
+                let onboarding_json: String = row.get(5)?;
+                let onboarding: Vec<String> =
+                    serde_json::from_str(&onboarding_json).unwrap_or_default();
+
+                Ok(UserPreferences {
+                    theme: row.get(0)?,
+                    language: row.get(1)?,
+                    performance_level: row.get(2)?,
+                    preferred_server: row.get(3)?,
+                    auto_fastest: row.get::<_, i64>(4)? != 0,
+                    onboarding_progress: onboarding,
+                    updated_at: row.get(6)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(prefs) => Some(prefs),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching preferences: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Save or update user preferences.
+    pub fn save_preferences(&self, user_address: &str, prefs: &UserPreferences) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let onboarding_json = serde_json::to_string(&prefs.onboarding_progress).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO user_preferences
+             (user_address, theme, language, performance_level, preferred_server,
+              auto_fastest, onboarding_progress, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(user_address) DO UPDATE SET
+                theme = excluded.theme,
+                language = excluded.language,
+                performance_level = excluded.performance_level,
+                preferred_server = excluded.preferred_server,
+                auto_fastest = excluded.auto_fastest,
+                onboarding_progress = excluded.onboarding_progress,
+                updated_at = excluded.updated_at",
+            params![
+                user_address,
+                prefs.theme,
+                prefs.language,
+                prefs.performance_level,
+                prefs.preferred_server,
+                if prefs.auto_fastest { 1i64 } else { 0i64 },
+                onboarding_json,
+                prefs.updated_at,
+            ],
+        )?;
+
+        debug!("Saved preferences for {}", &user_address[..16.min(user_address.len())]);
+        Ok(())
+    }
+
+    /// Delete user preferences.
+    pub fn delete_preferences(&self, user_address: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM user_preferences WHERE user_address = ?1", params![user_address])?;
+        Ok(())
     }
 }
 

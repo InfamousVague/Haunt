@@ -9,9 +9,9 @@ mod websocket;
 use axum::{routing::get, Router};
 use config::Config;
 use services::{
-    AccuracyStore, AssetService, AuthService, ChartStore, HistoricalDataService,
+    AccuracyStore, AssetService, AuthService, ChartStore, DataSyncService, HistoricalDataService,
     MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore,
-    SignalStore, SqliteStore,
+    PreferencesService, SignalStore, SqliteStore,
 };
 use sources::{AlpacaWs, CoinMarketCapClient, FinnhubClient, TiingoWs};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -42,6 +42,7 @@ pub struct AppState {
     pub sqlite_store: Arc<SqliteStore>,
     pub orderbook_service: Arc<OrderBookService>,
     pub peer_mesh: Option<Arc<PeerMesh>>,
+    pub preferences_service: Arc<PreferencesService>,
 }
 
 #[tokio::main]
@@ -313,6 +314,24 @@ async fn main() -> anyhow::Result<()> {
     };
     let auth_service = Arc::new(AuthService::new(redis_conn, Some(sqlite_store.clone())));
 
+    // Create preferences service for user settings sync
+    let preferences_service = Arc::new(PreferencesService::new(Some(sqlite_store.clone())));
+    info!("Preferences service initialized");
+
+    // Create data sync service for cross-server synchronization
+    let data_sync_service = Arc::new(DataSyncService::new(
+        config.server_id.clone(),
+        sqlite_store.clone(),
+    ));
+    info!("Data sync service initialized");
+
+    // Wire sync services to peer mesh
+    if let Some(ref mesh) = peer_mesh {
+        mesh.set_data_sync_service(data_sync_service.clone());
+        mesh.set_preferences_service(preferences_service.clone());
+        info!("Sync services connected to peer mesh");
+    }
+
     // Create room manager for WebSocket subscriptions
     let room_manager = RoomManager::new();
 
@@ -332,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         sqlite_store,
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
+        preferences_service,
     };
 
     // Start the price sources
@@ -370,6 +390,16 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
+
+        // Spawn sync counts broadcast task (every 30 seconds)
+        let mesh_for_sync = mesh.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                mesh_for_sync.broadcast_sync_counts();
+            }
+        });
+        info!("Started sync counts broadcast task (30s interval)");
     }
 
     // Start periodic Redis save tasks
