@@ -381,12 +381,6 @@ impl SqliteStore {
         predictions
     }
 
-    /// Check if connection is available (used by other services).
-    pub fn get_connection(&self) -> Option<()> {
-        // Just verify the mutex can be locked
-        self.conn.lock().ok().map(|_| ())
-    }
-
     /// Get accuracy statistics for a symbol.
     pub fn get_accuracy_stats(&self, symbol: &str, timeframe: &str) -> AccuracyStats {
         let conn = self.conn.lock().unwrap();

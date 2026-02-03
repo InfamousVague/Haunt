@@ -11,12 +11,22 @@
 
 use crate::services::SqliteStore;
 use crate::types::{
-    DataCounts, PeerMessage, SignalPrediction, SyncDataType, SyncStatus, UserPreferences,
+    DataCounts, PeerMessage, PredictionOutcome, SignalPrediction, SyncDataType, SyncStatus, UserPreferences,
 };
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+use uuid::Uuid;
+
+/// Parse outcome string to PredictionOutcome enum.
+fn parse_outcome(s: &str) -> PredictionOutcome {
+    match s.to_lowercase().as_str() {
+        "correct" => PredictionOutcome::Correct,
+        "incorrect" => PredictionOutcome::Incorrect,
+        _ => PredictionOutcome::Neutral,
+    }
+}
 
 /// Sync state with a specific peer.
 #[derive(Debug, Clone, Default)]
@@ -342,19 +352,21 @@ impl DataSyncService {
 
         if let Some(ref mut stmt) = stmt {
             stmt.query_map(rusqlite::params![since, limit as i64], |row| {
+                let id_str: String = row.get(0)?;
+                let direction_str: String = row.get(3)?;
                 Ok(SignalPrediction {
-                    id: row.get(0)?,
+                    id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
                     symbol: row.get(1)?,
                     indicator: row.get(2)?,
-                    direction: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+                    direction: serde_json::from_str(&direction_str).unwrap_or(crate::types::SignalDirection::Neutral),
                     score: row.get(4)?,
                     price_at_prediction: row.get(5)?,
                     timestamp: row.get(6)?,
                     validated: row.get(7)?,
-                    outcome_5m: row.get(8).ok(),
-                    outcome_1h: row.get(9).ok(),
-                    outcome_4h: row.get(10).ok(),
-                    outcome_24h: row.get(11).ok(),
+                    outcome_5m: row.get::<_, Option<String>>(8)?.map(|s| parse_outcome(&s)),
+                    outcome_1h: row.get::<_, Option<String>>(9)?.map(|s| parse_outcome(&s)),
+                    outcome_4h: row.get::<_, Option<String>>(10)?.map(|s| parse_outcome(&s)),
+                    outcome_24h: row.get::<_, Option<String>>(11)?.map(|s| parse_outcome(&s)),
                     price_after_5m: row.get(12).ok(),
                     price_after_1h: row.get(13).ok(),
                     price_after_4h: row.get(14).ok(),
@@ -451,13 +463,13 @@ impl DataSyncService {
     }
 
     /// Check if a prediction already exists.
-    fn prediction_exists(&self, id: &str) -> bool {
+    fn prediction_exists(&self, id: &Uuid) -> bool {
         let conn = self.sqlite.get_connection();
         let conn = conn.lock().unwrap();
 
         conn.query_row(
             "SELECT 1 FROM prediction_history WHERE id = ?1",
-            rusqlite::params![id],
+            rusqlite::params![id.to_string()],
             |_| Ok(true),
         )
         .unwrap_or(false)

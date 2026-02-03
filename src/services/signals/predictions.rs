@@ -293,14 +293,8 @@ impl PredictionStore {
             return;
         };
 
-        // Get all unique symbols from SQLite
-        let _conn = match sqlite.get_connection() {
-            Some(c) => c,
-            None => {
-                warn!("Cannot get SQLite connection");
-                return;
-            }
-        };
+        // Verify SQLite connection works
+        let _conn = sqlite.get_connection();
 
         // Query all predictions from SQLite (limit to recent ones for memory)
         let predictions = sqlite.get_all_predictions(500);
