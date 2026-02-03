@@ -168,6 +168,30 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             let response = ServerMessage::PeersUnsubscribed;
             send_message(state, client_id, &response);
         }
+        // Peer mesh protocol - respond to ping with pong
+        ClientMessage::Ping { from_id, from_region, timestamp } => {
+            debug!("Received peer ping from {} ({})", from_id, from_region);
+            let response = ServerMessage::Pong {
+                from_id: state.config.server_id.clone(),
+                from_region: state.config.server_region.clone(),
+                original_timestamp: timestamp,
+            };
+            send_message(state, client_id, &response);
+        }
+        // Peer mesh pong - just log it (actual handling is in peer_mesh.rs)
+        ClientMessage::Pong { from_id, from_region, original_timestamp } => {
+            debug!("Received peer pong from {} ({}) - original_ts: {}", from_id, from_region, original_timestamp);
+        }
+        // Peer mesh auth - accept all for now (production should verify signature)
+        ClientMessage::Auth { id, region, .. } => {
+            debug!("Received peer auth from {} ({})", id, region);
+            let response = ServerMessage::AuthResponse { success: true, error: None };
+            send_message(state, client_id, &response);
+        }
+        // Peer mesh identify - just acknowledge
+        ClientMessage::Identify { id, region, version } => {
+            debug!("Peer identified: {} ({}) v{}", id, region, version);
+        }
     }
 }
 

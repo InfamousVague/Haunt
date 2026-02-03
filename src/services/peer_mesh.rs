@@ -549,7 +549,7 @@ impl PeerMesh {
                     info!("Connected to peer {}", peer_id);
 
                     // Handle the connection
-                    self.handle_peer_connection(&peer_id, ws).await;
+                    self.clone().handle_peer_connection(&peer_id, ws).await;
                 }
                 Err(e) => {
                     error!("Failed to connect to peer {}: {}", peer_id, e);
@@ -585,7 +585,7 @@ impl PeerMesh {
 
     /// Handle an active peer connection.
     async fn handle_peer_connection(
-        &self,
+        self: Arc<Self>,
         peer_id: &str,
         ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) {
@@ -610,14 +610,26 @@ impl PeerMesh {
                 }
             }
 
-            // Wait for auth response
-            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = read.next().await {
-                if let Ok(PeerMessage::AuthResponse { success, error }) = serde_json::from_str(&text) {
-                    if !success {
-                        error!("Auth failed for peer {}: {:?}", peer_id, error);
-                        return;
+            // Wait for auth response with timeout
+            let auth_timeout = tokio::time::timeout(Duration::from_secs(5), read.next()).await;
+            match auth_timeout {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                    if let Ok(PeerMessage::AuthResponse { success, error }) = serde_json::from_str(&text) {
+                        if !success {
+                            error!("Auth failed for peer {}: {:?}", peer_id, error);
+                            return;
+                        }
+                        info!("Authenticated with peer {}", peer_id);
+                    } else {
+                        warn!("Peer {} sent unexpected response, proceeding without auth confirmation", peer_id);
                     }
-                    info!("Authenticated with peer {}", peer_id);
+                }
+                Ok(_) => {
+                    warn!("Peer {} closed connection during auth", peer_id);
+                    return;
+                }
+                Err(_) => {
+                    warn!("Auth timeout for peer {}, proceeding without confirmation (peer may be running older version)", peer_id);
                 }
             }
         } else {
@@ -637,14 +649,14 @@ impl PeerMesh {
         }
 
         // Spawn ping task (every 1 second for real-time latency)
-        let mesh = Arc::new(self.clone());
         let ping_peer_id = peer_id.to_string();
-        let ping_mesh = mesh.clone();
+        let ping_mesh = self.clone();
 
         let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<String>(32);
 
         let ping_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut ping_count = 0u32;
             loop {
                 interval.tick().await;
 
@@ -658,8 +670,14 @@ impl PeerMesh {
                 if let Ok(json) = serde_json::to_string(&ping_msg) {
                     // Record pending ping
                     ping_mesh.pending_pings.insert(ping_peer_id.clone(), Instant::now());
+                    ping_count += 1;
+
+                    if ping_count <= 3 || ping_count % 10 == 0 {
+                        debug!("Sending ping #{} to {}", ping_count, ping_peer_id);
+                    }
 
                     if ping_tx.send(json).await.is_err() {
+                        info!("Ping channel closed for {}, stopping ping task", ping_peer_id);
                         break;
                     }
                 }
@@ -675,17 +693,25 @@ impl PeerMesh {
             }
         });
 
+        info!("Starting ping loop for peer {}", peer_id);
+
         // Handle incoming messages
         while let Some(result) = read.next().await {
             match result {
                 Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                    debug!("Received from {}: {}", peer_id, &text[..text.len().min(100)]);
                     if let Ok(msg) = serde_json::from_str::<PeerMessage>(&text) {
                         self.handle_peer_message(peer_id, msg).await;
+                    } else {
+                        debug!("Failed to parse message from {} as PeerMessage", peer_id);
                     }
                 }
                 Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
-                    debug!("Peer {} closed connection", peer_id);
+                    info!("Peer {} closed connection", peer_id);
                     break;
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Ping(_)) => {
+                    debug!("Received WebSocket ping from {}", peer_id);
                 }
                 Err(e) => {
                     error!("WebSocket error from peer {}: {}", peer_id, e);
@@ -694,6 +720,7 @@ impl PeerMesh {
                 _ => {}
             }
         }
+        info!("Exiting message loop for peer {}", peer_id);
 
         ping_task.abort();
         write_task.abort();
@@ -723,6 +750,7 @@ impl PeerMesh {
                 }
             }
             PeerMessage::Pong { .. } => {
+                debug!("Received Pong from peer {}", peer_id);
                 // Calculate latency
                 if let Some((_, sent_at)) = self.pending_pings.remove(peer_id) {
                     let latency_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
@@ -731,9 +759,12 @@ impl PeerMesh {
                     if let Some(entry) = self.peers.get(peer_id) {
                         let mut peer = entry.write().await;
                         peer.record_latency(latency_ms);
+                        info!("Recorded latency for {}: {:.2}ms (pingCount={})", peer_id, latency_ms, peer.ping_count);
+                    } else {
+                        warn!("No peer entry found for {} to record latency", peer_id);
                     }
-
-                    debug!("Peer {} latency: {:.2}ms", peer_id, latency_ms);
+                } else {
+                    warn!("Received Pong from {} but no pending ping found", peer_id);
                 }
             }
             PeerMessage::Ping { from_id, from_region, .. } => {
@@ -767,20 +798,6 @@ impl PeerMesh {
     }
 }
 
-// Implement Clone for Arc reference
-impl Clone for PeerMesh {
-    fn clone(&self) -> Self {
-        Self {
-            server_id: self.server_id.clone(),
-            server_region: self.server_region.clone(),
-            ws_url: self.ws_url.clone(),
-            api_url: self.api_url.clone(),
-            peers: DashMap::new(),
-            known_peers: DashMap::new(),
-            status_tx: self.status_tx.clone(),
-            pending_pings: DashMap::new(),
-            shared_key: self.shared_key.clone(),
-            require_auth: self.require_auth,
-        }
-    }
-}
+// NOTE: PeerMesh should always be used via Arc<PeerMesh>.
+// Do NOT implement Clone for PeerMesh as it would create a separate instance
+// with empty peer/pending_pings maps, breaking shared state.

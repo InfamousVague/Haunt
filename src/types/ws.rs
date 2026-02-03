@@ -13,6 +13,31 @@ pub enum ClientMessage {
     SubscribePeers,
     /// Unsubscribe from peer status updates
     UnsubscribePeers,
+    /// Peer mesh ping (for server-to-server latency measurement)
+    Ping {
+        from_id: String,
+        from_region: String,
+        timestamp: i64,
+    },
+    /// Peer mesh pong response
+    Pong {
+        from_id: String,
+        from_region: String,
+        original_timestamp: i64,
+    },
+    /// Peer mesh authentication
+    Auth {
+        id: String,
+        region: String,
+        timestamp: i64,
+        signature: String,
+    },
+    /// Peer mesh identification (no auth)
+    Identify {
+        id: String,
+        region: String,
+        version: String,
+    },
 }
 
 /// Outgoing WebSocket message to client.
@@ -33,6 +58,14 @@ pub enum ServerMessage {
     /// Confirmation of peer unsubscription
     PeersUnsubscribed,
     Error { error: String },
+    /// Peer mesh pong response (echoes the ping)
+    Pong {
+        from_id: String,
+        from_region: String,
+        original_timestamp: i64,
+    },
+    /// Peer mesh auth response
+    AuthResponse { success: bool, error: Option<String> },
 }
 
 /// Signal update payload.
