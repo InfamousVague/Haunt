@@ -13,7 +13,7 @@ use services::{
     MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore,
     SignalStore, SqliteStore,
 };
-use sources::{AlpacaWs, CoinMarketCapClient, FinnhubClient, TiingoWs};
+use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient, TiingoWs};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
 #[allow(unused_imports)]
 use sources::FinnhubWs;
@@ -172,10 +172,16 @@ async fn main() -> anyhow::Result<()> {
     }
     */
 
-    // Create unified asset service
+    // Create CoinCap client for redundant crypto data
+    let coincap_client = Arc::new(CoinCapClient::new());
+
+    // Create unified asset service with fallback sources
     let asset_service = Arc::new(AssetService::new(
         cmc_client.clone(),
+        coincap_client.clone(),
         finnhub_client.clone(),
+        price_cache.clone(),
+        chart_store.clone(),
     ));
 
     // Create historical data service for seeding chart data
