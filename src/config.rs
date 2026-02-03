@@ -9,6 +9,18 @@ pub struct Config {
     pub port: u16,
     /// Redis URL for persistent caching.
     pub redis_url: Option<String>,
+    /// Server ID for mesh identification.
+    pub server_id: String,
+    /// Server region for display.
+    pub server_region: String,
+    /// Public WebSocket URL for this server.
+    pub public_ws_url: Option<String>,
+    /// Public API URL for this server.
+    pub public_api_url: Option<String>,
+    /// Comma-separated list of peer server URLs for mesh.
+    pub mesh_peers: Vec<String>,
+    /// Shared secret for mesh authentication.
+    pub mesh_shared_key: Option<String>,
     /// CoinMarketCap API key.
     pub cmc_api_key: Option<String>,
     /// CoinGecko API key (optional, for pro tier).
@@ -53,6 +65,14 @@ impl Config {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(3001),
             redis_url: env::var("REDIS_URL").ok().or_else(|| Some("redis://127.0.0.1:6379".to_string())),
+            server_id: env::var("SERVER_ID").unwrap_or_else(|_| "local".to_string()),
+            server_region: env::var("SERVER_REGION").unwrap_or_else(|_| "Local".to_string()),
+            public_ws_url: env::var("PUBLIC_WS_URL").ok(),
+            public_api_url: env::var("PUBLIC_API_URL").ok(),
+            mesh_peers: env::var("MESH_PEERS")
+                .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect())
+                .unwrap_or_default(),
+            mesh_shared_key: env::var("MESH_SHARED_KEY").ok(),
             cmc_api_key: env::var("CMC_API_KEY").ok(),
             coingecko_api_key: env::var("COINGECKO_API_KEY").ok(),
             cryptocompare_api_key: env::var("CRYPTOCOMPARE_API_KEY").ok(),

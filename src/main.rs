@@ -10,7 +10,7 @@ use axum::{routing::get, Router};
 use config::Config;
 use services::{
     AccuracyStore, AssetService, AuthService, ChartStore, HistoricalDataService,
-    MultiSourceCoordinator, OrderBookService, PredictionStore, SignalStore, SqliteStore,
+    MultiSourceCoordinator, OrderBookService, PeerMesh, PredictionStore, SignalStore, SqliteStore,
 };
 use sources::{AlpacaWs, CoinMarketCapClient, FinnhubClient, TiingoWs};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -40,6 +40,7 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub sqlite_store: Arc<SqliteStore>,
     pub orderbook_service: Arc<OrderBookService>,
+    pub peer_mesh: Arc<PeerMesh>,
 }
 
 #[tokio::main]
@@ -253,6 +254,16 @@ async fn main() -> anyhow::Result<()> {
     // Create room manager for WebSocket subscriptions
     let room_manager = RoomManager::new();
 
+    // Create peer mesh for cross-server sync
+    let peer_mesh = Arc::new(PeerMesh::new(&config));
+    info!(
+        "Peer mesh initialized for server '{}' in '{}'",
+        config.server_id, config.server_region
+    );
+
+    // Start peer health check task
+    peer_mesh.clone().start_health_check();
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -268,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
         auth_service,
         sqlite_store,
         orderbook_service,
+        peer_mesh,
     };
 
     // Start the price sources

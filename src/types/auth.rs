@@ -78,6 +78,21 @@ pub struct ProfileSettings {
     /// Notification preferences
     #[serde(default)]
     pub notifications_enabled: bool,
+    /// Preferred server ID for auto-connect
+    #[serde(default)]
+    pub preferred_server: Option<String>,
+    /// Auto-switch to fastest server
+    #[serde(default)]
+    pub auto_fastest: bool,
+    /// UI theme (dark/light)
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Language code
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// Last updated timestamp for sync conflict resolution
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 impl Default for ProfileSettings {
@@ -86,8 +101,21 @@ impl Default for ProfileSettings {
             default_timeframe: "day_trading".to_string(),
             preferred_indicators: Vec::new(),
             notifications_enabled: false,
+            preferred_server: None,
+            auto_fastest: false,
+            theme: "dark".to_string(),
+            language: "en".to_string(),
+            updated_at: chrono::Utc::now().timestamp_millis(),
         }
     }
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 fn default_timeframe() -> String {
