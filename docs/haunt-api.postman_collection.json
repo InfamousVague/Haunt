@@ -1,0 +1,574 @@
+{
+  "info": {
+    "name": "Haunt API",
+    "description": "Complete API collection for the Haunt cryptocurrency data server.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health"]
+            },
+            "description": "Check server health status."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Get Challenge",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/challenge",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "challenge"]
+            },
+            "description": "Get a challenge string to sign for authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Challenge",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"0x1234567890abcdef...\",\n  \"signature\": \"0xabcdef1234567890...\",\n  \"challenge\": \"haunt:1700000000000:abc123def456\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "verify"]
+            },
+            "description": "Verify a signed challenge and create a session."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Get the current authenticated user's profile."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"theme\": \"dark\",\n  \"notifications\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "profile"]
+            },
+            "description": "Update the authenticated user's profile settings."
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "logout"]
+            },
+            "description": "Logout and invalidate the current session."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Cryptocurrency",
+      "item": [
+        {
+          "name": "Get Listings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/listings?start=1&limit=20&sort=market_cap&sort_dir=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "listings"],
+              "query": [
+                { "key": "start", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "sort", "value": "market_cap" },
+                { "key": "sort_dir", "value": "desc" }
+              ]
+            },
+            "description": "Get paginated cryptocurrency listings."
+          },
+          "response": []
+        },
+        {
+          "name": "Search Assets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/search?q=bitcoin&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "search"],
+              "query": [
+                { "key": "q", "value": "bitcoin" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Search for assets by name or symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Asset",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/btc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "btc"]
+            },
+            "description": "Get detailed information for a specific asset."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Asset Quotes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/btc/quotes",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "btc", "quotes"]
+            },
+            "description": "Get price quote data for an asset."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Chart Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/btc/chart?range=1d",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "btc", "chart"],
+              "query": [
+                { "key": "range", "value": "1d" }
+              ]
+            },
+            "description": "Get OHLC chart data for an asset."
+          },
+          "response": []
+        },
+        {
+          "name": "Seed Symbol",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"btc\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/seed",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "seed"]
+            },
+            "description": "Trigger historical data seeding for a symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Batch Seed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbols\": [\"btc\", \"eth\", \"sol\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/seed/batch",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "seed", "batch"]
+            },
+            "description": "Trigger historical data seeding for multiple symbols."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Seed Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/crypto/seed/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "crypto", "seed", "status"]
+            },
+            "description": "Get seeding status for all known symbols."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Market Data",
+      "item": [
+        {
+          "name": "Get Global Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/global",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "global"]
+            },
+            "description": "Get global cryptocurrency market metrics."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Fear & Greed Index",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/fear-greed",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "fear-greed"]
+            },
+            "description": "Get the Fear and Greed Index data."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Exchange Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/exchanges",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "exchanges"]
+            },
+            "description": "Get statistics for all tracked exchanges."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Server Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "stats"]
+            },
+            "description": "Get overall market statistics and server metrics."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Symbol Source Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/source-stats/btc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "source-stats", "btc"]
+            },
+            "description": "Get per-source statistics for a specific symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Symbol Confidence",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/confidence/btc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "confidence", "btc"]
+            },
+            "description": "Get data confidence metrics for a symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Movers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/market/movers?timeframe=1h&limit=10&asset_type=crypto",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "market", "movers"],
+              "query": [
+                { "key": "timeframe", "value": "1h" },
+                { "key": "limit", "value": "10" },
+                { "key": "asset_type", "value": "crypto" }
+              ]
+            },
+            "description": "Get top gainers and losers by timeframe."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Trading Signals",
+      "item": [
+        {
+          "name": "Get Signals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/btc?timeframe=day_trading",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "btc"],
+              "query": [
+                { "key": "timeframe", "value": "day_trading" }
+              ]
+            },
+            "description": "Get all trading signals for a symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Predictions",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/btc/generate?timeframe=day_trading",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "btc", "generate"],
+              "query": [
+                { "key": "timeframe", "value": "day_trading" }
+              ]
+            },
+            "description": "Generate fresh predictions for a symbol (bypasses cache)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Recommendation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/btc/recommendation?timeframe=day_trading",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "btc", "recommendation"],
+              "query": [
+                { "key": "timeframe", "value": "day_trading" }
+              ]
+            },
+            "description": "Get accuracy-weighted recommendation for a symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Symbol Accuracy",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/btc/accuracy",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "btc", "accuracy"]
+            },
+            "description": "Get accuracy statistics for a specific symbol."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Symbol Predictions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/btc/predictions?status=all&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "btc", "predictions"],
+              "query": [
+                { "key": "status", "value": "all" },
+                { "key": "limit", "value": "50" }
+              ]
+            },
+            "description": "Get predictions for a symbol with optional filtering."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Indicator Accuracy",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/signals/accuracy/rsi",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "signals", "accuracy", "rsi"]
+            },
+            "description": "Get global accuracy statistics for a specific indicator."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Order Book",
+      "item": [
+        {
+          "name": "Get Order Book",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/orderbook/btc?depth=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "orderbook", "btc"],
+              "query": [
+                { "key": "depth", "value": "50" }
+              ]
+            },
+            "description": "Get aggregated order book data from multiple exchanges."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Peer Mesh",
+      "item": [
+        {
+          "name": "Get Peers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/peers",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "peers"]
+            },
+            "description": "Get the current peer mesh status."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Peer Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/peers/eu-west",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "peers", "eu-west"]
+            },
+            "description": "Get a specific peer's status."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Mesh Servers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mesh/servers",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "mesh", "servers"]
+            },
+            "description": "Get all mesh servers for frontend discovery."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

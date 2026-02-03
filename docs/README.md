@@ -1,76 +1,90 @@
-# Haunt Documentation
+# Haunt API Documentation
 
-Haunt is a Rust-based cryptocurrency price aggregation backend that provides real-time prices, historical charts, and market data.
+> A high-performance cryptocurrency data aggregation server built with Rust and Axum.
 
-## Features
+## Overview
 
-- Multi-source price aggregation (Coinbase, Binance, CoinGecko, etc.)
-- Real-time WebSocket price updates
-- Historical OHLC chart data
-- Redis-backed persistence
-- CoinMarketCap data integration
+Haunt is a real-time cryptocurrency data server that aggregates price data from multiple exchanges, calculates technical indicators, and provides trading signals. It features WebSocket support for live updates and a peer mesh network for distributed data collection.
 
 ## Quick Start
 
-```bash
-# Set environment variables
-export CMC_API_KEY=your_key
-export REDIS_URL=redis://localhost:6379
-
-# Run the server
-cargo run
-
-# Server starts at http://localhost:3000
-```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CMC_API_KEY` | CoinMarketCap API key | Required |
-| `COINGECKO_API_KEY` | CoinGecko API key (optional) | - |
-| `CRYPTOCOMPARE_API_KEY` | CryptoCompare API key (optional) | - |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `PORT` | Server port | `3000` |
-
-## Project Structure
+### Base URL
 
 ```
-Haunt/
-├── src/
-│   ├── api/            # REST API endpoints
-│   │   ├── crypto.rs   # /api/crypto/* routes
-│   │   ├── health.rs   # Health check
-│   │   └── market.rs   # Market data
-│   ├── services/       # Business logic
-│   │   ├── historical.rs   # Historical data seeding
-│   │   ├── chart_store.rs  # In-memory chart data
-│   │   ├── price_cache.rs  # Price aggregation
-│   │   └── multi_source.rs # Exchange coordinator
-│   ├── sources/        # Exchange integrations
-│   │   ├── binance.rs
-│   │   ├── coinbase_ws.rs
-│   │   └── ...
-│   ├── websocket/      # WebSocket handling
-│   │   ├── handler.rs
-│   │   └── room_manager.rs
-│   └── types/          # Data structures
-├── tests/              # Integration tests
-└── docs/               # Documentation
+http://localhost:3000
 ```
 
-## Documentation
-
-- [API Reference](./api-reference.md) - REST API documentation
-- [WebSocket Protocol](./websocket-protocol.md) - Real-time updates
-- [Data Flow](./data-flow.md) - How data flows through the system
-
-## Testing
+### Health Check
 
 ```bash
-# Run all tests
-cargo test
-
-# Run specific test file
-cargo test --test api_sanity_test
+curl http://localhost:3000/api/health
 ```
+
+### Get Cryptocurrency Listings
+
+```bash
+curl "http://localhost:3000/api/crypto/listings?limit=10"
+```
+
+### Get Asset Details
+
+```bash
+curl http://localhost:3000/api/crypto/btc
+```
+
+## Features
+
+- **Multi-Source Price Aggregation** - Data from 12+ exchanges including Binance, Coinbase, Kraken, and more
+- **Technical Indicators** - RSI, MACD, Bollinger Bands, EMA, SMA, Stochastic, and more
+- **Trading Signals** - AI-powered buy/sell signals with accuracy tracking
+- **Real-time Updates** - WebSocket connections for live price feeds
+- **Order Book Aggregation** - Combined order books from multiple exchanges
+- **Peer Mesh Network** - Distributed data collection across regions
+
+## API Categories
+
+| Category | Description |
+|----------|-------------|
+| [Health](/api-reference#health) | Server health and status |
+| [Authentication](/api-reference#authentication) | Wallet-based auth with challenge signing |
+| [Cryptocurrency](/api-reference#cryptocurrency) | Asset listings, details, charts, and seeding |
+| [Market Data](/api-reference#market-data) | Global metrics, fear/greed, movers |
+| [Trading Signals](/api-reference#trading-signals) | Technical signals and predictions |
+| [Order Book](/api-reference#order-book) | Aggregated order book data |
+| [Peer Mesh](/api-reference#peer-mesh) | Distributed network status |
+
+## Postman Collection
+
+Download the complete Postman collection to test all API endpoints:
+
+<a href="haunt-api.postman_collection.json" download class="download-btn">Download Postman Collection</a>
+
+### Import Instructions
+
+1. Open Postman
+2. Click **Import** in the top left
+3. Drag and drop the downloaded JSON file
+4. Set the `baseUrl` variable to your server address
+5. For authenticated endpoints, set `authToken` after logging in
+
+## WebSocket
+
+Connect to the WebSocket endpoint for real-time updates:
+
+```javascript
+const ws = new WebSocket('ws://localhost:3000/ws');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: 'subscribe',
+    symbols: ['btc', 'eth']
+  }));
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Price update:', data);
+};
+```
+
+See the [WebSocket Protocol](websocket-protocol.md) documentation for full details.

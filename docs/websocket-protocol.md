@@ -1,232 +1,243 @@
-# Haunt WebSocket Protocol
+# WebSocket Protocol
 
-Connect to the WebSocket endpoint at `ws://localhost:3000/ws`.
+> Real-time data streaming via WebSocket connections.
 
 ## Connection
 
-```javascript
-const ws = new WebSocket('ws://localhost:3000/ws');
+Connect to the WebSocket endpoint:
 
-ws.onopen = () => {
-  console.log('Connected to Haunt');
-};
-
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  handleMessage(message);
-};
 ```
+ws://localhost:3000/ws
+```
+
+## Message Format
+
+All messages are JSON-encoded with a `type` field indicating the message type.
+
+---
 
 ## Client Messages
 
 ### Subscribe
 
-Subscribe to real-time price updates for specific assets.
+Subscribe to price updates for specific symbols.
 
 ```json
 {
   "type": "subscribe",
-  "assets": ["btc", "eth", "sol"]
-}
-```
-
-**Response:**
-```json
-{
-  "type": "subscribed",
-  "assets": ["btc", "eth", "sol"]
+  "symbols": ["btc", "eth", "sol"]
 }
 ```
 
 ### Unsubscribe
 
-Stop receiving updates for specific assets.
+Unsubscribe from price updates.
 
 ```json
 {
   "type": "unsubscribe",
-  "assets": ["sol"]
+  "symbols": ["sol"]
 }
 ```
 
-**Response:**
+### Ping
+
+Keep the connection alive.
+
 ```json
 {
-  "type": "unsubscribed",
-  "assets": ["sol"]
+  "type": "ping"
 }
 ```
+
+---
 
 ## Server Messages
 
 ### Price Update
 
-Sent when a subscribed asset's price changes.
+Sent when a subscribed symbol's price changes.
 
 ```json
 {
   "type": "price_update",
-  "data": {
-    "id": "btc",
-    "symbol": "btc",
-    "price": 50000.00,
-    "previousPrice": 49500.00,
-    "change24h": 2.5,
-    "volume24h": 50000000000,
-    "tradeDirection": "up",
-    "source": "coinbase",
-    "sources": ["coinbase", "binance", "coingecko"],
-    "timestamp": 1704067200000
-  }
+  "symbol": "btc",
+  "price": 67234.56,
+  "change_24h": 2.34,
+  "volume_24h": 28500000000,
+  "timestamp": 1700000000000
 }
 ```
 
-**Fields:**
+### Order Book Update
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Asset identifier |
-| `symbol` | string | Asset symbol (lowercase) |
-| `price` | float | Current price in USD |
-| `previousPrice` | float? | Previous price (for direction) |
-| `change24h` | float? | 24-hour percentage change |
-| `volume24h` | float? | 24-hour trading volume |
-| `tradeDirection` | string? | `"up"` or `"down"` |
-| `source` | string | Primary price source |
-| `sources` | array | All contributing sources |
-| `timestamp` | integer | Unix timestamp in milliseconds |
-
-### Market Update
-
-Sent periodically with global market data.
+Sent when order book data changes (if subscribed to order book channel).
 
 ```json
 {
-  "type": "market_update",
-  "data": {
-    "totalMarketCap": 2000000000000,
-    "totalVolume24h": 100000000000,
-    "btcDominance": 45.5,
-    "timestamp": 1704067200000
-  }
+  "type": "orderbook_update",
+  "symbol": "btc",
+  "bids": [
+    { "price": 67230.00, "quantity": 1.5 },
+    { "price": 67225.00, "quantity": 2.3 }
+  ],
+  "asks": [
+    { "price": 67235.00, "quantity": 0.8 },
+    { "price": 67240.00, "quantity": 1.2 }
+  ],
+  "timestamp": 1700000000000
 }
 ```
 
-### Seeding Progress
+### Signal Update
 
-Sent when historical data seeding status changes.
+Sent when a trading signal is generated.
 
 ```json
 {
-  "type": "seeding_progress",
-  "data": {
-    "symbol": "btc",
-    "status": "in_progress",
-    "progress": 50,
-    "points": 500,
-    "message": "Fetching from CoinGecko..."
-  }
+  "type": "signal_update",
+  "symbol": "btc",
+  "indicator": "rsi",
+  "signal": "buy",
+  "value": 28.5,
+  "confidence": 0.85,
+  "timestamp": 1700000000000
 }
 ```
 
-**Status Values:**
-- `in_progress` - Actively fetching data
-- `complete` - Finished successfully
-- `failed` - Fetching failed
+### Server Status
 
-**Progress:** 0-100 percentage complete
+Periodic server health updates.
+
+```json
+{
+  "type": "server_status",
+  "connected_peers": 5,
+  "active_sources": 12,
+  "symbols_tracked": 150,
+  "uptime_seconds": 86400
+}
+```
+
+### Pong
+
+Response to ping messages.
+
+```json
+{
+  "type": "pong",
+  "timestamp": 1700000000000
+}
+```
 
 ### Error
 
-Sent when an error occurs processing a client message.
+Sent when an error occurs.
 
 ```json
 {
   "type": "error",
-  "error": "Invalid message format"
+  "code": "invalid_symbol",
+  "message": "Symbol 'xyz' not found"
 }
 ```
 
-## Price Sources
+---
 
-| Source | Type | Description |
-|--------|------|-------------|
-| `coinbase` | WebSocket | Real-time trades |
-| `binance` | WebSocket | Real-time trades |
-| `kraken` | REST | Periodic polling |
-| `kucoin` | WebSocket | Real-time trades |
-| `okx` | WebSocket | Real-time trades |
-| `huobi` | WebSocket | Real-time trades |
-| `coingecko` | REST | Aggregated prices |
-| `coinmarketcap` | REST | Market data |
-| `cryptocompare` | REST | Historical data |
+## Example Client
 
-## Trade Direction
-
-The `tradeDirection` field indicates short-term price movement:
-
-- `"up"` - Price increased from previous update
-- `"down"` - Price decreased from previous update
-- `null` - No previous price available
-
-## Example Usage
+### JavaScript
 
 ```javascript
 const ws = new WebSocket('ws://localhost:3000/ws');
 
 ws.onopen = () => {
-  // Subscribe to Bitcoin and Ethereum
+  console.log('Connected to Haunt WebSocket');
+
+  // Subscribe to symbols
   ws.send(JSON.stringify({
     type: 'subscribe',
-    assets: ['btc', 'eth']
+    symbols: ['btc', 'eth', 'sol']
   }));
 };
 
 ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
+  const message = JSON.parse(event.data);
 
-  switch (msg.type) {
+  switch (message.type) {
     case 'price_update':
-      updatePrice(msg.data);
+      console.log(`${message.symbol}: $${message.price}`);
       break;
-    case 'market_update':
-      updateMarket(msg.data);
-      break;
-    case 'seeding_progress':
-      updateSeedingStatus(msg.data);
-      break;
-    case 'subscribed':
-      console.log('Subscribed to:', msg.assets);
+    case 'signal_update':
+      console.log(`Signal: ${message.indicator} ${message.signal}`);
       break;
     case 'error':
-      console.error('WebSocket error:', msg.error);
+      console.error(`Error: ${message.message}`);
       break;
   }
 };
 
-function updatePrice(data) {
-  console.log(`${data.symbol}: $${data.price} (${data.tradeDirection})`);
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+ws.onclose = () => {
+  console.log('Disconnected from Haunt WebSocket');
+};
+
+// Keep connection alive with periodic pings
+setInterval(() => {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'ping' }));
+  }
+}, 30000);
+```
+
+### Rust
+
+```rust
+use tokio_tungstenite::connect_async;
+use futures_util::{StreamExt, SinkExt};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() {
+    let (mut ws, _) = connect_async("ws://localhost:3000/ws")
+        .await
+        .expect("Failed to connect");
+
+    // Subscribe to symbols
+    ws.send(json!({
+        "type": "subscribe",
+        "symbols": ["btc", "eth"]
+    }).to_string().into())
+    .await
+    .unwrap();
+
+    // Handle messages
+    while let Some(msg) = ws.next().await {
+        if let Ok(text) = msg.unwrap().into_text() {
+            let data: serde_json::Value = serde_json::from_str(&text).unwrap();
+            println!("Received: {:?}", data);
+        }
+    }
 }
 ```
 
-## Reconnection
+---
 
-The server does not send heartbeat messages. Clients should implement reconnection logic:
+## Rate Limits
 
-```javascript
-function connect() {
-  const ws = new WebSocket('ws://localhost:3000/ws');
+- Maximum 100 subscriptions per connection
+- Maximum 10 messages per second
+- Connections are closed after 5 minutes of inactivity (unless ping/pong is active)
 
-  ws.onclose = () => {
-    console.log('Disconnected, reconnecting in 5s...');
-    setTimeout(connect, 5000);
-  };
+## Error Codes
 
-  ws.onerror = (err) => {
-    console.error('WebSocket error:', err);
-    ws.close();
-  };
-
-  return ws;
-}
-```
+| Code | Description |
+|------|-------------|
+| `invalid_message` | Malformed JSON or missing required fields |
+| `invalid_symbol` | Requested symbol does not exist |
+| `rate_limited` | Too many messages sent |
+| `subscription_limit` | Maximum subscriptions exceeded |
+| `internal_error` | Server-side error occurred |
