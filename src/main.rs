@@ -10,7 +10,8 @@ use axum::{routing::get, Router};
 use config::Config;
 use services::{
     AccuracyStore, AssetService, AuthService, ChartStore, HistoricalDataService,
-    MultiSourceCoordinator, OrderBookService, PredictionStore, SignalStore, SqliteStore,
+    MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore,
+    SignalStore, SqliteStore,
 };
 use sources::{AlpacaWs, CoinMarketCapClient, FinnhubClient, TiingoWs};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -40,6 +41,7 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub sqlite_store: Arc<SqliteStore>,
     pub orderbook_service: Arc<OrderBookService>,
+    pub peer_mesh: Option<Arc<PeerMesh>>,
 }
 
 #[tokio::main]
@@ -227,6 +229,34 @@ async fn main() -> anyhow::Result<()> {
     let orderbook_service = Arc::new(OrderBookService::new());
     info!("Order book service initialized");
 
+    // Create peer mesh for multi-server connectivity
+    let peer_mesh = if !config.peer_servers.is_empty() || !config.server_id.is_empty() {
+        info!(
+            "Initializing peer mesh: server_id={}, region={}, peers={}",
+            config.server_id,
+            config.server_region,
+            config.peer_servers.len()
+        );
+
+        let mesh = PeerMesh::new(config.server_id.clone(), config.server_region.clone());
+
+        // Add configured peer servers
+        for peer_config in &config.peer_servers {
+            info!("Adding peer: {} ({})", peer_config.id, peer_config.region);
+            mesh.add_peer(PeerConfig {
+                id: peer_config.id.clone(),
+                region: peer_config.region.clone(),
+                ws_url: peer_config.ws_url.clone(),
+                api_url: peer_config.api_url.clone(),
+            });
+        }
+
+        Some(mesh)
+    } else {
+        info!("Peer mesh disabled (no SERVER_ID or PEER_SERVERS configured)");
+        None
+    };
+
     // Create auth service with Redis (for sessions) and SQLite (for profiles)
     let redis_conn = if let Some(ref redis_url) = config.redis_url {
         match redis::Client::open(redis_url.as_str()) {
@@ -257,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         config: config.clone(),
         coordinator: coordinator.clone(),
-        room_manager,
+        room_manager: room_manager.clone(),
         chart_store: chart_store.clone(),
         cmc_client,
         finnhub_client,
@@ -268,10 +298,46 @@ async fn main() -> anyhow::Result<()> {
         auth_service,
         sqlite_store,
         orderbook_service,
+        peer_mesh: peer_mesh.clone(),
     };
 
     // Start the price sources
     coordinator.start().await;
+
+    // Start the peer mesh if configured
+    if let Some(ref mesh) = peer_mesh {
+        info!("Starting peer mesh connections...");
+        mesh.clone().start();
+
+        // Spawn peer status broadcast task to connected WebSocket clients
+        let mesh_for_broadcast = mesh.clone();
+        let room_manager_for_peers = room_manager.clone();
+        let config_for_peers = config.clone();
+
+        tokio::spawn(async move {
+            let mut peer_rx = mesh_for_broadcast.subscribe();
+
+            while let Ok(statuses) = peer_rx.recv().await {
+                // Build the peer update message
+                let update_data = types::PeerUpdateData {
+                    server_id: config_for_peers.server_id.clone(),
+                    server_region: config_for_peers.server_region.clone(),
+                    peers: statuses,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+
+                let msg = types::ServerMessage::PeerUpdate { data: update_data };
+
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    // Send to all clients subscribed to peer updates
+                    let subscribers = room_manager_for_peers.get_peer_subscribers();
+                    for tx in subscribers {
+                        let _ = tx.send(json.clone());
+                    }
+                }
+            }
+        });
+    }
 
     // Start periodic Redis save tasks
     {

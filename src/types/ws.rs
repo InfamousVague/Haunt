@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use super::{AggregatedPrice, GlobalMetrics, PriceSource, SignalDirection, TradeDirection};
+use super::{AggregatedPrice, GlobalMetrics, PeerStatus, PriceSource, SignalDirection, TradeDirection};
 
 /// Incoming WebSocket message from client.
 #[derive(Debug, Clone, Deserialize)]
@@ -9,6 +9,10 @@ pub enum ClientMessage {
     Unsubscribe { assets: Vec<String> },
     /// Set throttle interval in milliseconds (0 = no throttling)
     SetThrottle { throttle_ms: u64 },
+    /// Subscribe to peer status updates (real-time ping data)
+    SubscribePeers,
+    /// Unsubscribe from peer status updates
+    UnsubscribePeers,
 }
 
 /// Outgoing WebSocket message to client.
@@ -19,9 +23,15 @@ pub enum ServerMessage {
     MarketUpdate { data: MarketUpdateData },
     SeedingProgress { data: SeedingProgressData },
     SignalUpdate { data: SignalUpdateData },
+    /// Real-time peer status update with latency info
+    PeerUpdate { data: PeerUpdateData },
     Subscribed { assets: Vec<String> },
     Unsubscribed { assets: Vec<String> },
     ThrottleSet { throttle_ms: u64 },
+    /// Confirmation of peer subscription
+    PeersSubscribed,
+    /// Confirmation of peer unsubscription
+    PeersUnsubscribed,
     Error { error: String },
 }
 
@@ -116,4 +126,18 @@ impl From<GlobalMetrics> for MarketUpdateData {
             timestamp: chrono::Utc::now().timestamp_millis(),
         }
     }
+}
+
+/// Peer status update payload for real-time server connectivity info.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerUpdateData {
+    /// This server's ID.
+    pub server_id: String,
+    /// This server's region.
+    pub server_region: String,
+    /// Status of all peer connections.
+    pub peers: Vec<PeerStatus>,
+    /// Timestamp of this update.
+    pub timestamp: i64,
 }

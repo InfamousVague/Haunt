@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod health;
 pub mod market;
 pub mod orderbook;
+pub mod peers;
 pub mod signals;
 
 use axum::Router;
@@ -17,4 +18,5 @@ pub fn router() -> Router<AppState> {
         .nest("/api/signals", signals::router())
         .nest("/api/auth", auth::router())
         .nest("/api/orderbook", orderbook::router())
+        .nest("/api/peers", peers::router())
 }

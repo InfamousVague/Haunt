@@ -154,6 +154,20 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             let response = ServerMessage::ThrottleSet { throttle_ms };
             send_message(state, client_id, &response);
         }
+        ClientMessage::SubscribePeers => {
+            state.room_manager.subscribe_peers(client_id);
+            debug!("Client {} subscribed to peer updates", client_id);
+
+            let response = ServerMessage::PeersSubscribed;
+            send_message(state, client_id, &response);
+        }
+        ClientMessage::UnsubscribePeers => {
+            state.room_manager.unsubscribe_peers(client_id);
+            debug!("Client {} unsubscribed from peer updates", client_id);
+
+            let response = ServerMessage::PeersUnsubscribed;
+            send_message(state, client_id, &response);
+        }
     }
 }
 

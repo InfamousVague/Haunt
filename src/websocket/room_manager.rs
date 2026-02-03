@@ -18,6 +18,8 @@ pub struct ClientSubscription {
     pub throttle_ms: AtomicU64,
     /// Last update time per symbol for throttling.
     pub last_updates: RwLock<HashMap<String, Instant>>,
+    /// Whether this client is subscribed to peer updates.
+    pub subscribed_to_peers: std::sync::atomic::AtomicBool,
 }
 
 /// Manages WebSocket client subscriptions.
@@ -45,8 +47,46 @@ impl RoomManager {
             tx,
             throttle_ms: AtomicU64::new(0),
             last_updates: RwLock::new(HashMap::new()),
+            subscribed_to_peers: std::sync::atomic::AtomicBool::new(false),
         });
         client_id
+    }
+
+    /// Subscribe a client to peer updates.
+    pub fn subscribe_peers(&self, client_id: Uuid) -> bool {
+        if let Some(client) = self.clients.get(&client_id) {
+            client.subscribed_to_peers.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Unsubscribe a client from peer updates.
+    pub fn unsubscribe_peers(&self, client_id: Uuid) -> bool {
+        if let Some(client) = self.clients.get(&client_id) {
+            client.subscribed_to_peers.store(false, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a client is subscribed to peer updates.
+    pub fn is_subscribed_to_peers(&self, client_id: Uuid) -> bool {
+        self.clients
+            .get(&client_id)
+            .map(|c| c.subscribed_to_peers.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    /// Get all clients subscribed to peer updates.
+    pub fn get_peer_subscribers(&self) -> Vec<mpsc::UnboundedSender<String>> {
+        self.clients
+            .iter()
+            .filter(|c| c.subscribed_to_peers.load(std::sync::atomic::Ordering::Relaxed))
+            .map(|c| c.tx.clone())
+            .collect()
     }
 
     /// Set throttle interval for a client.

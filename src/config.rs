@@ -1,5 +1,18 @@
 use std::env;
 
+/// Peer server configuration for mesh networking.
+#[derive(Debug, Clone)]
+pub struct PeerServerConfig {
+    /// Unique server ID.
+    pub id: String,
+    /// Server region/location name.
+    pub region: String,
+    /// WebSocket URL (ws:// or wss://).
+    pub ws_url: String,
+    /// HTTP API URL.
+    pub api_url: String,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -41,11 +54,40 @@ pub struct Config {
     pub throttle_ms: u64,
     /// Stale threshold for price sources (ms).
     pub stale_threshold_ms: u64,
+    /// This server's unique ID for peer mesh.
+    pub server_id: String,
+    /// This server's region/location.
+    pub server_region: String,
+    /// Peer servers for mesh connectivity.
+    pub peer_servers: Vec<PeerServerConfig>,
 }
 
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
+        // Parse peer servers from PEER_SERVERS env var
+        // Format: "id:region:ws_url:api_url,id2:region2:ws_url2:api_url2"
+        let peer_servers = env::var("PEER_SERVERS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|peer| {
+                        let parts: Vec<&str> = peer.split('|').collect();
+                        if parts.len() >= 4 {
+                            Some(PeerServerConfig {
+                                id: parts[0].to_string(),
+                                region: parts[1].to_string(),
+                                ws_url: parts[2].to_string(),
+                                api_url: parts[3].to_string(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             port: env::var("PORT")
@@ -78,6 +120,12 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(120_000),
+            server_id: env::var("SERVER_ID").unwrap_or_else(|_| {
+                // Generate a random ID if not specified
+                uuid::Uuid::new_v4().to_string()
+            }),
+            server_region: env::var("SERVER_REGION").unwrap_or_else(|_| "unknown".to_string()),
+            peer_servers,
         }
     }
 }
