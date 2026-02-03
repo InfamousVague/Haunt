@@ -13,6 +13,24 @@ pub struct PeerServerConfig {
     pub api_url: String,
 }
 
+/// Bootstrap server configuration for initial mesh discovery.
+#[derive(Debug, Clone)]
+pub struct BootstrapServerConfig {
+    /// Server ID.
+    pub id: String,
+    /// Server host:port.
+    pub address: String,
+}
+
+/// Mesh authentication configuration.
+#[derive(Debug, Clone)]
+pub struct MeshAuthConfig {
+    /// Shared secret key for peer authentication.
+    pub shared_key: String,
+    /// Whether to require authentication for peer connections.
+    pub require_auth: bool,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -60,13 +78,21 @@ pub struct Config {
     pub server_region: String,
     /// Peer servers for mesh connectivity.
     pub peer_servers: Vec<PeerServerConfig>,
+    /// Bootstrap servers for initial mesh discovery.
+    pub bootstrap_servers: Vec<BootstrapServerConfig>,
+    /// This server's public WebSocket URL (for announcements).
+    pub public_ws_url: String,
+    /// This server's public API URL (for announcements).
+    pub public_api_url: String,
+    /// Mesh authentication configuration.
+    pub mesh_auth: MeshAuthConfig,
 }
 
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
         // Parse peer servers from PEER_SERVERS env var
-        // Format: "id:region:ws_url:api_url,id2:region2:ws_url2:api_url2"
+        // Format: "id|region|ws_url|api_url,id2|region2|ws_url2|api_url2"
         let peer_servers = env::var("PEER_SERVERS")
             .ok()
             .map(|s| {
@@ -88,12 +114,42 @@ impl Config {
             })
             .unwrap_or_default();
 
+        // Parse bootstrap servers from MESH_BOOTSTRAP_SERVERS env var
+        // Format: "id|host:port,id2|host2:port2"
+        let bootstrap_servers = env::var("MESH_BOOTSTRAP_SERVERS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|server| {
+                        let parts: Vec<&str> = server.split('|').collect();
+                        if parts.len() >= 2 {
+                            Some(BootstrapServerConfig {
+                                id: parts[0].to_string(),
+                                address: parts[1].to_string(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let port: u16 = env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3001);
+
+        // Public URLs for mesh announcements (defaults to local address)
+        let public_ws_url = env::var("PUBLIC_WS_URL")
+            .unwrap_or_else(|_| format!("ws://{}:{}/ws", host, port));
+        let public_api_url = env::var("PUBLIC_API_URL")
+            .unwrap_or_else(|_| format!("http://{}:{}", host, port));
+
         Self {
-            host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            port: env::var("PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(3001),
+            host,
+            port,
             redis_url: env::var("REDIS_URL").ok().or_else(|| Some("redis://127.0.0.1:6379".to_string())),
             cmc_api_key: env::var("CMC_API_KEY").ok(),
             coingecko_api_key: env::var("COINGECKO_API_KEY").ok(),
@@ -126,6 +182,16 @@ impl Config {
             }),
             server_region: env::var("SERVER_REGION").unwrap_or_else(|_| "unknown".to_string()),
             peer_servers,
+            bootstrap_servers,
+            public_ws_url,
+            public_api_url,
+            mesh_auth: MeshAuthConfig {
+                shared_key: env::var("MESH_SHARED_KEY").unwrap_or_default(),
+                require_auth: env::var("MESH_REQUIRE_AUTH")
+                    .ok()
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false),
+            },
         }
     }
 }

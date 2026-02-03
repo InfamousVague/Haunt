@@ -20,7 +20,7 @@ pub use multi_source::MultiSourceCoordinator;
 pub use orderbook::OrderBookService;
 pub use peer_mesh::PeerMesh;
 // Re-export peer types from types module
-pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerMessage, PeerStatus};
+pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerInfo, PeerMessage, PeerStatus};
 pub use price_cache::{ExchangeStats, PriceCache, SymbolSourceStat};
 pub use redis_store::RedisStore;
 pub use signals::{AccuracyStore, PredictionStore, SignalStore};

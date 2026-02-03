@@ -19,4 +19,5 @@ pub fn router() -> Router<AppState> {
         .nest("/api/auth", auth::router())
         .nest("/api/orderbook", orderbook::router())
         .nest("/api/peers", peers::router())
+        .nest("/api/mesh", peers::mesh_router())
 }

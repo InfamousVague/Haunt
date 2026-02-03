@@ -5,15 +5,17 @@
 
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, RwLock};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 // Re-export types from the types module
-pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerMessage, PeerStatus};
+pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerInfo, PeerMessage, PeerStatus};
 
 /// Internal peer connection state.
 struct PeerConnection {
@@ -92,32 +94,104 @@ impl PeerConnection {
     }
 }
 
+/// Type alias for HMAC-SHA256.
+type HmacSha256 = Hmac<Sha256>;
+
+/// Discovered peer from gossip protocol.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPeer {
+    pub config: PeerConfig,
+    pub last_seen: i64,
+    pub discovered_from: String,
+}
+
 /// Manages peer mesh connections and real-time ping monitoring.
 pub struct PeerMesh {
     /// This server's ID.
     server_id: String,
     /// This server's region.
     server_region: String,
+    /// This server's WebSocket URL (for announcements).
+    ws_url: String,
+    /// This server's API URL (for announcements).
+    api_url: String,
     /// Connected peers.
     peers: DashMap<String, RwLock<PeerConnection>>,
+    /// Discovered peers from gossip (not yet connected).
+    known_peers: DashMap<String, DiscoveredPeer>,
     /// Broadcast channel for peer status updates.
     status_tx: broadcast::Sender<Vec<PeerStatus>>,
     /// Pending ping timestamps for latency calculation.
     pending_pings: DashMap<String, Instant>,
+    /// Shared key for mesh authentication.
+    shared_key: Option<String>,
+    /// Whether authentication is required.
+    require_auth: bool,
 }
 
 impl PeerMesh {
     /// Create a new peer mesh manager.
-    pub fn new(server_id: String, server_region: String) -> Arc<Self> {
+    pub fn new(
+        server_id: String,
+        server_region: String,
+        ws_url: String,
+        api_url: String,
+        shared_key: Option<String>,
+        require_auth: bool,
+    ) -> Arc<Self> {
         let (status_tx, _) = broadcast::channel(256);
 
         Arc::new(Self {
             server_id,
             server_region,
+            ws_url,
+            api_url,
             peers: DashMap::new(),
+            known_peers: DashMap::new(),
             status_tx,
             pending_pings: DashMap::new(),
+            shared_key,
+            require_auth,
         })
+    }
+
+    /// Get this server's WebSocket URL.
+    pub fn ws_url(&self) -> &str {
+        &self.ws_url
+    }
+
+    /// Get this server's API URL.
+    pub fn api_url(&self) -> &str {
+        &self.api_url
+    }
+
+    /// Generate an HMAC signature for authentication.
+    fn generate_signature(&self, message: &str) -> Option<String> {
+        self.shared_key.as_ref().map(|key| {
+            let mut mac = HmacSha256::new_from_slice(key.as_bytes())
+                .expect("HMAC can take key of any size");
+            mac.update(message.as_bytes());
+            let result = mac.finalize();
+            hex::encode(result.into_bytes())
+        })
+    }
+
+    /// Verify an HMAC signature.
+    fn verify_signature(&self, message: &str, signature: &str) -> bool {
+        match &self.shared_key {
+            Some(key) => {
+                let mut mac = HmacSha256::new_from_slice(key.as_bytes())
+                    .expect("HMAC can take key of any size");
+                mac.update(message.as_bytes());
+
+                if let Ok(expected) = hex::decode(signature) {
+                    mac.verify_slice(&expected).is_ok()
+                } else {
+                    false
+                }
+            }
+            None => !self.require_auth, // If no key and auth not required, pass
+        }
     }
 
     /// Subscribe to peer status updates.
@@ -165,6 +239,234 @@ impl PeerMesh {
         let _ = self.status_tx.send(statuses);
     }
 
+    /// Get all known peers (discovered via gossip).
+    pub fn get_known_peers(&self) -> Vec<PeerInfo> {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.known_peers
+            .iter()
+            .map(|entry| {
+                let discovered = entry.value();
+                PeerInfo {
+                    id: discovered.config.id.clone(),
+                    region: discovered.config.region.clone(),
+                    ws_url: discovered.config.ws_url.clone(),
+                    api_url: discovered.config.api_url.clone(),
+                    last_seen: discovered.last_seen,
+                    status: if now - discovered.last_seen < 120_000 {
+                        PeerConnectionStatus::Connected
+                    } else {
+                        PeerConnectionStatus::Disconnected
+                    },
+                    latency_ms: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Generate announcement signature.
+    fn generate_announce_signature(&self, timestamp: i64) -> Option<String> {
+        self.shared_key.as_ref().map(|key| {
+            let message = format!("announce:{}:{}:{}", self.server_id, self.server_region, timestamp);
+            let mut mac = HmacSha256::new_from_slice(key.as_bytes())
+                .expect("HMAC can take key of any size");
+            mac.update(message.as_bytes());
+            hex::encode(mac.finalize().into_bytes())
+        })
+    }
+
+    /// Verify announcement signature.
+    fn verify_announce_signature(&self, id: &str, region: &str, timestamp: i64, signature: &str) -> bool {
+        match &self.shared_key {
+            Some(key) => {
+                let message = format!("announce:{}:{}:{}", id, region, timestamp);
+                let mut mac = HmacSha256::new_from_slice(key.as_bytes())
+                    .expect("HMAC can take key of any size");
+                mac.update(message.as_bytes());
+                if let Ok(expected) = hex::decode(signature) {
+                    mac.verify_slice(&expected).is_ok()
+                } else {
+                    false
+                }
+            }
+            None => !self.require_auth,
+        }
+    }
+
+    /// Create an announcement message for this server.
+    pub fn create_announce(&self) -> Option<PeerMessage> {
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let signature = self.generate_announce_signature(timestamp)?;
+
+        Some(PeerMessage::Announce {
+            id: self.server_id.clone(),
+            region: self.server_region.clone(),
+            ws_url: self.ws_url.clone(),
+            api_url: self.api_url.clone(),
+            signature,
+            timestamp,
+        })
+    }
+
+    /// Handle an announce message - add peer to known peers and optionally connect.
+    pub fn handle_announce(
+        &self,
+        id: String,
+        region: String,
+        ws_url: String,
+        api_url: String,
+        signature: String,
+        timestamp: i64,
+    ) -> bool {
+        // Don't process our own announcements
+        if id == self.server_id {
+            return false;
+        }
+
+        // Verify signature
+        if !self.verify_announce_signature(&id, &region, timestamp, &signature) {
+            warn!("Invalid announce signature from {}", id);
+            return false;
+        }
+
+        // Check timestamp freshness (within 5 minutes)
+        let now = chrono::Utc::now().timestamp_millis();
+        if (now - timestamp).abs() > 300_000 {
+            warn!("Stale announce from {} (timestamp {} vs now {})", id, timestamp, now);
+            return false;
+        }
+
+        let config = PeerConfig {
+            id: id.clone(),
+            region: region.clone(),
+            ws_url,
+            api_url,
+        };
+
+        // Add to known peers
+        let is_new = !self.known_peers.contains_key(&id);
+        self.known_peers.insert(
+            id.clone(),
+            DiscoveredPeer {
+                config: config.clone(),
+                last_seen: now,
+                discovered_from: "announce".to_string(),
+            },
+        );
+
+        if is_new {
+            info!("Discovered new peer via announce: {} ({})", id, region);
+            // Auto-connect to new peers if not already connected
+            if !self.peers.contains_key(&id) {
+                self.add_peer(config);
+            }
+        }
+
+        true
+    }
+
+    /// Handle received peer list from SharePeers message.
+    pub fn handle_share_peers(&self, peers: Vec<PeerInfo>, from_peer: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for peer_info in peers {
+            // Don't add ourselves
+            if peer_info.id == self.server_id {
+                continue;
+            }
+
+            let is_new = !self.known_peers.contains_key(&peer_info.id);
+
+            // Update or add to known peers
+            self.known_peers.insert(
+                peer_info.id.clone(),
+                DiscoveredPeer {
+                    config: PeerConfig {
+                        id: peer_info.id.clone(),
+                        region: peer_info.region.clone(),
+                        ws_url: peer_info.ws_url.clone(),
+                        api_url: peer_info.api_url.clone(),
+                    },
+                    last_seen: now,
+                    discovered_from: from_peer.to_string(),
+                },
+            );
+
+            if is_new {
+                info!("Discovered new peer via gossip from {}: {} ({})", from_peer, peer_info.id, peer_info.region);
+            }
+        }
+    }
+
+    /// Create a SharePeers message with our known peers.
+    pub fn create_share_peers(&self) -> PeerMessage {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut peers: Vec<PeerInfo> = Vec::new();
+
+        // Add connected peers
+        for entry in self.peers.iter() {
+            if let Ok(peer) = entry.value().try_read() {
+                let status = peer.get_status();
+                peers.push(PeerInfo {
+                    id: peer.config.id.clone(),
+                    region: peer.config.region.clone(),
+                    ws_url: peer.config.ws_url.clone(),
+                    api_url: peer.config.api_url.clone(),
+                    last_seen: now,
+                    status: status.status,
+                    latency_ms: status.latency_ms,
+                });
+            }
+        }
+
+        // Add ourselves
+        peers.push(PeerInfo {
+            id: self.server_id.clone(),
+            region: self.server_region.clone(),
+            ws_url: self.ws_url.clone(),
+            api_url: self.api_url.clone(),
+            last_seen: now,
+            status: PeerConnectionStatus::Connected,
+            latency_ms: Some(0.0),
+        });
+
+        PeerMessage::SharePeers { peers }
+    }
+
+    /// Prune peers not seen in the given duration.
+    pub fn prune_stale_peers(&self, max_age_ms: i64) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let stale_keys: Vec<String> = self
+            .known_peers
+            .iter()
+            .filter(|entry| now - entry.value().last_seen > max_age_ms)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for key in stale_keys {
+            info!("Pruning stale peer: {}", key);
+            self.known_peers.remove(&key);
+        }
+    }
+
+    /// Connect to any known peers that we're not already connected to.
+    pub fn connect_to_discovered_peers(self: &Arc<Self>) {
+        for entry in self.known_peers.iter() {
+            let peer_id = entry.key().clone();
+            if !self.peers.contains_key(&peer_id) {
+                let config = entry.value().config.clone();
+                info!("Auto-connecting to discovered peer: {} ({})", peer_id, config.region);
+                self.add_peer(config);
+
+                // Spawn connection task
+                let mesh_clone = self.clone();
+                let peer_id_clone = peer_id.clone();
+                tokio::spawn(async move {
+                    mesh_clone.manage_peer_connection(peer_id_clone).await;
+                });
+            }
+        }
+    }
+
     /// Start the peer mesh (connect to all peers and begin ping monitoring).
     pub fn start(self: Arc<Self>) {
         let mesh = self.clone();
@@ -186,6 +488,28 @@ impl PeerMesh {
             loop {
                 interval.tick().await;
                 mesh_broadcast.broadcast_statuses();
+            }
+        });
+
+        // Spawn gossip task (every 30 seconds, share peers with random subset)
+        let mesh_gossip = mesh.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                // Check for new discovered peers and connect
+                mesh_gossip.connect_to_discovered_peers();
+            }
+        });
+
+        // Spawn stale peer pruning task (every 5 minutes)
+        let mesh_prune = mesh.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                // Prune peers not seen in 10 minutes
+                mesh_prune.prune_stale_peers(600_000);
             }
         });
     }
@@ -267,17 +591,48 @@ impl PeerMesh {
     ) {
         let (mut write, mut read) = ws.split();
 
-        // Send identification
-        let identify_msg = PeerMessage::Identify {
-            id: self.server_id.clone(),
-            region: self.server_region.clone(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
+        // Send authentication if shared key is configured
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let auth_message = format!("{}:{}:{}", self.server_id, self.server_region, timestamp);
 
-        if let Ok(json) = serde_json::to_string(&identify_msg) {
-            if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
-                error!("Failed to send identify to {}: {}", peer_id, e);
-                return;
+        if let Some(signature) = self.generate_signature(&auth_message) {
+            let auth_msg = PeerMessage::Auth {
+                id: self.server_id.clone(),
+                region: self.server_region.clone(),
+                timestamp,
+                signature,
+            };
+
+            if let Ok(json) = serde_json::to_string(&auth_msg) {
+                if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                    error!("Failed to send auth to {}: {}", peer_id, e);
+                    return;
+                }
+            }
+
+            // Wait for auth response
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = read.next().await {
+                if let Ok(PeerMessage::AuthResponse { success, error }) = serde_json::from_str(&text) {
+                    if !success {
+                        error!("Auth failed for peer {}: {:?}", peer_id, error);
+                        return;
+                    }
+                    info!("Authenticated with peer {}", peer_id);
+                }
+            }
+        } else {
+            // No auth configured, send identification for backwards compatibility
+            let identify_msg = PeerMessage::Identify {
+                id: self.server_id.clone(),
+                region: self.server_region.clone(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            };
+
+            if let Ok(json) = serde_json::to_string(&identify_msg) {
+                if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                    error!("Failed to send identify to {}: {}", peer_id, e);
+                    return;
+                }
             }
         }
 
@@ -347,6 +702,26 @@ impl PeerMesh {
     /// Handle an incoming peer message.
     async fn handle_peer_message(&self, peer_id: &str, msg: PeerMessage) {
         match msg {
+            PeerMessage::Auth { id, region, timestamp, signature } => {
+                // Verify incoming auth request
+                let auth_message = format!("{}:{}:{}", id, region, timestamp);
+                let success = self.verify_signature(&auth_message, &signature);
+
+                if success {
+                    info!("Peer {} authenticated successfully", id);
+                } else {
+                    warn!("Peer {} failed authentication", id);
+                }
+
+                // Note: Auth response would be sent if this were an incoming connection handler
+            }
+            PeerMessage::AuthResponse { success, error } => {
+                if success {
+                    debug!("Received auth success from {}", peer_id);
+                } else {
+                    warn!("Auth rejected by {}: {:?}", peer_id, error);
+                }
+            }
             PeerMessage::Pong { .. } => {
                 // Calculate latency
                 if let Some((_, sent_at)) = self.pending_pings.remove(peer_id) {
@@ -371,6 +746,23 @@ impl PeerMesh {
             PeerMessage::StatusBroadcast { peers } => {
                 debug!("Received status broadcast with {} peers", peers.len());
             }
+            PeerMessage::Announce {
+                id,
+                region,
+                ws_url,
+                api_url,
+                signature,
+                timestamp,
+            } => {
+                self.handle_announce(id, region, ws_url, api_url, signature, timestamp);
+            }
+            PeerMessage::SharePeers { peers } => {
+                self.handle_share_peers(peers, peer_id);
+            }
+            PeerMessage::RequestPeers => {
+                debug!("Received peer request from {}", peer_id);
+                // Response will be sent via the write channel
+            }
         }
     }
 }
@@ -381,9 +773,14 @@ impl Clone for PeerMesh {
         Self {
             server_id: self.server_id.clone(),
             server_region: self.server_region.clone(),
+            ws_url: self.ws_url.clone(),
+            api_url: self.api_url.clone(),
             peers: DashMap::new(),
+            known_peers: DashMap::new(),
             status_tx: self.status_tx.clone(),
             pending_pings: DashMap::new(),
+            shared_key: self.shared_key.clone(),
+            require_auth: self.require_auth,
         }
     }
 }

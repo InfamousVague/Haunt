@@ -25,6 +25,27 @@ pub enum PeerConnectionStatus {
     Failed,
 }
 
+/// Lightweight peer info for gossip protocol sharing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInfo {
+    /// Unique server ID.
+    pub id: String,
+    /// Server region/location name.
+    pub region: String,
+    /// WebSocket URL for peer connection.
+    pub ws_url: String,
+    /// HTTP API URL for health checks.
+    pub api_url: String,
+    /// Last seen timestamp (milliseconds since epoch).
+    pub last_seen: i64,
+    /// Current connection status as observed by the sharing peer.
+    pub status: PeerConnectionStatus,
+    /// Optional latency observed by the sharing peer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+}
+
 /// Real-time peer status with latency information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +86,20 @@ pub struct PeerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PeerMessage {
+    /// Authentication request with HMAC signature.
+    Auth {
+        id: String,
+        region: String,
+        timestamp: i64,
+        /// HMAC-SHA256 signature of "id:region:timestamp" using shared key.
+        signature: String,
+    },
+    /// Authentication response.
+    AuthResponse {
+        success: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Ping request with timestamp.
     Ping {
         from_id: String,
@@ -77,7 +112,7 @@ pub enum PeerMessage {
         from_region: String,
         original_timestamp: i64,
     },
-    /// Server identification on connect.
+    /// Server identification on connect (for backwards compatibility).
     Identify {
         id: String,
         region: String,
@@ -87,4 +122,26 @@ pub enum PeerMessage {
     StatusBroadcast {
         peers: Vec<PeerStatus>,
     },
+    /// Server announces itself to the mesh (gossip protocol).
+    Announce {
+        /// Server ID.
+        id: String,
+        /// Server region.
+        region: String,
+        /// WebSocket URL for peer connections.
+        ws_url: String,
+        /// HTTP API URL.
+        api_url: String,
+        /// HMAC-SHA256 signature of "announce:id:region:timestamp" for verification.
+        signature: String,
+        /// Timestamp when announcement was created.
+        timestamp: i64,
+    },
+    /// Share known peers with another server (gossip protocol).
+    SharePeers {
+        /// List of known peers.
+        peers: Vec<PeerInfo>,
+    },
+    /// Request peer list from a connected server (gossip protocol).
+    RequestPeers,
 }

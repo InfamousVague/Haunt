@@ -230,15 +230,30 @@ async fn main() -> anyhow::Result<()> {
     info!("Order book service initialized");
 
     // Create peer mesh for multi-server connectivity
-    let peer_mesh = if !config.peer_servers.is_empty() || !config.server_id.is_empty() {
+    let peer_mesh = if !config.peer_servers.is_empty()
+        || !config.bootstrap_servers.is_empty()
+        || !config.server_id.is_empty()
+    {
         info!(
-            "Initializing peer mesh: server_id={}, region={}, peers={}",
+            "Initializing peer mesh: server_id={}, region={}, peers={}, bootstrap={}",
             config.server_id,
             config.server_region,
-            config.peer_servers.len()
+            config.peer_servers.len(),
+            config.bootstrap_servers.len()
         );
 
-        let mesh = PeerMesh::new(config.server_id.clone(), config.server_region.clone());
+        let mesh = PeerMesh::new(
+            config.server_id.clone(),
+            config.server_region.clone(),
+            config.public_ws_url.clone(),
+            config.public_api_url.clone(),
+            if config.mesh_auth.shared_key.is_empty() {
+                None
+            } else {
+                Some(config.mesh_auth.shared_key.clone())
+            },
+            config.mesh_auth.require_auth,
+        );
 
         // Add configured peer servers
         for peer_config in &config.peer_servers {
@@ -251,9 +266,27 @@ async fn main() -> anyhow::Result<()> {
             });
         }
 
+        // Add bootstrap servers (convert to peer configs)
+        for bootstrap in &config.bootstrap_servers {
+            // Skip if already in peer_servers
+            if config.peer_servers.iter().any(|p| p.id == bootstrap.id) {
+                continue;
+            }
+            info!(
+                "Adding bootstrap peer: {} ({})",
+                bootstrap.id, bootstrap.address
+            );
+            mesh.add_peer(PeerConfig {
+                id: bootstrap.id.clone(),
+                region: bootstrap.id.clone(), // Use ID as region for bootstrap
+                ws_url: format!("ws://{}/ws", bootstrap.address),
+                api_url: format!("http://{}", bootstrap.address),
+            });
+        }
+
         Some(mesh)
     } else {
-        info!("Peer mesh disabled (no SERVER_ID or PEER_SERVERS configured)");
+        info!("Peer mesh disabled (no SERVER_ID, PEER_SERVERS, or MESH_BOOTSTRAP_SERVERS configured)");
         None
     };
 
