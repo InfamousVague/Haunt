@@ -130,10 +130,16 @@ impl SqliteStore {
                 is_competition INTEGER NOT NULL DEFAULT 0,
                 competition_id TEXT,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                total_trades INTEGER NOT NULL DEFAULT 0,
+                winning_trades INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
+
+        // Add new columns for existing databases (migrations)
+        let _ = conn.execute("ALTER TABLE portfolios ADD COLUMN total_trades INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE portfolios ADD COLUMN winning_trades INTEGER NOT NULL DEFAULT 0", []);
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_portfolios_user_id ON portfolios(user_id)",
@@ -854,8 +860,8 @@ impl SqliteStore {
                 id, user_id, name, description, base_currency, starting_balance,
                 cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
                 total_value, cost_basis_method, risk_settings_json, is_competition,
-                competition_id, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                competition_id, created_at, updated_at, total_trades, winning_trades
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 portfolio.id,
                 portfolio.user_id,
@@ -875,6 +881,8 @@ impl SqliteStore {
                 portfolio.competition_id,
                 portfolio.created_at,
                 portfolio.updated_at,
+                portfolio.total_trades,
+                portfolio.winning_trades,
             ],
         )?;
 
@@ -890,7 +898,7 @@ impl SqliteStore {
             "SELECT id, user_id, name, description, base_currency, starting_balance,
                     cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
                     total_value, cost_basis_method, risk_settings_json, is_competition,
-                    competition_id, created_at, updated_at
+                    competition_id, created_at, updated_at, total_trades, winning_trades
              FROM portfolios WHERE id = ?1",
             params![id],
             |row| Self::row_to_portfolio(row),
@@ -914,7 +922,7 @@ impl SqliteStore {
             "SELECT id, user_id, name, description, base_currency, starting_balance,
                     cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
                     total_value, cost_basis_method, risk_settings_json, is_competition,
-                    competition_id, created_at, updated_at
+                    competition_id, created_at, updated_at, total_trades, winning_trades
              FROM portfolios WHERE user_id = ?1 ORDER BY created_at DESC",
         ) {
             Ok(stmt) => stmt,
@@ -939,8 +947,8 @@ impl SqliteStore {
                 name = ?1, description = ?2, cash_balance = ?3, margin_used = ?4,
                 margin_available = ?5, unrealized_pnl = ?6, realized_pnl = ?7,
                 total_value = ?8, cost_basis_method = ?9, risk_settings_json = ?10,
-                updated_at = ?11
-             WHERE id = ?12",
+                updated_at = ?11, total_trades = ?12, winning_trades = ?13
+             WHERE id = ?14",
             params![
                 portfolio.name,
                 portfolio.description,
@@ -953,6 +961,8 @@ impl SqliteStore {
                 portfolio.cost_basis_method.to_string(),
                 risk_settings_json,
                 portfolio.updated_at,
+                portfolio.total_trades,
+                portfolio.winning_trades,
                 portfolio.id,
             ],
         )?;
@@ -994,6 +1004,8 @@ impl SqliteStore {
             unrealized_pnl: row.get(9)?,
             realized_pnl: row.get(10)?,
             total_value: row.get(11)?,
+            total_trades: row.get(18).unwrap_or(0),
+            winning_trades: row.get(19).unwrap_or(0),
             cost_basis_method: parse_cost_basis_method(&cost_basis_str),
             risk_settings,
             is_competition: row.get::<_, i32>(14)? != 0,

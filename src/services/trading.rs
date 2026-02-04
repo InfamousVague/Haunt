@@ -12,8 +12,8 @@ use crate::services::liquidity_sim::{LiquiditySimulator, LiquiditySimConfig};
 use crate::services::SqliteStore;
 use crate::types::{
     AggregatedOrderBook, AssetClass, BracketOrder, BracketRole, CostBasisEntry, CostBasisMethod,
-    Fill, OcoOrder, Order, OrderSide, OrderStatus, OrderType, PlaceOrderRequest, Portfolio,
-    Position, PositionSide, PortfolioSummary, RiskSettings, TimeInForce, Trade,
+    Fill, LeaderboardEntry, OcoOrder, Order, OrderSide, OrderStatus, OrderType, PlaceOrderRequest,
+    Portfolio, Position, PositionSide, PortfolioSummary, RiskSettings, TimeInForce, Trade,
 };
 use crate::types::{
     LiquidationAlertData, MarginWarningData, OrderUpdateData, OrderUpdateType,
@@ -347,6 +347,51 @@ impl TradingService {
         }
 
         portfolios
+    }
+
+    /// Get all portfolios (for leaderboard).
+    pub fn get_all_portfolios(&self) -> Vec<Portfolio> {
+        self.portfolios.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Get leaderboard of top performing portfolios.
+    ///
+    /// Returns portfolios sorted by total return percentage, descending.
+    pub fn get_leaderboard(&self, limit: usize) -> Vec<LeaderboardEntry> {
+        let mut entries: Vec<LeaderboardEntry> = self
+            .portfolios
+            .iter()
+            .map(|r| {
+                let p = r.value();
+                LeaderboardEntry {
+                    portfolio_id: p.id.clone(),
+                    name: p.name.clone(),
+                    user_id: p.user_id.clone(),
+                    total_value: p.total_value,
+                    starting_balance: p.starting_balance,
+                    realized_pnl: p.realized_pnl,
+                    unrealized_pnl: p.unrealized_pnl,
+                    total_return_pct: p.total_return_pct(),
+                    total_trades: p.total_trades,
+                    winning_trades: p.winning_trades,
+                    win_rate: if p.total_trades > 0 {
+                        p.winning_trades as f64 / p.total_trades as f64
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect();
+
+        // Sort by total return percentage (descending)
+        entries.sort_by(|a, b| {
+            b.total_return_pct
+                .partial_cmp(&a.total_return_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        entries.truncate(limit);
+        entries
     }
 
     /// Get portfolio summary with current metrics.
@@ -1969,5 +2014,101 @@ mod tests {
 
         let result = service.place_order(request);
         assert!(matches!(result, Err(TradingError::LeverageExceeded { .. })));
+    }
+
+    // ==========================================================================
+    // Leaderboard Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_leaderboard_returns_portfolios() {
+        let service = create_test_service();
+
+        // Create multiple portfolios
+        service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
+        service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
+        service.create_portfolio("user3", "Portfolio 3", None, None).unwrap();
+
+        let leaderboard = service.get_leaderboard(10);
+        assert_eq!(leaderboard.len(), 3, "Should have 3 portfolios on leaderboard");
+    }
+
+    #[test]
+    fn test_leaderboard_limits_results() {
+        let service = create_test_service();
+
+        // Create 10 portfolios
+        for i in 0..10 {
+            service.create_portfolio(&format!("user_{}", i), &format!("Portfolio {}", i), None, None).unwrap();
+        }
+
+        // Request only top 5
+        let leaderboard = service.get_leaderboard(5);
+        assert_eq!(leaderboard.len(), 5, "Should only return 5 portfolios");
+    }
+
+    #[test]
+    fn test_leaderboard_entry_contains_correct_fields() {
+        let service = create_test_service();
+
+        let portfolio = service.create_portfolio("test_user", "Test Portfolio", None, None).unwrap();
+
+        let leaderboard = service.get_leaderboard(10);
+        assert!(!leaderboard.is_empty());
+
+        let entry = &leaderboard[0];
+        assert_eq!(entry.portfolio_id, portfolio.id);
+        assert_eq!(entry.name, "Test Portfolio");
+        assert_eq!(entry.user_id, "test_user");
+        assert_eq!(entry.total_trades, 0);
+        assert_eq!(entry.winning_trades, 0);
+        assert_eq!(entry.win_rate, 0.0);
+    }
+
+    #[test]
+    fn test_leaderboard_sorted_by_return() {
+        let service = create_test_service();
+
+        // Create portfolios
+        let p1 = service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
+        let _p2 = service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
+
+        // Place a buy for p1 to change its value
+        let request = PlaceOrderRequest {
+            portfolio_id: p1.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 10.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+        };
+        service.place_order(request).unwrap();
+
+        let leaderboard = service.get_leaderboard(10);
+        assert_eq!(leaderboard.len(), 2);
+    }
+
+    #[test]
+    fn test_get_all_portfolios() {
+        let service = create_test_service();
+
+        // Initially empty
+        assert!(service.get_all_portfolios().is_empty());
+
+        // Create portfolios
+        service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
+        service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
+
+        let portfolios = service.get_all_portfolios();
+        assert_eq!(portfolios.len(), 2);
     }
 }

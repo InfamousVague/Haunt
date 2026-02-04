@@ -333,6 +333,12 @@ pub struct Portfolio {
     pub realized_pnl: f64,
     /// Total portfolio value (cash + unrealized P&L)
     pub total_value: f64,
+    /// Total number of completed trades
+    #[serde(default)]
+    pub total_trades: u64,
+    /// Number of winning trades
+    #[serde(default)]
+    pub winning_trades: u64,
     /// Cost basis calculation method
     #[serde(default)]
     pub cost_basis_method: CostBasisMethod,
@@ -374,6 +380,8 @@ impl Portfolio {
             unrealized_pnl: 0.0,
             realized_pnl: 0.0,
             total_value: starting_balance,
+            total_trades: 0,
+            winning_trades: 0,
             cost_basis_method: CostBasisMethod::default(),
             risk_settings: RiskSettings::default(),
             is_competition: false,
@@ -2501,6 +2509,23 @@ pub struct PortfolioSummary {
     pub margin_level: f64,
     pub open_positions: u32,
     pub open_orders: u32,
+}
+
+/// Leaderboard entry for portfolio rankings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardEntry {
+    pub portfolio_id: String,
+    pub name: String,
+    pub user_id: String,
+    pub total_value: f64,
+    pub starting_balance: f64,
+    pub realized_pnl: f64,
+    pub unrealized_pnl: f64,
+    pub total_return_pct: f64,
+    pub total_trades: u64,
+    pub winning_trades: u64,
+    pub win_rate: f64,
 }
 
 /// Order query parameters.

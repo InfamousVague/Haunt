@@ -172,27 +172,23 @@ impl BotRunner {
         Ok(bot_id)
     }
 
-    /// Start the bot runner
-    pub async fn start(&self) {
-        if *self.running.read().unwrap() {
-            return;
-        }
-
-        *self.running.write().unwrap() = true;
-        info!("Bot runner started");
-
+    /// Initialize bot portfolios without starting the main loop.
+    /// This is useful for testing and for ensuring portfolios exist before starting.
+    pub fn initialize(&self) {
         // Create portfolios for bots that don't have one yet
         let bots: Vec<_> = self.bots.read().unwrap().values().cloned().collect();
         for bot in bots {
             let config = bot.config();
             let bot_id = config.id.clone();
-            let portfolio_id = format!("bot_{}", bot_id);
+            let bot_user_id = format!("bot_{}", bot_id);
 
-            // Check if portfolio exists
-            if self.trading_service.get_portfolio(&portfolio_id).is_none() {
+            // Check if portfolio exists for this bot (by user_id)
+            let existing_portfolios = self.trading_service.get_user_portfolios(&bot_user_id);
+
+            if existing_portfolios.is_empty() {
                 // Create new portfolio for bot
                 match self.trading_service.create_portfolio(
-                    &portfolio_id,
+                    &bot_user_id,
                     &format!("{} Portfolio", config.name),
                     Some(format!("Automated trading bot: {}", config.name)),
                     None,
@@ -210,13 +206,27 @@ impl BotRunner {
                     }
                 }
             } else {
-                // Portfolio exists, update status
+                // Portfolio exists, update status with the first one
+                let portfolio_id = existing_portfolios[0].id.clone();
                 let mut statuses = self.statuses.write().unwrap();
                 if let Some(status) = statuses.get_mut(&bot_id) {
                     status.portfolio_id = Some(portfolio_id);
                 }
             }
         }
+    }
+
+    /// Start the bot runner
+    pub async fn start(&self) {
+        if *self.running.read().unwrap() {
+            return;
+        }
+
+        *self.running.write().unwrap() = true;
+        info!("Bot runner started");
+
+        // Initialize portfolios
+        self.initialize();
 
         // Mark all bots as running
         for status in self.statuses.write().unwrap().values_mut() {
@@ -677,7 +687,146 @@ impl BotRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::{ChartStore, PriceCache, SqliteStore, TradingService};
+    use crate::services::signals::{AccuracyStore, PredictionStore, SignalStore};
+    use crate::services::paperbot::GrandmaBot;
+    use crate::types::AggregationConfig;
 
-    // Integration tests would go here
-    // These would require mocking the services
+    /// Create test dependencies for BotRunner
+    fn create_test_runner() -> (BotRunner, Arc<TradingService>) {
+        let sqlite = Arc::new(SqliteStore::new(":memory:").expect("Failed to create SQLite"));
+        let trading_service = Arc::new(TradingService::new(sqlite.clone()));
+        let (price_cache, _rx) = PriceCache::new(AggregationConfig::default());
+        let signal_store = SignalStore::new(
+            ChartStore::new(),
+            PredictionStore::new(),
+            AccuracyStore::new(),
+        );
+
+        let runner = BotRunner::new(
+            price_cache,
+            signal_store,
+            trading_service.clone(),
+            sqlite,
+        );
+
+        (runner, trading_service)
+    }
+
+    #[test]
+    fn test_bot_registration() {
+        let (runner, _) = create_test_runner();
+
+        assert_eq!(runner.bot_count(), 0);
+
+        let grandma = GrandmaBot::new();
+        runner.register_bot(grandma);
+
+        assert_eq!(runner.bot_count(), 1);
+    }
+
+    #[test]
+    fn test_get_bot_status() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        let status = runner.get_status("grandma");
+        assert!(status.is_some());
+
+        let status = status.unwrap();
+        assert_eq!(status.id, "grandma");
+        assert_eq!(status.name, "Grandma");
+        assert!(!status.running);
+        assert_eq!(status.total_trades, 0);
+        assert_eq!(status.winning_trades, 0);
+    }
+
+    #[test]
+    fn test_get_all_statuses() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        let statuses = runner.get_all_statuses();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "Grandma");
+    }
+
+    #[test]
+    fn test_bot_not_running_before_start() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        let status = runner.get_status("grandma").unwrap();
+        assert!(!status.running);
+    }
+
+    #[test]
+    fn test_portfolio_created_on_initialize() {
+        let (runner, trading_service) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        // Before initialize, no portfolio for this bot
+        let portfolios = trading_service.get_user_portfolios("bot_grandma");
+        assert!(portfolios.is_empty(), "No portfolio should exist before initialize");
+
+        // Initialize (this creates portfolios without starting the loop)
+        runner.initialize();
+
+        // After initialize, portfolio should exist
+        let portfolios = trading_service.get_user_portfolios("bot_grandma");
+        assert!(!portfolios.is_empty(), "Bot portfolio should be created on initialize");
+
+        let portfolio = &portfolios[0];
+        assert_eq!(portfolio.name, "Grandma Portfolio");
+        assert_eq!(portfolio.user_id, "bot_grandma");
+    }
+
+    #[test]
+    fn test_update_bot_stats() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        // Simulate a winning trade
+        runner.update_bot_stats("grandma", true, 100.0);
+
+        let status = runner.get_status("grandma").unwrap();
+        assert_eq!(status.total_trades, 1);
+        assert_eq!(status.winning_trades, 1);
+        assert_eq!(status.total_pnl, 100.0);
+
+        // Simulate a losing trade
+        runner.update_bot_stats("grandma", false, -50.0);
+
+        let status = runner.get_status("grandma").unwrap();
+        assert_eq!(status.total_trades, 2);
+        assert_eq!(status.winning_trades, 1);
+        assert_eq!(status.total_pnl, 50.0);
+    }
+
+    #[test]
+    fn test_bot_status_personality() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        let status = runner.get_status("grandma").unwrap();
+        assert_eq!(status.personality, BotPersonality::Grandma);
+    }
+
+    #[test]
+    fn test_bot_status_asset_classes() {
+        let (runner, _) = create_test_runner();
+
+        runner.register_bot(GrandmaBot::new());
+
+        let status = runner.get_status("grandma").unwrap();
+        assert!(status.asset_classes.contains(&AssetClass::CryptoSpot));
+        assert!(status.asset_classes.contains(&AssetClass::Stock));
+        assert!(status.asset_classes.contains(&AssetClass::Forex));
+    }
 }
