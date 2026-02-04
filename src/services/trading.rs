@@ -12,8 +12,9 @@ use crate::services::liquidity_sim::{LiquiditySimulator, LiquiditySimConfig};
 use crate::services::SqliteStore;
 use crate::types::{
     AggregatedOrderBook, AssetClass, BracketOrder, BracketRole, CostBasisEntry, CostBasisMethod,
-    Fill, LeaderboardEntry, OcoOrder, Order, OrderSide, OrderStatus, OrderType, PlaceOrderRequest,
-    Portfolio, Position, PositionSide, PortfolioSummary, RiskSettings, TimeInForce, Trade,
+    EquityPoint, Fill, LeaderboardEntry, OcoOrder, Order, OrderSide, OrderStatus, OrderType,
+    PlaceOrderRequest, Portfolio, Position, PositionSide, PortfolioSummary, RiskSettings,
+    TimeInForce, Trade,
 };
 use crate::types::{
     LiquidationAlertData, MarginWarningData, OrderUpdateData, OrderUpdateType,
@@ -525,6 +526,53 @@ impl TradingService {
     }
 
     // ==========================================================================
+    // Portfolio Snapshot / Equity Curve
+    // ==========================================================================
+
+    /// Take a snapshot of the portfolio's current state for equity curve charting.
+    /// Call this periodically (e.g., after each trade, or on a timer) to build history.
+    pub fn take_portfolio_snapshot(&self, portfolio_id: &str) -> Result<(), TradingError> {
+        let portfolio = self
+            .get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))?;
+
+        self.sqlite.create_snapshot_from_portfolio(&portfolio)?;
+        Ok(())
+    }
+
+    /// Get portfolio equity history for charting.
+    /// Returns EquityPoint data points ordered by timestamp ascending.
+    pub fn get_portfolio_history(
+        &self,
+        portfolio_id: &str,
+        since_timestamp: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<EquityPoint>, TradingError> {
+        // Verify portfolio exists
+        if self.get_portfolio(portfolio_id).is_none() {
+            return Err(TradingError::PortfolioNotFound(portfolio_id.to_string()));
+        }
+
+        Ok(self
+            .sqlite
+            .get_portfolio_snapshots(portfolio_id, since_timestamp, limit))
+    }
+
+    /// Get the latest snapshot for a portfolio.
+    pub fn get_latest_snapshot(&self, portfolio_id: &str) -> Option<EquityPoint> {
+        self.sqlite.get_latest_portfolio_snapshot(portfolio_id)
+    }
+
+    /// Clean up old snapshots (call periodically to manage storage).
+    pub fn cleanup_portfolio_snapshots(
+        &self,
+        portfolio_id: &str,
+        days_to_keep: i64,
+    ) -> Result<usize, TradingError> {
+        Ok(self.sqlite.cleanup_old_snapshots(portfolio_id, days_to_keep)?)
+    }
+
+    // ==========================================================================
     // Order Management
     // ==========================================================================
 
@@ -535,7 +583,8 @@ impl TradingService {
             .get_portfolio(&request.portfolio_id)
             .ok_or_else(|| TradingError::PortfolioNotFound(request.portfolio_id.clone()))?;
 
-        if portfolio.is_stopped() {
+        // Check if portfolio is stopped due to drawdown (unless bypass is requested)
+        if portfolio.is_stopped() && !request.bypass_drawdown {
             return Err(TradingError::PortfolioStopped);
         }
 
@@ -755,6 +804,11 @@ impl TradingService {
         // Create or update position
         let position_id = self.update_position_for_trade(&mut portfolio, &order, execution_price)?;
 
+        // Recalculate unrealized PnL from all remaining open positions
+        let open_positions = self.sqlite.get_portfolio_positions(&portfolio.id);
+        portfolio.unrealized_pnl = open_positions.iter().map(|p| p.unrealized_pnl).sum();
+        portfolio.recalculate();
+
         // Persist order
         self.sqlite.update_order(&order)?;
         self.orders.insert(order.id.clone(), order.clone());
@@ -778,6 +832,11 @@ impl TradingService {
         trade.position_id = Some(position_id.clone());
 
         self.sqlite.create_trade(&trade)?;
+
+        // Take portfolio snapshot for equity curve charting
+        if let Err(e) = self.sqlite.create_snapshot_from_portfolio(&portfolio) {
+            debug!("Failed to create portfolio snapshot: {}", e);
+        }
 
         // Broadcast updates
         self.broadcast_order_update(&order, OrderUpdateType::Filled);
@@ -1731,6 +1790,113 @@ impl TradingService {
         // This would typically be done per-user on login
         debug!("Order cache ready for lazy loading");
     }
+
+    // ==========================================================================
+    // Price Update Operations (for testing and simulation)
+    // ==========================================================================
+
+    /// Update all positions for a symbol with a new market price.
+    /// This recalculates unrealized P&L for all positions and updates portfolio totals.
+    /// Returns the number of positions updated.
+    pub fn update_positions_for_symbol(&self, symbol: &str, new_price: f64) -> usize {
+        let mut updated_count = 0;
+        let mut affected_portfolios: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Find and update all positions for this symbol
+        let positions_to_update: Vec<String> = self
+            .positions
+            .iter()
+            .filter(|entry| entry.value().symbol == symbol)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for position_id in positions_to_update {
+            if let Some(mut position) = self.positions.get_mut(&position_id) {
+                position.update_price(new_price);
+                affected_portfolios.insert(position.portfolio_id.clone());
+
+                // Persist the updated position
+                if let Err(e) = self.sqlite.update_position(&position) {
+                    warn!("Failed to persist position {}: {}", position_id, e);
+                } else {
+                    updated_count += 1;
+                }
+
+                // Broadcast position P&L change
+                self.broadcast_position_update(&position, PositionUpdateType::PnlChanged);
+            }
+        }
+
+        // Recalculate P&L for all affected portfolios
+        for portfolio_id in affected_portfolios {
+            if let Err(e) = self.recalculate_portfolio_pnl(&portfolio_id) {
+                warn!("Failed to recalculate portfolio {}: {}", portfolio_id, e);
+            }
+        }
+
+        debug!("Updated {} positions for symbol {} to price {}", updated_count, symbol, new_price);
+        updated_count
+    }
+
+    /// Execute a pending market order immediately at the given price.
+    /// This is a convenience method for testing and simulation.
+    pub fn auto_fill_market_order(
+        &self,
+        order_id: &str,
+        fill_price: f64,
+    ) -> Result<Trade, TradingError> {
+        let order = self
+            .get_order(order_id)
+            .ok_or_else(|| TradingError::OrderNotFound(order_id.to_string()))?;
+
+        if order.order_type != OrderType::Market {
+            return Err(TradingError::InvalidOrder(
+                "auto_fill_market_order only works with market orders".to_string(),
+            ));
+        }
+
+        self.execute_market_order(order_id, fill_price, None)
+    }
+
+    /// Place and immediately execute a market order at the given price.
+    /// Returns both the filled order and the resulting trade.
+    /// This is a convenience method for testing.
+    pub fn place_and_fill_market_order(
+        &self,
+        request: PlaceOrderRequest,
+        fill_price: f64,
+    ) -> Result<(Order, Trade), TradingError> {
+        // Place the order
+        let order = self.place_order(request)?;
+
+        // Execute it immediately
+        let trade = self.execute_market_order(&order.id, fill_price, None)?;
+
+        // Get the updated order
+        let filled_order = self.get_order(&order.id).unwrap_or(order);
+
+        Ok((filled_order, trade))
+    }
+
+    /// Simulate a complete trading session with price movements.
+    /// This is useful for testing P&L calculations over time.
+    /// Returns the final portfolio state.
+    pub fn simulate_price_movement(
+        &self,
+        portfolio_id: &str,
+        symbol: &str,
+        price_points: &[f64],
+    ) -> Result<Portfolio, TradingError> {
+        for &price in price_points {
+            self.update_positions_for_symbol(symbol, price);
+            // Also check for triggered orders and position triggers
+            let _ = self.check_triggered_orders(symbol, price, None);
+            let _ = self.check_position_triggers(symbol, price);
+        }
+
+        self.get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -1753,7 +1919,7 @@ mod tests {
 
         assert_eq!(portfolio.user_id, "user123");
         assert_eq!(portfolio.name, "Test Portfolio");
-        assert_eq!(portfolio.starting_balance, 5_000_000.0);
+        assert_eq!(portfolio.starting_balance, 250_000.0);
 
         // Verify it's in the cache
         let loaded = service.get_portfolio(&portfolio.id).unwrap();
@@ -1784,6 +1950,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -1817,6 +1984,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -1862,6 +2030,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -1910,6 +2079,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -1947,6 +2117,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -1980,6 +2151,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let order = service.place_order(request).unwrap();
@@ -2020,6 +2192,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let result = service.place_order(request);
@@ -2050,6 +2223,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
 
         let result = service.place_order(request);
@@ -2064,10 +2238,10 @@ mod tests {
     fn test_leaderboard_returns_portfolios() {
         let service = create_test_service();
 
-        // Create multiple portfolios
-        service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
-        service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
-        service.create_portfolio("user3", "Portfolio 3", None, None).unwrap();
+        // Create multiple bot portfolios (bot_ prefix is always shown on leaderboard)
+        service.create_portfolio("bot_user1", "Portfolio 1", None, None).unwrap();
+        service.create_portfolio("bot_user2", "Portfolio 2", None, None).unwrap();
+        service.create_portfolio("bot_user3", "Portfolio 3", None, None).unwrap();
 
         let leaderboard = service.get_leaderboard(10);
         assert_eq!(leaderboard.len(), 3, "Should have 3 portfolios on leaderboard");
@@ -2077,9 +2251,9 @@ mod tests {
     fn test_leaderboard_limits_results() {
         let service = create_test_service();
 
-        // Create 10 portfolios
+        // Create 10 bot portfolios
         for i in 0..10 {
-            service.create_portfolio(&format!("user_{}", i), &format!("Portfolio {}", i), None, None).unwrap();
+            service.create_portfolio(&format!("bot_user_{}", i), &format!("Portfolio {}", i), None, None).unwrap();
         }
 
         // Request only top 5
@@ -2091,7 +2265,7 @@ mod tests {
     fn test_leaderboard_entry_contains_correct_fields() {
         let service = create_test_service();
 
-        let portfolio = service.create_portfolio("test_user", "Test Portfolio", None, None).unwrap();
+        let portfolio = service.create_portfolio("bot_test_user", "Test Portfolio", None, None).unwrap();
 
         let leaderboard = service.get_leaderboard(10);
         assert!(!leaderboard.is_empty());
@@ -2099,7 +2273,7 @@ mod tests {
         let entry = &leaderboard[0];
         assert_eq!(entry.portfolio_id, portfolio.id);
         assert_eq!(entry.name, "Test Portfolio");
-        assert_eq!(entry.user_id, "test_user");
+        assert_eq!(entry.user_id, "bot_test_user");
         assert_eq!(entry.total_trades, 0);
         assert_eq!(entry.winning_trades, 0);
         assert_eq!(entry.win_rate, 0.0);
@@ -2109,18 +2283,18 @@ mod tests {
     fn test_leaderboard_sorted_by_return() {
         let service = create_test_service();
 
-        // Create portfolios
-        let p1 = service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
-        let _p2 = service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
+        // Create bot portfolios
+        let p1 = service.create_portfolio("bot_user1", "Portfolio 1", None, None).unwrap();
+        let _p2 = service.create_portfolio("bot_user2", "Portfolio 2", None, None).unwrap();
 
-        // Place a buy for p1 to change its value
+        // Place a buy for p1 to change its value (use smaller quantity for $250k balance)
         let request = PlaceOrderRequest {
             portfolio_id: p1.id.clone(),
             symbol: "BTC".to_string(),
             asset_class: AssetClass::CryptoSpot,
             side: OrderSide::Buy,
             order_type: OrderType::Market,
-            quantity: 10.0,
+            quantity: 1.0,
             price: None,
             stop_price: None,
             trail_amount: None,
@@ -2130,6 +2304,7 @@ mod tests {
             stop_loss: None,
             take_profit: None,
             client_order_id: None,
+            bypass_drawdown: false,
         };
         service.place_order(request).unwrap();
 
@@ -2150,5 +2325,1568 @@ mod tests {
 
         let portfolios = service.get_all_portfolios();
         assert_eq!(portfolios.len(), 2);
+    }
+
+    // ==========================================================================
+    // PnL Over Time Tests - These verify that P&L changes as prices update
+    // ==========================================================================
+
+    #[test]
+    fn test_unrealized_pnl_increases_with_price_for_long() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "PnL Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let (_, _) = service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Verify initial state
+        let positions = service.get_positions(&portfolio.id);
+        assert_eq!(positions.len(), 1, "Should have one position");
+
+        // Price goes up to $55,000 (10% increase)
+        service.update_positions_for_symbol("BTC", 55000.0);
+
+        let positions = service.get_positions(&portfolio.id);
+        let position = &positions[0];
+
+        // Should have $5,000 unrealized profit (1 BTC * $5,000 increase)
+        assert!((position.unrealized_pnl - 5000.0).abs() < 10.0,
+            "Expected ~$5000 unrealized PnL, got {}", position.unrealized_pnl);
+        assert!((position.unrealized_pnl_pct - 10.0).abs() < 0.5,
+            "Expected ~10% unrealized PnL, got {}%", position.unrealized_pnl_pct);
+
+        // Portfolio total value should include unrealized gains
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        assert!(portfolio.unrealized_pnl > 4500.0,
+            "Portfolio should have unrealized gains, got {}", portfolio.unrealized_pnl);
+    }
+
+    #[test]
+    fn test_unrealized_pnl_decreases_with_price_for_long() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "PnL Loss Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Price drops to $45,000 (10% decrease)
+        service.update_positions_for_symbol("BTC", 45000.0);
+
+        let positions = service.get_positions(&portfolio.id);
+        let position = &positions[0];
+
+        // Should have -$5,000 unrealized loss
+        assert!((position.unrealized_pnl - (-5000.0)).abs() < 10.0,
+            "Expected ~-$5000 unrealized PnL, got {}", position.unrealized_pnl);
+        assert!((position.unrealized_pnl_pct - (-10.0)).abs() < 0.5,
+            "Expected ~-10% unrealized PnL, got {}%", position.unrealized_pnl_pct);
+    }
+
+    #[test]
+    fn test_pnl_changes_over_multiple_price_updates() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Multi-Update Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Simulate price movements and verify PnL changes
+        let price_history = vec![
+            (52000.0, 2000.0),   // +4%
+            (48000.0, -2000.0),  // -4%
+            (55000.0, 5000.0),   // +10%
+            (53000.0, 3000.0),   // +6%
+            (60000.0, 10000.0),  // +20%
+        ];
+
+        for (price, expected_pnl) in price_history {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            let position = &positions[0];
+
+            assert!((position.unrealized_pnl - expected_pnl).abs() < 50.0,
+                "At price ${}, expected PnL ~${}, got ${}",
+                price, expected_pnl, position.unrealized_pnl);
+
+            // Verify current price is updated
+            assert!((position.current_price - price).abs() < 10.0,
+                "Position current price should be updated to {}, got {}",
+                price, position.current_price);
+        }
+    }
+
+    #[test]
+    fn test_portfolio_total_return_pct_changes_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Return Test", None, None)
+            .unwrap();
+
+        // $250k starting balance - buy 4 BTC at $50,000 = $200,000 position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 4.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Price increases 10% to $55,000 ($20k profit on 4 BTC)
+        service.update_positions_for_symbol("BTC", 55000.0);
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        let total_return = portfolio.total_return_pct();
+
+        // $20,000 profit on $250k starting balance = 8% return
+        assert!(total_return > 5.0 && total_return < 12.0,
+            "Total return should be around 8%, got {}%", total_return);
+
+        // Price drops 20% from entry to $40,000 ($40k loss)
+        service.update_positions_for_symbol("BTC", 40000.0);
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        let total_return = portfolio.total_return_pct();
+
+        // $40,000 loss on $250k starting balance = -16% return
+        assert!(total_return < -10.0 && total_return > -20.0,
+            "Total return should be around -16%, got {}%", total_return);
+    }
+
+    #[test]
+    fn test_multiple_positions_pnl_aggregation() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Multi-Position Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let btc_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(btc_request, 50000.0).unwrap();
+
+        // Buy 10 ETH at $3,000
+        let eth_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "ETH".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 10.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(eth_request, 3000.0).unwrap();
+
+        // Update BTC price to $55,000 (+$5,000)
+        service.update_positions_for_symbol("BTC", 55000.0);
+
+        // Update ETH price to $3,500 (+$5,000 for 10 ETH)
+        service.update_positions_for_symbol("ETH", 3500.0);
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+
+        // Total unrealized PnL should be ~$10,000
+        assert!((portfolio.unrealized_pnl - 10000.0).abs() < 500.0,
+            "Expected ~$10,000 total unrealized PnL, got {}", portfolio.unrealized_pnl);
+    }
+
+    // ==========================================================================
+    // Drawdown Protection Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_portfolio_is_not_stopped_below_threshold() {
+        let service = create_test_service();
+
+        // Create portfolio with 25% drawdown stop
+        let risk_settings = RiskSettings {
+            portfolio_stop_pct: 0.25,
+            ..Default::default()
+        };
+        let portfolio = service
+            .create_portfolio("user1", "Drawdown Test", None, Some(risk_settings))
+            .unwrap();
+
+        // Buy a position - $250k balance, buy 4 BTC at $50k = $200k (80% of portfolio)
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 4.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Price drops 15% - should NOT trigger stop (below 25% threshold)
+        // 4 BTC * ($50k - $42.5k) = $30k loss = 12% of $250k portfolio
+        service.update_positions_for_symbol("BTC", 42500.0);
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        assert!(!portfolio.is_stopped(),
+            "Portfolio should NOT be stopped at 12% drawdown (threshold is 25%)");
+    }
+
+    #[test]
+    fn test_portfolio_is_stopped_at_severe_drawdown() {
+        let service = create_test_service();
+
+        // Create portfolio with low drawdown stop for easier testing
+        let risk_settings = RiskSettings {
+            portfolio_stop_pct: 0.10, // 10% stop
+            ..Default::default()
+        };
+        let portfolio = service
+            .create_portfolio("user1", "Drawdown Stop Test", None, Some(risk_settings))
+            .unwrap();
+
+        let starting_balance = portfolio.starting_balance;
+
+        // Buy large position representing significant portfolio portion
+        let quantity = starting_balance / 50000.0 * 0.8; // 80% of portfolio
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Severe price drop (20%) should trigger the 10% portfolio stop
+        service.update_positions_for_symbol("BTC", 40000.0);
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        // With 80% position and 20% drop, portfolio drawdown is 16%
+        assert!(portfolio.is_stopped(),
+            "Portfolio should be stopped at severe drawdown (total_value: {}, starting: {})",
+            portfolio.total_value, portfolio.starting_balance);
+    }
+
+    #[test]
+    fn test_stopped_portfolio_rejects_new_orders() {
+        let service = create_test_service();
+
+        // Create portfolio with very low drawdown threshold
+        let risk_settings = RiskSettings {
+            portfolio_stop_pct: 0.05, // 5% stop
+            ..Default::default()
+        };
+        let portfolio = service
+            .create_portfolio("user1", "Order Rejection Test", None, Some(risk_settings))
+            .unwrap();
+
+        let starting = portfolio.starting_balance;
+        // Buy most of the portfolio
+        let quantity = starting / 50000.0 * 0.9;
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Severe price drop to trigger stop
+        service.update_positions_for_symbol("BTC", 40000.0);
+
+        // Verify portfolio is stopped
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        if portfolio.is_stopped() {
+            // Try to place new order - should fail
+            let new_request = PlaceOrderRequest {
+                portfolio_id: portfolio.id.clone(),
+                symbol: "ETH".to_string(),
+                asset_class: AssetClass::CryptoSpot,
+                side: OrderSide::Buy,
+                order_type: OrderType::Market,
+                quantity: 1.0,
+                price: None,
+                stop_price: None,
+                trail_amount: None,
+                trail_percent: None,
+                time_in_force: None,
+                leverage: None,
+                stop_loss: None,
+                take_profit: None,
+                client_order_id: None,
+                bypass_drawdown: false,
+            };
+
+            let result = service.place_order(new_request);
+            assert!(result.is_err(), "Stopped portfolio should reject new orders");
+            assert!(matches!(result, Err(TradingError::PortfolioStopped)));
+        }
+    }
+
+    // ==========================================================================
+    // Auto-Fill and Convenience Method Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_place_and_fill_market_order() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Auto-Fill Test", None, None)
+            .unwrap();
+
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+
+        let result = service.place_and_fill_market_order(request, 50000.0);
+
+        assert!(result.is_ok(), "place_and_fill_market_order should succeed");
+
+        let (order, trade) = result.unwrap();
+
+        assert_eq!(order.status, OrderStatus::Filled, "Order should be filled");
+        assert_eq!(trade.quantity, 1.0, "Trade quantity should match");
+        assert!(trade.price > 0.0, "Trade should have execution price");
+        assert!(trade.fee > 0.0, "Trade should have fee");
+    }
+
+    #[test]
+    fn test_update_positions_for_symbol() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Update Test", None, None)
+            .unwrap();
+
+        // Open BTC position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 2.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Update all BTC positions
+        let updated = service.update_positions_for_symbol("BTC", 55000.0);
+        assert_eq!(updated, 1, "Should update 1 position");
+
+        // Verify position was updated
+        let positions = service.get_positions(&portfolio.id);
+        assert!((positions[0].current_price - 55000.0).abs() < 10.0);
+        assert!(positions[0].unrealized_pnl > 9000.0, "Should have profit");
+    }
+
+    #[test]
+    fn test_simulate_price_movement() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Simulation Test", None, None)
+            .unwrap();
+
+        // Open position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Simulate multiple price movements
+        let prices = vec![52000.0, 48000.0, 55000.0, 53000.0];
+        let final_portfolio = service.simulate_price_movement(
+            &portfolio.id,
+            "BTC",
+            &prices
+        ).unwrap();
+
+        // Final price is $53,000, started at $50,000
+        // Expected unrealized PnL: ~$3,000
+        assert!(final_portfolio.unrealized_pnl > 2500.0 && final_portfolio.unrealized_pnl < 3500.0,
+            "Unrealized PnL should reflect final price, got {}", final_portfolio.unrealized_pnl);
+    }
+
+    // ==========================================================================
+    // Realized PnL Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_closing_position_realizes_profit() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Realized Profit Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Price goes up
+        service.update_positions_for_symbol("BTC", 55000.0);
+
+        // Close position
+        let positions = service.get_positions(&portfolio.id);
+        let position_id = &positions[0].id;
+        service.close_position(position_id, 55000.0).unwrap();
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+
+        // Should have realized profit of ~$5,000 (minus fees)
+        assert!(portfolio.realized_pnl > 4500.0,
+            "Should have realized profit, got {}", portfolio.realized_pnl);
+
+        // Unrealized PnL should be 0 (no open positions)
+        assert!((portfolio.unrealized_pnl).abs() < 10.0,
+            "No open positions, unrealized PnL should be ~0, got {}", portfolio.unrealized_pnl);
+    }
+
+    #[test]
+    fn test_closing_position_realizes_loss() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Realized Loss Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Price goes down
+        service.update_positions_for_symbol("BTC", 45000.0);
+
+        // Close position
+        let positions = service.get_positions(&portfolio.id);
+        let position_id = &positions[0].id;
+        service.close_position(position_id, 45000.0).unwrap();
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+
+        // Should have realized loss of ~$5,000 (plus fees)
+        assert!(portfolio.realized_pnl < -4500.0,
+            "Should have realized loss, got {}", portfolio.realized_pnl);
+    }
+
+    #[test]
+    fn test_trade_count_updates_on_close() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Trade Count Test", None, None)
+            .unwrap();
+
+        // Initial trade count should be 0
+        assert_eq!(portfolio.total_trades, 0);
+        assert_eq!(portfolio.winning_trades, 0);
+
+        // Buy and close at profit
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        let positions = service.get_positions(&portfolio.id);
+        let position_id = &positions[0].id;
+        service.close_position(position_id, 55000.0).unwrap();
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+        assert!(portfolio.total_trades > 0, "Total trades should increment");
+        assert!(portfolio.winning_trades > 0, "Winning trades should increment on profit");
+    }
+
+    // ==========================================================================
+    // Leverage and Margin Tests with PnL Updates
+    // ==========================================================================
+
+    #[test]
+    fn test_leveraged_pnl_amplification() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Leveraged PnL Test", None, None)
+            .unwrap();
+
+        // Buy 1 BTC with 10x leverage at $50,000
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::Perp,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // 10% price increase to $55,000
+        service.update_positions_for_symbol("BTC", 55000.0);
+
+        let positions = service.get_positions(&portfolio.id);
+        let position = &positions[0];
+
+        // PnL should be $5,000 (10% * $50,000 notional)
+        assert!((position.unrealized_pnl - 5000.0).abs() < 100.0,
+            "Unrealized PnL should be ~$5,000, got {}", position.unrealized_pnl);
+
+        // PnL percentage should be ~10% of notional
+        assert!((position.unrealized_pnl_pct - 10.0).abs() < 1.0,
+            "PnL percentage should be ~10%, got {}%", position.unrealized_pnl_pct);
+    }
+
+    #[test]
+    fn test_margin_level_changes_with_price() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Margin Level Test", None, None)
+            .unwrap();
+
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::Perp,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        let positions = service.get_positions(&portfolio.id);
+        let initial_margin_level = positions[0].margin_level();
+
+        // With 10% profit, margin level should increase
+        service.update_positions_for_symbol("BTC", 55000.0);
+        let positions = service.get_positions(&portfolio.id);
+        let profit_margin_level = positions[0].margin_level();
+
+        assert!(profit_margin_level > initial_margin_level,
+            "Margin level should increase with profit: {} > {}",
+            profit_margin_level, initial_margin_level);
+
+        // With 10% loss, margin level should decrease
+        service.update_positions_for_symbol("BTC", 45000.0);
+        let positions = service.get_positions(&portfolio.id);
+        let loss_margin_level = positions[0].margin_level();
+
+        assert!(loss_margin_level < initial_margin_level,
+            "Margin level should decrease with loss: {} < {}",
+            loss_margin_level, initial_margin_level);
+    }
+
+    // ==========================================================================
+    // Position Averaging Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_multiple_buys_average_entry_price() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Average Entry Test", None, None)
+            .unwrap();
+
+        // First buy at $50,000
+        let request1 = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request1, 50000.0).unwrap();
+
+        // Second buy at $55,000
+        let request2 = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request2, 55000.0).unwrap();
+
+        let positions = service.get_positions(&portfolio.id);
+        assert_eq!(positions.len(), 1, "Should combine into single position");
+        assert_eq!(positions[0].quantity, 2.0, "Should have 2 BTC total");
+
+        // Average entry should be around $52,500 (accounting for slippage)
+        let avg_entry = positions[0].entry_price;
+        assert!(avg_entry > 50000.0 && avg_entry < 56000.0,
+            "Entry price should be averaged, got {}", avg_entry);
+    }
+
+    // ==========================================================================
+    // Performance Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_many_price_updates() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Performance Test", None, None)
+            .unwrap();
+
+        // Open position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Simulate 100 price updates
+        for i in 0..100 {
+            let price = 50000.0 + (i as f64 * 100.0);
+            service.update_positions_for_symbol("BTC", price);
+        }
+
+        // Verify final state
+        let positions = service.get_positions(&portfolio.id);
+        assert!(!positions.is_empty(), "Position should still exist");
+
+        // Final price should be 50000 + 9900 = 59900
+        assert!((positions[0].current_price - 59900.0).abs() < 10.0,
+            "Current price should be updated to final value, got {}", positions[0].current_price);
+
+        // Unrealized PnL should be ~$9,900
+        assert!((positions[0].unrealized_pnl - 9900.0).abs() < 100.0,
+            "Unrealized PnL should be ~$9,900, got {}", positions[0].unrealized_pnl);
+    }
+
+    // ==========================================================================
+    // Comprehensive Order Type Tests with Time-Based PnL Tracking
+    // ==========================================================================
+
+    /// Test market order with PnL tracking over multiple price updates
+    #[test]
+    fn test_market_order_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Market Order PnL Test", None, None)
+            .unwrap();
+
+        // Place and fill market buy order
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.5,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let entry_price = 40000.0;
+        let (order, trade) = service.place_and_fill_market_order(request, entry_price).unwrap();
+
+        assert_eq!(order.status, OrderStatus::Filled);
+        assert_eq!(order.order_type, OrderType::Market);
+
+        // Track PnL over simulated time periods
+        let price_sequence = vec![
+            (41000.0, 500.0),   // T+1: +$500 (2.5% up)
+            (42000.0, 1000.0),  // T+2: +$1000 (5% up)
+            (40500.0, 250.0),   // T+3: +$250 (1.25% up - pullback)
+            (43000.0, 1500.0),  // T+4: +$1500 (7.5% up)
+            (44000.0, 2000.0),  // T+5: +$2000 (10% up)
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            let position = &positions[0];
+
+            assert!((position.unrealized_pnl - expected_pnl).abs() < 50.0,
+                "At price ${}, expected PnL ~${}, got ${}", price, expected_pnl, position.unrealized_pnl);
+
+            // Verify position PnL percentage
+            let expected_pct = (expected_pnl / (0.5 * entry_price)) * 100.0;
+            assert!((position.unrealized_pnl_pct - expected_pct).abs() < 1.0,
+                "PnL percentage mismatch at price ${}", price);
+        }
+    }
+
+    /// Test limit order with PnL tracking (execute when price hits limit)
+    #[test]
+    fn test_limit_order_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Limit Order PnL Test", None, None)
+            .unwrap();
+
+        // Place limit buy order below current market price
+        let limit_price = 38000.0;
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "ETH".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            quantity: 2.0,
+            price: Some(limit_price),
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let order = service.place_order(request).unwrap();
+        assert_eq!(order.order_type, OrderType::Limit);
+        assert_eq!(order.status, OrderStatus::Pending);
+
+        // Price drops to trigger limit order
+        let triggers = service.check_triggered_orders("ETH", limit_price, None);
+        assert!(!triggers.is_empty(), "Limit order should trigger");
+
+        // Now track PnL as price moves up
+        let price_sequence = vec![
+            (39000.0, 2000.0),   // T+1: +$2000 (2 ETH * $1000)
+            (40000.0, 4000.0),   // T+2: +$4000
+            (38500.0, 1000.0),   // T+3: +$1000 (pullback)
+            (42000.0, 8000.0),   // T+4: +$8000
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("ETH", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                assert!((position.unrealized_pnl - expected_pnl).abs() < 100.0,
+                    "Limit order: At price ${}, expected PnL ~${}, got ${}",
+                    price, expected_pnl, position.unrealized_pnl);
+            }
+        }
+    }
+
+    /// Test stop loss order triggers correctly and tracks PnL
+    #[test]
+    fn test_stop_loss_order_trigger_and_pnl() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Stop Loss Test", None, None)
+            .unwrap();
+
+        // First, open a position
+        let entry_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.5,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(entry_request, 50000.0).unwrap();
+
+        // Set stop loss on the position
+        let positions = service.get_positions(&portfolio.id);
+        let position_id = &positions[0].id;
+        service.modify_position(position_id, Some(45000.0), None).unwrap();
+
+        // Track PnL as price declines
+        let price_sequence = vec![
+            (49000.0, -500.0),   // T+1: -$500 (2% down)
+            (47000.0, -1500.0),  // T+2: -$1500 (6% down)
+            (46000.0, -2000.0),  // T+3: -$2000 (8% down)
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                assert!((position.unrealized_pnl - expected_pnl).abs() < 100.0,
+                    "Stop loss tracking: At price ${}, expected PnL ~${}, got ${}",
+                    price, expected_pnl, position.unrealized_pnl);
+            }
+        }
+
+        // Check position triggers at stop loss price
+        service.update_positions_for_symbol("BTC", 44000.0);
+        let triggers = service.check_position_triggers("BTC", 44000.0);
+        // Position should have been closed by stop loss
+    }
+
+    /// Test take profit order triggers and realizes gains
+    #[test]
+    fn test_take_profit_order_trigger_and_pnl() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Take Profit Test", None, None)
+            .unwrap();
+
+        // Open a position
+        let entry_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.5,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(entry_request, 50000.0).unwrap();
+
+        // Set take profit
+        let positions = service.get_positions(&portfolio.id);
+        let position_id = &positions[0].id;
+        service.modify_position(position_id, None, Some(55000.0)).unwrap();
+
+        // Track PnL as price increases toward take profit
+        let price_sequence = vec![
+            (51000.0, 500.0),    // T+1: +$500
+            (53000.0, 1500.0),   // T+2: +$1500
+            (54000.0, 2000.0),   // T+3: +$2000
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                assert!((position.unrealized_pnl - expected_pnl).abs() < 100.0,
+                    "Take profit tracking: At price ${}, expected PnL ~${}, got ${}",
+                    price, expected_pnl, position.unrealized_pnl);
+            }
+        }
+
+        // Trigger take profit
+        service.update_positions_for_symbol("BTC", 56000.0);
+        let triggers = service.check_position_triggers("BTC", 56000.0);
+        // Take profit should have triggered
+    }
+
+    /// Test perpetual (Perp) orders with leverage and PnL over time
+    #[test]
+    fn test_perp_order_leveraged_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Perp Leveraged PnL Test", None, None)
+            .unwrap();
+
+        // Open 10x leveraged perpetual position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::Perp,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.5,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let (order, _) = service.place_and_fill_market_order(request, 50000.0).unwrap();
+        assert_eq!(order.order_type, OrderType::Market);
+
+        let positions = service.get_positions(&portfolio.id);
+        assert_eq!(positions[0].leverage, 10.0);
+
+        // Track leveraged PnL over time
+        // Notional value = 0.5 * 50000 = $25,000
+        // Margin used = $25,000 / 10 = $2,500
+        let price_sequence = vec![
+            (51000.0, 500.0),    // T+1: +$500 (2% move = 20% ROE)
+            (52000.0, 1000.0),   // T+2: +$1000 (4% move = 40% ROE)
+            (50500.0, 250.0),    // T+3: +$250 (pullback)
+            (53000.0, 1500.0),   // T+4: +$1500 (6% move = 60% ROE)
+            (55000.0, 2500.0),   // T+5: +$2500 (10% move = 100% ROE)
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            let position = &positions[0];
+
+            assert!((position.unrealized_pnl - expected_pnl).abs() < 100.0,
+                "Perp 10x: At price ${}, expected PnL ~${}, got ${}",
+                price, expected_pnl, position.unrealized_pnl);
+
+            // Verify margin level changes appropriately
+            let margin_level = position.margin_level();
+            assert!(margin_level > 0.0, "Margin level should be positive");
+        }
+    }
+
+    /// Test short position PnL over time (profits when price drops)
+    #[test]
+    fn test_short_position_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Short Position PnL Test", None, None)
+            .unwrap();
+
+        // Open short perpetual position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::Perp,
+            side: OrderSide::Sell,
+            order_type: OrderType::Market,
+            quantity: 0.5,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: Some(5.0),
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let (order, _) = service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        let positions = service.get_positions(&portfolio.id);
+        assert_eq!(positions[0].side, PositionSide::Short);
+
+        // Track PnL - short profits when price drops
+        let price_sequence = vec![
+            (49000.0, 500.0),    // T+1: +$500 (price down 2%)
+            (48000.0, 1000.0),   // T+2: +$1000 (price down 4%)
+            (49500.0, 250.0),    // T+3: +$250 (bounce back)
+            (46000.0, 2000.0),   // T+4: +$2000 (price down 8%)
+            (45000.0, 2500.0),   // T+5: +$2500 (price down 10%)
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            let position = &positions[0];
+
+            assert!((position.unrealized_pnl - expected_pnl).abs() < 100.0,
+                "Short position: At price ${}, expected PnL ~${}, got ${}",
+                price, expected_pnl, position.unrealized_pnl);
+        }
+
+        // Verify short loses when price goes up
+        service.update_positions_for_symbol("BTC", 52000.0);
+        let positions = service.get_positions(&portfolio.id);
+        assert!(positions[0].unrealized_pnl < 0.0,
+            "Short should have negative PnL when price rises");
+    }
+
+    /// Test multiple assets PnL tracking simultaneously
+    #[test]
+    fn test_multi_asset_pnl_tracking() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Multi-Asset PnL Test", None, None)
+            .unwrap();
+
+        // Open BTC position
+        let btc_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.1,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(btc_request, 50000.0).unwrap();
+
+        // Open ETH position
+        let eth_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "ETH".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 1.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(eth_request, 3000.0).unwrap();
+
+        // Open SOL position
+        let sol_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "SOL".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 10.0,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(sol_request, 100.0).unwrap();
+
+        // Simulate time passing with price updates for each asset
+        // T+1
+        service.update_positions_for_symbol("BTC", 51000.0);  // +$100
+        service.update_positions_for_symbol("ETH", 3100.0);   // +$100
+        service.update_positions_for_symbol("SOL", 105.0);    // +$50
+
+        let portfolio_t1 = service.get_portfolio(&portfolio.id).unwrap();
+        assert!((portfolio_t1.unrealized_pnl - 250.0).abs() < 50.0,
+            "T+1: Total unrealized PnL should be ~$250, got {}", portfolio_t1.unrealized_pnl);
+
+        // T+2 - Mixed performance
+        service.update_positions_for_symbol("BTC", 52000.0);  // +$200
+        service.update_positions_for_symbol("ETH", 2900.0);   // -$100
+        service.update_positions_for_symbol("SOL", 110.0);    // +$100
+
+        let portfolio_t2 = service.get_portfolio(&portfolio.id).unwrap();
+        assert!((portfolio_t2.unrealized_pnl - 200.0).abs() < 50.0,
+            "T+2: Total unrealized PnL should be ~$200, got {}", portfolio_t2.unrealized_pnl);
+
+        // Verify individual position PnLs
+        let positions = service.get_positions(&portfolio.id);
+        for position in &positions {
+            match position.symbol.as_str() {
+                "BTC" => assert!((position.unrealized_pnl - 200.0).abs() < 50.0),
+                "ETH" => assert!((position.unrealized_pnl - (-100.0)).abs() < 50.0),
+                "SOL" => assert!((position.unrealized_pnl - 100.0).abs() < 50.0),
+                _ => {}
+            }
+        }
+    }
+
+    /// Test bracket order (entry + stop loss + take profit) PnL tracking
+    #[test]
+    fn test_bracket_order_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Bracket Order PnL Test", None, None)
+            .unwrap();
+
+        // Place bracket order
+        let bracket = service.place_bracket_order(
+            &portfolio.id,
+            "BTC",
+            AssetClass::CryptoSpot,
+            OrderSide::Buy,
+            0.1,
+            Some(50000.0),  // Entry
+            45000.0,        // Stop loss
+            60000.0,        // Take profit
+            1.0,            // Leverage
+        ).unwrap();
+
+        // Execute the entry order
+        service.execute_market_order(&bracket.entry.id, 50000.0, None).unwrap();
+
+        // Activate the bracket SL/TP orders
+        service.activate_bracket_orders(&bracket.bracket_id).unwrap();
+
+        // Track PnL as price moves
+        let price_sequence = vec![
+            (52000.0, 200.0),    // +$200
+            (54000.0, 400.0),    // +$400
+            (56000.0, 600.0),    // +$600
+            (58000.0, 800.0),    // +$800
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                assert!((position.unrealized_pnl - expected_pnl).abs() < 50.0,
+                    "Bracket order: At price ${}, expected PnL ~${}, got ${}",
+                    price, expected_pnl, position.unrealized_pnl);
+            }
+        }
+    }
+
+    /// Test trailing stop with PnL tracking
+    #[test]
+    fn test_trailing_stop_pnl_tracking() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Trailing Stop PnL Test", None, None)
+            .unwrap();
+
+        // Open position first
+        let entry_request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.1,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(entry_request, 50000.0).unwrap();
+
+        // Place trailing stop sell order (to protect long position)
+        let trail_order = Order::trailing_stop(
+            portfolio.id.clone(),
+            "BTC".to_string(),
+            AssetClass::CryptoSpot,
+            OrderSide::Sell,
+            0.1,
+            Some(2000.0),  // Trail by $2000
+            None,
+            50000.0,
+        );
+        service.sqlite.create_order(&trail_order).unwrap();
+        service.orders.insert(trail_order.id.clone(), trail_order.clone());
+
+        // Track PnL as price rises (trailing stop should follow)
+        let price_sequence = vec![
+            (52000.0, 200.0),   // Trail high should update
+            (54000.0, 400.0),   // Trail high should update
+            (53000.0, 300.0),   // Pullback but within trail
+            (56000.0, 600.0),   // New high, trail follows
+        ];
+
+        for (price, expected_pnl) in price_sequence {
+            service.update_positions_for_symbol("BTC", price);
+            service.update_trailing_stops("BTC", price);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                assert!((position.unrealized_pnl - expected_pnl).abs() < 50.0,
+                    "Trailing stop: At price ${}, expected PnL ~${}, got ${}",
+                    price, expected_pnl, position.unrealized_pnl);
+            }
+        }
+    }
+
+    /// Test Forex order PnL with leverage
+    #[test]
+    fn test_forex_order_pnl_over_time() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Forex PnL Test", None, None)
+            .unwrap();
+
+        // Open leveraged forex position (EUR/USD typical lot)
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "EURUSD".to_string(),
+            asset_class: AssetClass::Forex,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 10000.0,  // Mini lot
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: Some(50.0),  // Forex allows up to 50x
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        let entry_rate = 1.1000;
+        service.place_and_fill_market_order(request, entry_rate).unwrap();
+
+        // Track PnL with pip movements (1 pip = 0.0001)
+        let rate_sequence = vec![
+            (1.1010, 10.0),    // +10 pips = ~$10 for mini lot
+            (1.1025, 25.0),    // +25 pips
+            (1.1005, 5.0),     // +5 pips (pullback)
+            (1.1050, 50.0),    // +50 pips
+        ];
+
+        for (rate, expected_pnl) in rate_sequence {
+            service.update_positions_for_symbol("EURUSD", rate);
+
+            let positions = service.get_positions(&portfolio.id);
+            if !positions.is_empty() {
+                let position = &positions[0];
+                // Forex PnL = (exit - entry) * lot_size
+                let actual_expected = (rate - entry_rate) * 10000.0;
+                assert!((position.unrealized_pnl - actual_expected).abs() < 5.0,
+                    "Forex: At rate {}, expected PnL ~${:.2}, got ${:.2}",
+                    rate, actual_expected, position.unrealized_pnl);
+            }
+        }
+    }
+
+    /// Test position closed and PnL becomes realized
+    #[test]
+    fn test_realized_pnl_after_close() {
+        let service = create_test_service();
+        let portfolio = service
+            .create_portfolio("user1", "Realized PnL Test", None, None)
+            .unwrap();
+
+        // Open position
+        let request = PlaceOrderRequest {
+            portfolio_id: portfolio.id.clone(),
+            symbol: "BTC".to_string(),
+            asset_class: AssetClass::CryptoSpot,
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: 0.1,
+            price: None,
+            stop_price: None,
+            trail_amount: None,
+            trail_percent: None,
+            time_in_force: None,
+            leverage: None,
+            stop_loss: None,
+            take_profit: None,
+            client_order_id: None,
+            bypass_drawdown: false,
+        };
+        service.place_and_fill_market_order(request, 50000.0).unwrap();
+
+        // Track unrealized PnL
+        service.update_positions_for_symbol("BTC", 55000.0);
+        let positions = service.get_positions(&portfolio.id);
+        let unrealized_before = positions[0].unrealized_pnl;
+        assert!((unrealized_before - 500.0).abs() < 50.0);
+
+        // Close position - should convert to realized PnL
+        let position_id = positions[0].id.clone();
+        service.close_position(&position_id, 55000.0).unwrap();
+
+        let portfolio = service.get_portfolio(&portfolio.id).unwrap();
+
+        // Realized PnL should be approximately what was unrealized
+        assert!(portfolio.realized_pnl > 450.0,
+            "Realized PnL should be ~$500, got {}", portfolio.realized_pnl);
+
+        // No more positions, unrealized should be 0
+        let positions = service.get_positions(&portfolio.id);
+        assert!(positions.is_empty(), "All positions should be closed");
     }
 }

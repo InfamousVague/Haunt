@@ -422,7 +422,8 @@ impl Portfolio {
 
     /// Update portfolio values. Call this after position changes.
     pub fn recalculate(&mut self) {
-        self.total_value = self.cash_balance + self.unrealized_pnl;
+        // Total value = cash + margin_used (value in positions) + unrealized P&L
+        self.total_value = self.cash_balance + self.margin_used + self.unrealized_pnl;
         self.margin_available = self.cash_balance - self.margin_used;
         if self.margin_available < 0.0 {
             self.margin_available = 0.0;
@@ -2482,6 +2483,9 @@ pub struct PlaceOrderRequest {
     pub take_profit: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_order_id: Option<String>,
+    /// Bypass drawdown protection for this order (one-time override)
+    #[serde(default)]
+    pub bypass_drawdown: bool,
 }
 
 /// Request to modify a position.
@@ -3601,8 +3605,8 @@ mod tests {
 
         assert_eq!(portfolio.user_id, "user123");
         assert_eq!(portfolio.name, "My Portfolio");
-        assert_eq!(portfolio.starting_balance, 5_000_000.0);
-        assert_eq!(portfolio.cash_balance, 5_000_000.0);
+        assert_eq!(portfolio.starting_balance, 250_000.0);
+        assert_eq!(portfolio.cash_balance, 250_000.0);
         assert_eq!(portfolio.base_currency, "USD");
         assert!(!portfolio.is_competition);
     }
@@ -3629,7 +3633,7 @@ mod tests {
     #[test]
     fn test_portfolio_total_return() {
         let mut portfolio = Portfolio::new("user".to_string(), "Test".to_string());
-        portfolio.total_value = 5_500_000.0; // 10% gain
+        portfolio.total_value = 275_000.0; // 10% gain from $250k
 
         assert!((portfolio.total_return_pct() - 10.0).abs() < 0.01);
     }
@@ -3639,12 +3643,12 @@ mod tests {
         let mut portfolio = Portfolio::new("user".to_string(), "Test".to_string());
         portfolio.risk_settings.portfolio_stop_pct = 0.25;
 
-        // Not stopped yet
-        portfolio.total_value = 4_000_000.0; // 20% drawdown
+        // Not stopped yet - 20% drawdown from $250k = $200k
+        portfolio.total_value = 200_000.0;
         assert!(!portfolio.is_stopped());
 
-        // Now stopped
-        portfolio.total_value = 3_500_000.0; // 30% drawdown
+        // Now stopped - 30% drawdown from $250k = $175k
+        portfolio.total_value = 175_000.0;
         assert!(portfolio.is_stopped());
     }
 
@@ -3654,7 +3658,7 @@ mod tests {
         let json = serde_json::to_string(&portfolio).unwrap();
 
         assert!(json.contains("\"userId\":\"user123\""));
-        assert!(json.contains("\"startingBalance\":5000000"));
+        assert!(json.contains("\"startingBalance\":250000"));
         assert!(json.contains("\"baseCurrency\":\"USD\""));
     }
 
