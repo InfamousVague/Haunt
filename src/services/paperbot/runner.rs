@@ -599,6 +599,7 @@ impl BotRunner {
                     stop_loss: *stop_loss,
                     take_profit: *take_profit,
                     client_order_id: None,
+                    bypass_drawdown: false,
                 };
 
                 let order = self
@@ -653,6 +654,7 @@ impl BotRunner {
                     stop_loss: None,
                     take_profit: None,
                     client_order_id: None,
+                    bypass_drawdown: false,
                 };
 
                 let order = self

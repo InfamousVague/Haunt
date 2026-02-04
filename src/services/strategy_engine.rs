@@ -403,6 +403,7 @@ impl StrategyEngine {
             leverage: Some(action.leverage),
             time_in_force: None,
             client_order_id: Some(format!("strategy-{}-{}", signal.strategy_id, signal.rule_id)),
+            bypass_drawdown: false,
         }
     }
 
