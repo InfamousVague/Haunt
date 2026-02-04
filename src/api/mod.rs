@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod bots;
 pub mod crypto;
 pub mod health;
 pub mod market;
@@ -22,4 +23,5 @@ pub fn router() -> Router<AppState> {
         .nest("/api/peers", peers::router())
         .nest("/api/mesh", peers::mesh_router())
         .nest("/api/trading", trading::router())
+        .nest("/api/bots", bots::router())
 }

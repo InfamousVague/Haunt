@@ -15,7 +15,7 @@ use crate::error::AppError;
 use crate::services::{PriceCache, SignalStore, SqliteStore, TradingService};
 use crate::types::{AssetClass, TradingTimeframe};
 
-use super::{BotConfig, BotPersonality, DecisionContext, TradingBot, TradeDecision};
+use super::{BotPersonality, DecisionContext, TradingBot, TradeDecision};
 
 /// Status of a running bot
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,8 +88,39 @@ impl BotRunner {
         }
     }
 
-    /// Register a bot with the runner
-    pub async fn register_bot(&self, bot: Arc<dyn TradingBot>) -> Result<String, AppError> {
+    /// Register a bot synchronously (portfolio created on first tick)
+    pub fn register_bot<T: TradingBot + 'static>(&self, bot: T) {
+        let bot = Arc::new(bot);
+        let config = bot.config().clone();
+        let bot_id = config.id.clone();
+
+        // Initialize status (portfolio will be created on first tick)
+        let status = BotStatus {
+            id: bot_id.clone(),
+            name: config.name.clone(),
+            personality: config.personality,
+            running: false,
+            portfolio_id: None, // Will be set when start() is called
+            total_trades: 0,
+            winning_trades: 0,
+            total_pnl: 0.0,
+            portfolio_value: config.initial_capital,
+            last_decision_at: None,
+            last_error: None,
+            asset_classes: config.asset_classes.clone(),
+        };
+
+        self.bots.write().unwrap().insert(bot_id.clone(), bot);
+        self.statuses.write().unwrap().insert(bot_id, status);
+    }
+
+    /// Get the number of registered bots
+    pub fn bot_count(&self) -> usize {
+        self.bots.read().unwrap().len()
+    }
+
+    /// Register a bot with the runner (async version that creates portfolio)
+    pub async fn register_bot_async(&self, bot: Arc<dyn TradingBot>) -> Result<String, AppError> {
         let config = bot.config().clone();
         let bot_id = config.id.clone();
 
@@ -142,20 +173,84 @@ impl BotRunner {
     }
 
     /// Start the bot runner
-    pub async fn start(&self) -> Result<(), AppError> {
+    pub async fn start(&self) {
         if *self.running.read().unwrap() {
-            return Ok(());
+            return;
         }
 
         *self.running.write().unwrap() = true;
         info!("Bot runner started");
+
+        // Create portfolios for bots that don't have one yet
+        let bots: Vec<_> = self.bots.read().unwrap().values().cloned().collect();
+        for bot in bots {
+            let config = bot.config();
+            let bot_id = config.id.clone();
+            let portfolio_id = format!("bot_{}", bot_id);
+
+            // Check if portfolio exists
+            if self.trading_service.get_portfolio(&portfolio_id).is_none() {
+                // Create new portfolio for bot
+                match self.trading_service.create_portfolio(
+                    &portfolio_id,
+                    &format!("{} Portfolio", config.name),
+                    Some(format!("Automated trading bot: {}", config.name)),
+                    None,
+                ) {
+                    Ok(portfolio) => {
+                        // Update status with portfolio ID
+                        let mut statuses = self.statuses.write().unwrap();
+                        if let Some(status) = statuses.get_mut(&bot_id) {
+                            status.portfolio_id = Some(portfolio.id);
+                        }
+                        info!("Created portfolio for bot {}", config.name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to create portfolio for bot {}: {}", config.name, e);
+                    }
+                }
+            } else {
+                // Portfolio exists, update status
+                let mut statuses = self.statuses.write().unwrap();
+                if let Some(status) = statuses.get_mut(&bot_id) {
+                    status.portfolio_id = Some(portfolio_id);
+                }
+            }
+        }
 
         // Mark all bots as running
         for status in self.statuses.write().unwrap().values_mut() {
             status.running = true;
         }
 
-        Ok(())
+        // Start the main loop
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        // Find minimum tick interval from all bots
+        let min_interval = {
+            let bots = self.bots.read().unwrap();
+            bots.values()
+                .map(|b| b.config().decision_interval_secs)
+                .min()
+                .unwrap_or(60)
+        };
+
+        info!("Bot runner tick interval: {}s", min_interval);
+        let mut ticker = interval(Duration::from_secs(min_interval));
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(e) = self.tick().await {
+                        error!("Bot runner tick error: {}", e);
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("Bot runner received shutdown signal");
+                    break;
+                }
+            }
+        }
     }
 
     /// Stop the bot runner
@@ -577,37 +672,6 @@ impl BotRunner {
         self.statuses.read().unwrap().get(bot_id).cloned()
     }
 
-    /// Spawn the runner as a background task
-    pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-            // Find minimum tick interval from all bots
-            let min_interval = {
-                let bots = self.bots.read().unwrap();
-                bots.values()
-                    .map(|b| b.config().decision_interval_secs)
-                    .min()
-                    .unwrap_or(60)
-            };
-
-            let mut ticker = interval(Duration::from_secs(min_interval));
-
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {
-                        if let Err(e) = self.tick().await {
-                            error!("Bot runner tick error: {}", e);
-                        }
-                    }
-                    _ = shutdown_rx.recv() => {
-                        info!("Bot runner received shutdown signal");
-                        break;
-                    }
-                }
-            }
-        })
-    }
 }
 
 #[cfg(test)]

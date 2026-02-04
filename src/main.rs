@@ -9,9 +9,9 @@ mod websocket;
 use axum::{routing::get, Router};
 use config::Config;
 use services::{
-    AccuracyStore, AssetService, AuthService, ChartStore, HistoricalDataService,
-    MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore, SignalStore,
-    SqliteStore,
+    AccuracyStore, AssetService, AuthService, BotRunner, ChartStore, GrandmaBot,
+    HistoricalDataService, MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh,
+    PredictionStore, SignalStore, SqliteStore,
 };
 use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -43,6 +43,7 @@ pub struct AppState {
     pub orderbook_service: Arc<OrderBookService>,
     pub peer_mesh: Option<Arc<PeerMesh>>,
     pub trading_service: Arc<services::TradingService>,
+    pub bot_runner: Option<Arc<BotRunner>>,
 }
 
 #[tokio::main]
@@ -330,6 +331,23 @@ async fn main() -> anyhow::Result<()> {
         room_manager.clone(),
     ));
 
+    // Create bot runner for AI trading bots
+    let bot_runner = {
+        let runner = BotRunner::new(
+            price_cache.clone(),
+            signal_store.clone(),
+            trading_service.clone(),
+            sqlite_store.clone(),
+        );
+
+        // Create and register the Grandma bot
+        let grandma = GrandmaBot::new();
+        runner.register_bot(grandma);
+        info!("Registered GrandmaBot for paper trading");
+
+        Some(Arc::new(runner))
+    };
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -347,6 +365,7 @@ async fn main() -> anyhow::Result<()> {
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
         trading_service,
+        bot_runner: bot_runner.clone(),
     };
 
     // Start the price sources
@@ -461,6 +480,15 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+        });
+    }
+
+    // Start bot runner for AI trading bots
+    if let Some(ref runner) = bot_runner {
+        info!("Starting bot runner with {} registered bots", runner.bot_count());
+        let runner = runner.clone();
+        tokio::spawn(async move {
+            runner.start().await;
         });
     }
 
