@@ -313,8 +313,15 @@ impl BotRunner {
             return Ok(());
         }
 
-        // Get the bot's portfolio
-        let portfolio_id = format!("bot_{}", config.id);
+        // Get the bot's portfolio ID from status
+        let portfolio_id = {
+            let statuses = self.statuses.read().unwrap();
+            statuses
+                .get(&config.id)
+                .and_then(|s| s.portfolio_id.clone())
+                .ok_or_else(|| AppError::NotFound(format!("Bot status not found: {}", config.id)))?
+        };
+
         let portfolio = self
             .trading_service
             .get_portfolio(&portfolio_id)
@@ -433,7 +440,16 @@ impl BotRunner {
             .get_signals(symbol, TradingTimeframe::SwingTrading)
             .await;
 
-        // Get position info
+        // Get position info and update with current price
+        let positions = self.trading_service.get_positions(portfolio_id);
+        let position = positions.iter().find(|p| p.symbol == symbol);
+
+        // Update position price if we have one (so PnL% calculations are accurate)
+        if let Some(pos) = position {
+            let _ = self.trading_service.update_position_price(&pos.id, current_price);
+        }
+
+        // Re-fetch position after price update
         let positions = self.trading_service.get_positions(portfolio_id);
         let position = positions.iter().find(|p| p.symbol == symbol);
 
@@ -471,15 +487,15 @@ impl BotRunner {
                 };
 
                 (
-                    get_value("RSI"),
-                    get_value("MACD"), // MACD value is the histogram
-                    get_value("SMA"), // Short-term SMA (typically SMA 50)
-                    None, // Long-term SMA (200) - we'll calculate separately if needed
-                    get_value("Bollinger Upper"),
-                    get_value("Bollinger Lower"),
-                    get_value("Bollinger Middle"),
-                    get_value("ATR"),
-                    get_value("ADX"),
+                    get_value("RSI (14)"),
+                    get_value("MACD"),
+                    get_value("SMA (20)"),  // Short-term SMA (fast)
+                    get_value("SMA (50)"),  // Long-term SMA (slow) - using 20/50 crossover
+                    get_value("Bollinger Bands"), // Use main BB value
+                    get_value("Bollinger Bands"), // TODO: extract upper/lower separately
+                    get_value("Bollinger Bands"),
+                    get_value("ATR (14)"),
+                    get_value("ADX (14)"),
                 )
             } else {
                 (None, None, None, None, None, None, None, None, None)
@@ -590,11 +606,17 @@ impl BotRunner {
                     .place_order(request)
                     .map_err(|e| AppError::Internal(e.to_string()))?;
 
+                // Execute market order immediately
+                let trade = self
+                    .trading_service
+                    .execute_market_order(&order.id, current_price, None)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+
                 // Update stats
                 self.update_bot_stats(&config.id, true, 0.0);
 
                 // Notify bot of execution
-                bot.on_trade_executed(symbol, decision, order.avg_fill_price.unwrap_or(current_price))
+                bot.on_trade_executed(symbol, decision, trade.price)
                     .await?;
             }
             TradeDecision::Sell {
@@ -638,18 +660,20 @@ impl BotRunner {
                     .place_order(request)
                     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-                // Calculate PnL for stats
-                // Note: This is simplified; real PnL should come from position close
-                let realized_pnl = order.avg_fill_price.map(|p| {
-                    let position = quantity * p;
-                    position * 0.01 // Placeholder - actual PnL tracking needed
-                }).unwrap_or(0.0);
+                // Execute market order immediately
+                let trade = self
+                    .trading_service
+                    .execute_market_order(&order.id, current_price, None)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+                // Get realized PnL from the trade (this closes positions properly)
+                let realized_pnl = trade.realized_pnl.unwrap_or(0.0);
 
                 // Update stats
                 self.update_bot_stats(&config.id, realized_pnl > 0.0, realized_pnl);
 
                 // Notify bot of execution
-                bot.on_trade_executed(symbol, decision, order.avg_fill_price.unwrap_or(current_price))
+                bot.on_trade_executed(symbol, decision, trade.price)
                     .await?;
             }
             TradeDecision::Hold { .. } => {

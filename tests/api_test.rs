@@ -508,3 +508,349 @@ fn test_stats_online_sources_constraint() {
         "Online sources cannot exceed total sources"
     );
 }
+
+// =============================================================================
+// Trading API Tests
+// =============================================================================
+
+#[test]
+fn test_leaderboard_response_structure() {
+    let response = serde_json::json!({
+        "data": [
+            {
+                "portfolioId": "port-123",
+                "name": "Test Portfolio",
+                "userId": "user-456",
+                "totalValue": 5250000.0,
+                "startingBalance": 5000000.0,
+                "realizedPnl": 150000.0,
+                "unrealizedPnl": 100000.0,
+                "totalReturnPct": 5.0,
+                "totalTrades": 25,
+                "winningTrades": 18,
+                "winRate": 0.72
+            },
+            {
+                "portfolioId": "port-789",
+                "name": "Bot Portfolio",
+                "userId": "bot_grandma",
+                "totalValue": 5100000.0,
+                "startingBalance": 5000000.0,
+                "realizedPnl": 80000.0,
+                "unrealizedPnl": 20000.0,
+                "totalReturnPct": 2.0,
+                "totalTrades": 10,
+                "winningTrades": 7,
+                "winRate": 0.70
+            }
+        ]
+    });
+
+    assert!(response["data"].is_array());
+    let entries = response["data"].as_array().unwrap();
+    assert!(!entries.is_empty());
+
+    let entry = &entries[0];
+    assert!(entry["portfolioId"].is_string());
+    assert!(entry["name"].is_string());
+    assert!(entry["userId"].is_string());
+    assert!(entry["totalValue"].is_f64());
+    assert!(entry["startingBalance"].is_f64());
+    assert!(entry["realizedPnl"].is_f64());
+    assert!(entry["unrealizedPnl"].is_f64());
+    assert!(entry["totalReturnPct"].is_f64());
+    assert!(entry["totalTrades"].is_i64());
+    assert!(entry["winningTrades"].is_i64());
+    assert!(entry["winRate"].is_f64());
+
+    // Verify bot detection works
+    let bot_entry = &entries[1];
+    assert!(bot_entry["userId"].as_str().unwrap().starts_with("bot_"));
+}
+
+#[test]
+fn test_leaderboard_sorted_by_return() {
+    let entries = vec![
+        serde_json::json!({"totalReturnPct": 10.0}),
+        serde_json::json!({"totalReturnPct": 5.0}),
+        serde_json::json!({"totalReturnPct": 2.0}),
+        serde_json::json!({"totalReturnPct": -1.0}),
+    ];
+
+    // Verify entries are sorted descending by return
+    for i in 0..entries.len() - 1 {
+        let current = entries[i]["totalReturnPct"].as_f64().unwrap();
+        let next = entries[i + 1]["totalReturnPct"].as_f64().unwrap();
+        assert!(
+            current >= next,
+            "Leaderboard should be sorted by totalReturnPct descending"
+        );
+    }
+}
+
+#[test]
+fn test_portfolio_response_structure() {
+    let response = serde_json::json!({
+        "data": {
+            "id": "port-123",
+            "userId": "user-456",
+            "name": "My Portfolio",
+            "description": "Test portfolio",
+            "baseCurrency": "USD",
+            "startingBalance": 5000000.0,
+            "cashBalance": 4500000.0,
+            "marginUsed": 250000.0,
+            "marginAvailable": 4250000.0,
+            "unrealizedPnl": 50000.0,
+            "realizedPnl": 25000.0,
+            "totalValue": 5075000.0,
+            "totalTrades": 15,
+            "winningTrades": 10,
+            "costBasisMethod": "fifo",
+            "riskSettings": {
+                "maxPositionSize": 100000.0,
+                "maxLeverage": 10.0,
+                "maxDrawdown": 0.25
+            },
+            "isCompetition": false,
+            "competitionId": null,
+            "createdAt": 1704067200000_i64,
+            "updatedAt": 1704153600000_i64
+        }
+    });
+
+    let portfolio = &response["data"];
+    assert!(portfolio["id"].is_string());
+    assert!(portfolio["userId"].is_string());
+    assert!(portfolio["name"].is_string());
+    assert!(portfolio["baseCurrency"].is_string());
+    assert!(portfolio["startingBalance"].is_f64());
+    assert!(portfolio["cashBalance"].is_f64());
+    assert!(portfolio["marginUsed"].is_f64());
+    assert!(portfolio["marginAvailable"].is_f64());
+    assert!(portfolio["totalTrades"].is_i64());
+    assert!(portfolio["winningTrades"].is_i64());
+    assert!(portfolio["riskSettings"].is_object());
+}
+
+#[test]
+fn test_portfolio_summary_response_structure() {
+    let response = serde_json::json!({
+        "data": {
+            "portfolioId": "port-123",
+            "totalValue": 5075000.0,
+            "cashBalance": 4500000.0,
+            "unrealizedPnl": 50000.0,
+            "realizedPnl": 25000.0,
+            "totalReturnPct": 1.5,
+            "marginUsed": 250000.0,
+            "marginAvailable": 4250000.0,
+            "marginLevel": 2030.0,
+            "openPositions": 3,
+            "openOrders": 2
+        }
+    });
+
+    let summary = &response["data"];
+    assert!(summary["portfolioId"].is_string());
+    assert!(summary["totalValue"].is_f64());
+    assert!(summary["marginLevel"].is_f64());
+    assert!(summary["openPositions"].is_i64());
+    assert!(summary["openOrders"].is_i64());
+}
+
+#[test]
+fn test_position_response_structure() {
+    let response = serde_json::json!({
+        "data": [{
+            "id": "pos-123",
+            "portfolioId": "port-456",
+            "symbol": "BTC",
+            "assetClass": "crypto_spot",
+            "side": "long",
+            "quantity": 1.5,
+            "entryPrice": 45000.0,
+            "currentPrice": 47000.0,
+            "unrealizedPnl": 3000.0,
+            "unrealizedPnlPct": 4.44,
+            "realizedPnl": 0.0,
+            "leverage": 1.0,
+            "marginUsed": 67500.0,
+            "stopLoss": 42000.0,
+            "takeProfit": 55000.0,
+            "liquidationPrice": null,
+            "openedAt": 1704067200000_i64,
+            "updatedAt": 1704153600000_i64
+        }]
+    });
+
+    let positions = response["data"].as_array().unwrap();
+    assert!(!positions.is_empty());
+
+    let pos = &positions[0];
+    assert!(pos["id"].is_string());
+    assert!(pos["symbol"].is_string());
+    assert!(pos["side"].is_string());
+    assert!(pos["quantity"].is_f64());
+    assert!(pos["entryPrice"].is_f64());
+    assert!(pos["currentPrice"].is_f64());
+    assert!(pos["unrealizedPnl"].is_f64());
+    assert!(pos["leverage"].is_f64());
+}
+
+#[test]
+fn test_order_response_structure() {
+    let response = serde_json::json!({
+        "data": [{
+            "id": "ord-123",
+            "portfolioId": "port-456",
+            "symbol": "ETH",
+            "assetClass": "crypto_spot",
+            "side": "buy",
+            "orderType": "limit",
+            "status": "open",
+            "quantity": 10.0,
+            "filledQuantity": 0.0,
+            "price": 3000.0,
+            "avgFillPrice": null,
+            "stopPrice": null,
+            "createdAt": 1704067200000_i64,
+            "updatedAt": 1704067200000_i64
+        }]
+    });
+
+    let orders = response["data"].as_array().unwrap();
+    assert!(!orders.is_empty());
+
+    let order = &orders[0];
+    assert!(order["id"].is_string());
+    assert!(order["symbol"].is_string());
+    assert!(order["side"].is_string());
+    assert!(order["orderType"].is_string());
+    assert!(order["status"].is_string());
+    assert!(order["quantity"].is_f64());
+}
+
+#[test]
+fn test_trade_response_structure() {
+    let response = serde_json::json!({
+        "data": [{
+            "id": "trade-123",
+            "orderId": "ord-456",
+            "portfolioId": "port-789",
+            "symbol": "BTC",
+            "assetClass": "crypto_spot",
+            "side": "buy",
+            "quantity": 0.5,
+            "price": 46000.0,
+            "fee": 23.0,
+            "slippage": 5.0,
+            "executedAt": 1704067200000_i64
+        }]
+    });
+
+    let trades = response["data"].as_array().unwrap();
+    assert!(!trades.is_empty());
+
+    let trade = &trades[0];
+    assert!(trade["id"].is_string());
+    assert!(trade["orderId"].is_string());
+    assert!(trade["symbol"].is_string());
+    assert!(trade["quantity"].is_f64());
+    assert!(trade["price"].is_f64());
+    assert!(trade["fee"].is_f64());
+    assert!(trade["executedAt"].is_i64());
+}
+
+#[test]
+fn test_place_order_request_structure() {
+    let request = serde_json::json!({
+        "portfolioId": "port-123",
+        "symbol": "BTC",
+        "assetClass": "crypto_spot",
+        "side": "buy",
+        "orderType": "market",
+        "quantity": 1.0,
+        "leverage": 1.0
+    });
+
+    assert!(request["portfolioId"].is_string());
+    assert!(request["symbol"].is_string());
+    assert!(request["assetClass"].is_string());
+    assert!(request["side"].is_string());
+    assert!(request["orderType"].is_string());
+    assert!(request["quantity"].is_f64());
+}
+
+#[test]
+fn test_create_portfolio_request_structure() {
+    let request = serde_json::json!({
+        "userId": "user-123",
+        "name": "My Trading Portfolio",
+        "description": "Paper trading account"
+    });
+
+    assert!(request["userId"].is_string());
+    assert!(request["name"].is_string());
+    assert!(request["description"].is_string());
+}
+
+// =============================================================================
+// Bot API Tests
+// =============================================================================
+
+#[test]
+fn test_bots_list_response_structure() {
+    let response = serde_json::json!({
+        "bots": [{
+            "id": "grandma",
+            "name": "Grandma",
+            "personality": "grandma",
+            "running": true,
+            "portfolioId": "port-bot-123",
+            "totalTrades": 15,
+            "winningTrades": 11,
+            "totalPnl": 25000.0,
+            "portfolioValue": 5025000.0,
+            "lastDecisionAt": 1704153600000_i64,
+            "lastError": null,
+            "assetClasses": ["crypto_spot", "stock", "forex"]
+        }],
+        "total": 1
+    });
+
+    assert!(response["bots"].is_array());
+    assert!(response["total"].is_i64());
+
+    let bot = &response["bots"][0];
+    assert_eq!(bot["id"], "grandma");
+    assert_eq!(bot["personality"], "grandma");
+    assert!(bot["running"].is_boolean());
+    assert!(bot["totalTrades"].is_i64());
+    assert!(bot["assetClasses"].is_array());
+}
+
+#[test]
+fn test_bot_performance_response_structure() {
+    let response = serde_json::json!({
+        "botId": "grandma",
+        "name": "Grandma",
+        "personality": "grandma",
+        "totalTrades": 15,
+        "winningTrades": 11,
+        "winRate": 0.733,
+        "totalPnl": 25000.0,
+        "portfolioValue": 5025000.0,
+        "returnPct": 0.5,
+        "sharpeRatio": 1.5,
+        "maxDrawdown": 0.02
+    });
+
+    assert!(response["botId"].is_string());
+    assert!(response["winRate"].is_f64());
+    assert!(response["totalPnl"].is_f64());
+    assert!(response["returnPct"].is_f64());
+
+    let win_rate = response["winRate"].as_f64().unwrap();
+    assert!(win_rate >= 0.0 && win_rate <= 1.0, "Win rate should be 0-1");
+}

@@ -64,6 +64,9 @@ pub enum TradingError {
 
     #[error("No price data available for {0}")]
     NoPriceData(String),
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
 }
 
 impl From<rusqlite::Error> for TradingError {
@@ -357,15 +360,39 @@ impl TradingService {
     /// Get leaderboard of top performing portfolios.
     ///
     /// Returns portfolios sorted by total return percentage, descending.
+    /// Only includes portfolios where the user has opted in to the leaderboard,
+    /// or bot portfolios (user_id starts with "bot_").
     pub fn get_leaderboard(&self, limit: usize) -> Vec<LeaderboardEntry> {
         let mut entries: Vec<LeaderboardEntry> = self
             .portfolios
             .iter()
+            .filter(|r| {
+                let p = r.value();
+                // Always show bot portfolios
+                if p.user_id.starts_with("bot_") {
+                    return true;
+                }
+                // For user portfolios, check if they've opted in
+                self.sqlite
+                    .get_profile(&p.user_id)
+                    .map(|profile| profile.show_on_leaderboard)
+                    .unwrap_or(false)
+            })
             .map(|r| {
                 let p = r.value();
+                let open_positions = self.sqlite.position_count(&p.id) as u32;
+                // Get display name from profile if available
+                let display_name = if p.user_id.starts_with("bot_") {
+                    p.name.clone()
+                } else {
+                    self.sqlite
+                        .get_profile(&p.user_id)
+                        .map(|profile| profile.username)
+                        .unwrap_or_else(|| p.name.clone())
+                };
                 LeaderboardEntry {
                     portfolio_id: p.id.clone(),
-                    name: p.name.clone(),
+                    name: display_name,
                     user_id: p.user_id.clone(),
                     total_value: p.total_value,
                     starting_balance: p.starting_balance,
@@ -379,6 +406,7 @@ impl TradingService {
                     } else {
                         0.0
                     },
+                    open_positions,
                 }
             })
             .collect();
@@ -888,6 +916,12 @@ impl TradingService {
                     portfolio.cash_balance += opposite_position.margin_used + realized_pnl;
                     portfolio.margin_used -= opposite_position.margin_used;
 
+                    // Count this as a completed trade
+                    portfolio.total_trades += 1;
+                    if realized_pnl > 0.0 {
+                        portfolio.winning_trades += 1;
+                    }
+
                     self.sqlite.close_position(&opposite_position.id)?;
                     self.positions.remove(&opposite_position.id);
 
@@ -926,6 +960,12 @@ impl TradingService {
                     portfolio.realized_pnl += realized_pnl;
                     portfolio.cash_balance += margin_released + realized_pnl;
                     portfolio.margin_used -= margin_released;
+
+                    // Count this as a completed trade (partial close counts as a trade)
+                    portfolio.total_trades += 1;
+                    if realized_pnl > 0.0 {
+                        portfolio.winning_trades += 1;
+                    }
 
                     self.sqlite.update_position(&opposite_position)?;
                     self.positions.insert(opposite_position.id.clone(), opposite_position.clone());

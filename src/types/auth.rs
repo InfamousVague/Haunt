@@ -55,10 +55,21 @@ pub struct Profile {
     pub id: String,
     /// Public key (primary identifier)
     pub public_key: String,
+    /// Auto-generated username (e.g., "CryptoWolf42")
+    pub username: String,
     /// When account was created (ms)
     pub created_at: i64,
     /// Last authentication time (ms)
     pub last_seen: i64,
+    /// Whether to show on public leaderboard (opt-in)
+    #[serde(default)]
+    pub show_on_leaderboard: bool,
+    /// Signature proving consent to show on leaderboard
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaderboard_signature: Option<String>,
+    /// Timestamp when leaderboard consent was given
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaderboard_consent_at: Option<i64>,
     /// User settings
     pub settings: ProfileSettings,
 }
@@ -117,14 +128,19 @@ pub struct AuthenticatedUser {
 }
 
 impl Profile {
-    /// Create a new profile for a public key.
-    pub fn new(public_key: String) -> Self {
+    /// Create a new profile for a public key with a given username.
+    pub fn new(public_key: String, username: String) -> Self {
         let now = chrono::Utc::now().timestamp_millis();
+
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             public_key,
+            username,
             created_at: now,
             last_seen: now,
+            show_on_leaderboard: false,
+            leaderboard_signature: None,
+            leaderboard_consent_at: None,
             settings: ProfileSettings::default(),
         }
     }
@@ -300,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_profile_creation() {
-        let profile = Profile::new("pubkey123".to_string());
+        let profile = Profile::new("pubkey123".to_string(), "TestUser123".to_string());
         assert_eq!(profile.public_key, "pubkey123");
         assert_eq!(profile.settings.default_timeframe, "day_trading");
         assert!(!profile.id.is_empty());
@@ -308,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_profile_id_is_uuid() {
-        let profile = Profile::new("test".to_string());
+        let profile = Profile::new("test".to_string(), "TestUser".to_string());
         assert_eq!(profile.id.len(), 36);
         assert!(profile.id.contains('-'));
     }
@@ -316,7 +332,7 @@ mod tests {
     #[test]
     fn test_profile_timestamps() {
         let before = chrono::Utc::now().timestamp_millis();
-        let profile = Profile::new("test".to_string());
+        let profile = Profile::new("test".to_string(), "TestUser".to_string());
         let after = chrono::Utc::now().timestamp_millis();
 
         assert!(profile.created_at >= before);
@@ -389,7 +405,7 @@ mod tests {
             public_key: "pk".to_string(),
             session_token: "token".to_string(),
             expires_at: 1704153600000,
-            profile: Profile::new("pk".to_string()),
+            profile: Profile::new("pk".to_string(), "TestPK".to_string()),
         };
 
         assert!(response.authenticated);
@@ -425,7 +441,7 @@ mod tests {
     fn test_authenticated_user_creation() {
         let user = AuthenticatedUser {
             public_key: "user_pk".to_string(),
-            profile: Profile::new("user_pk".to_string()),
+            profile: Profile::new("user_pk".to_string(), "TestUserPK".to_string()),
         };
 
         assert_eq!(user.public_key, "user_pk");

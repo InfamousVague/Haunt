@@ -24,6 +24,7 @@ impl Signal for Sma {
         match self.period {
             20 => "sma20",
             50 => "sma50",
+            200 => "sma200",
             _ => "sma",
         }
     }
@@ -32,6 +33,7 @@ impl Signal for Sma {
         match self.period {
             20 => "SMA (20)",
             50 => "SMA (50)",
+            200 => "SMA (200)",
             _ => "SMA",
         }
     }

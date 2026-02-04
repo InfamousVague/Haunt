@@ -9,9 +9,9 @@ mod websocket;
 use axum::{routing::get, Router};
 use config::Config;
 use services::{
-    AccuracyStore, AssetService, AuthService, BotRunner, ChartStore, GrandmaBot,
+    AccuracyStore, AssetService, AuthService, BotRunner, ChartStore, CryptoBroBot, GrandmaBot,
     HistoricalDataService, MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh,
-    PredictionStore, SignalStore, SqliteStore,
+    PredictionStore, QuantBot, ScalperBot, SignalStore, SqliteStore,
 };
 use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -340,10 +340,22 @@ async fn main() -> anyhow::Result<()> {
             sqlite_store.clone(),
         );
 
-        // Create and register the Grandma bot
+        // Create and register all trading bots
         let grandma = GrandmaBot::new();
         runner.register_bot(grandma);
         info!("Registered GrandmaBot for paper trading");
+
+        let crypto_bro = CryptoBroBot::new();
+        runner.register_bot(crypto_bro);
+        info!("Registered CryptoBroBot for paper trading");
+
+        let quant = QuantBot::new();
+        runner.register_bot(quant);
+        info!("Registered QuantBot (ML-powered adaptive trader) for paper trading");
+
+        let scalper = ScalperBot::new();
+        runner.register_bot(scalper);
+        info!("Registered ScalperBot (high-frequency scalper) for paper trading");
 
         Some(Arc::new(runner))
     };

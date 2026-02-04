@@ -34,6 +34,7 @@ pub fn all_indicators() -> Vec<Box<dyn Signal>> {
         // Trend indicators
         Box::new(Sma::new(20)),
         Box::new(Sma::new(50)),
+        Box::new(Sma::new(200)), // For golden/death cross detection
         Box::new(Ema::new(12)),
         Box::new(Ema::new(26)),
         Box::new(Macd::default()),

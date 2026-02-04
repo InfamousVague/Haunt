@@ -58,12 +58,34 @@ impl SqliteStore {
             "CREATE TABLE IF NOT EXISTS profiles (
                 id TEXT PRIMARY KEY,
                 public_key TEXT UNIQUE NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL,
                 last_seen INTEGER NOT NULL,
+                show_on_leaderboard INTEGER NOT NULL DEFAULT 0,
+                leaderboard_signature TEXT,
+                leaderboard_consent_at INTEGER,
                 settings_json TEXT DEFAULT '{}'
             )",
             [],
         )?;
+
+        // Migrate existing profiles table to add new columns
+        let _ = conn.execute(
+            "ALTER TABLE profiles ADD COLUMN username TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE profiles ADD COLUMN show_on_leaderboard INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE profiles ADD COLUMN leaderboard_signature TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE profiles ADD COLUMN leaderboard_consent_at INTEGER",
+            [],
+        );
 
         // Index on public_key for faster lookups
         conn.execute(
@@ -473,19 +495,24 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         let result = conn.query_row(
-            "SELECT id, public_key, created_at, last_seen, settings_json
+            "SELECT id, public_key, username, created_at, last_seen,
+                    show_on_leaderboard, leaderboard_signature, leaderboard_consent_at, settings_json
              FROM profiles WHERE public_key = ?1",
             params![public_key],
             |row| {
-                let settings_json: String = row.get(4)?;
+                let settings_json: String = row.get(8)?;
                 let settings: ProfileSettings =
                     serde_json::from_str(&settings_json).unwrap_or_default();
 
                 Ok(Profile {
                     id: row.get(0)?,
                     public_key: row.get(1)?,
-                    created_at: row.get(2)?,
-                    last_seen: row.get(3)?,
+                    username: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    created_at: row.get(3)?,
+                    last_seen: row.get(4)?,
+                    show_on_leaderboard: row.get::<_, i64>(5)? != 0,
+                    leaderboard_signature: row.get(6)?,
+                    leaderboard_consent_at: row.get(7)?,
                     settings,
                 })
             },
@@ -507,16 +534,25 @@ impl SqliteStore {
         let settings_json = serde_json::to_string(&profile.settings).unwrap_or_default();
 
         conn.execute(
-            "INSERT INTO profiles (id, public_key, created_at, last_seen, settings_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO profiles (id, public_key, username, created_at, last_seen,
+                                   show_on_leaderboard, leaderboard_signature, leaderboard_consent_at, settings_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(public_key) DO UPDATE SET
+                username = excluded.username,
                 last_seen = excluded.last_seen,
+                show_on_leaderboard = excluded.show_on_leaderboard,
+                leaderboard_signature = excluded.leaderboard_signature,
+                leaderboard_consent_at = excluded.leaderboard_consent_at,
                 settings_json = excluded.settings_json",
             params![
                 profile.id,
                 profile.public_key,
+                profile.username,
                 profile.created_at,
                 profile.last_seen,
+                profile.show_on_leaderboard as i64,
+                profile.leaderboard_signature,
+                profile.leaderboard_consent_at,
                 settings_json,
             ],
         )?;
@@ -2685,7 +2721,7 @@ mod tests {
         let store = SqliteStore::new_in_memory().unwrap();
 
         // Create profile
-        let profile = Profile::new("abc123".repeat(8));
+        let profile = Profile::new("abc123".repeat(8), "TestTrader42".to_string());
         store.save_profile(&profile).unwrap();
 
         // Read profile

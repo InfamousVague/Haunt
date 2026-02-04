@@ -2,6 +2,9 @@
 //!
 //! Endpoints for paper trading functionality:
 //!
+//! Leaderboard:
+//! - GET /api/trading/leaderboard - Get portfolio leaderboard by return %
+//!
 //! Portfolios:
 //! - GET /api/trading/portfolios - List user's portfolios
 //! - POST /api/trading/portfolios - Create a new portfolio
@@ -35,16 +38,19 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Authenticated;
 use crate::services::TradingError;
 use crate::types::{
-    ModifyPositionRequest, Order, PlaceOrderRequest, Portfolio, Position, PortfolioSummary,
-    RiskSettings, Trade,
+    LeaderboardEntry, ModifyPositionRequest, Order, OrderType, PlaceOrderRequest, Portfolio,
+    Position, PortfolioSummary, RiskSettings, Trade,
 };
 use crate::AppState;
 
 /// Create trading router.
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Leaderboard
+        .route("/leaderboard", get(get_leaderboard))
         // Portfolio routes
         .route("/portfolios", get(list_portfolios))
         .route("/portfolios", post(create_portfolio))
@@ -108,6 +114,7 @@ impl IntoResponse for TradingError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR")
             }
             TradingError::NoPriceData(_) => (StatusCode::SERVICE_UNAVAILABLE, "NO_PRICE_DATA"),
+            TradingError::Unauthorized(_) => (StatusCode::FORBIDDEN, "UNAUTHORIZED"),
         };
 
         let body = Json(ErrorResponse {
@@ -138,6 +145,11 @@ pub struct ListPositionsQuery {
 #[derive(Debug, Deserialize)]
 pub struct ListTradesQuery {
     pub portfolio_id: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LeaderboardQuery {
     pub limit: Option<usize>,
 }
 
@@ -272,11 +284,24 @@ pub struct DeleteResponse {
 
 /// GET /api/trading/orders
 ///
-/// List orders for a portfolio.
+/// List orders for a portfolio. Requires authentication.
 async fn list_orders(
+    auth: Authenticated,
     State(state): State<AppState>,
     Query(query): Query<ListOrdersQuery>,
-) -> Json<ApiResponse<Vec<Order>>> {
+) -> Result<Json<ApiResponse<Vec<Order>>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&query.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(query.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
     let limit = query.limit.unwrap_or(100);
 
     let orders = if query.status.as_deref() == Some("open") {
@@ -287,17 +312,58 @@ async fn list_orders(
             .get_order_history(&query.portfolio_id, limit)
     };
 
-    Json(ApiResponse { data: orders })
+    Ok(Json(ApiResponse { data: orders }))
 }
 
 /// POST /api/trading/orders
 ///
-/// Place a new order.
+/// Place a new order. Requires authentication.
+/// Market orders are executed immediately at current price.
 async fn place_order(
+    auth: Authenticated,
     State(state): State<AppState>,
     Json(request): Json<PlaceOrderRequest>,
 ) -> Result<Json<ApiResponse<Order>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&request.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(request.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
+    let is_market_order = request.order_type == OrderType::Market;
+    let symbol = request.symbol.clone();
+
+    // Place the order (creates it in pending state)
     let order = state.trading_service.place_order(request)?;
+
+    // For market orders, execute immediately at current price
+    if is_market_order {
+        // Get current price from price cache
+        if let Some(current_price) = state.price_cache.get_price(&symbol.to_lowercase()) {
+            // Execute the market order
+            match state.trading_service.execute_market_order(&order.id, current_price, None) {
+                Ok(_trade) => {
+                    // Return the updated (filled) order
+                    if let Some(filled_order) = state.trading_service.get_order(&order.id) {
+                        return Ok(Json(ApiResponse { data: filled_order }));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to execute market order {}: {}", order.id, e);
+                    // Return the pending order if execution failed
+                }
+            }
+        } else {
+            tracing::warn!("No price available for {}, market order stays pending", symbol);
+        }
+    }
+
     Ok(Json(ApiResponse { data: order }))
 }
 
@@ -318,11 +384,30 @@ async fn get_order(
 
 /// DELETE /api/trading/orders/:id
 ///
-/// Cancel an order.
+/// Cancel an order. Requires authentication.
 async fn cancel_order(
+    auth: Authenticated,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Order>>, TradingError> {
+    // Get the order to find its portfolio
+    let order = state
+        .trading_service
+        .get_order(&id)
+        .ok_or_else(|| TradingError::OrderNotFound(id.clone()))?;
+
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&order.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(order.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this order".to_string(),
+        ));
+    }
+
     let order = state.trading_service.cancel_order(&id)?;
     Ok(Json(ApiResponse { data: order }))
 }
@@ -333,13 +418,26 @@ async fn cancel_order(
 
 /// GET /api/trading/positions
 ///
-/// List open positions for a portfolio.
+/// List open positions for a portfolio. Requires authentication.
 async fn list_positions(
+    auth: Authenticated,
     State(state): State<AppState>,
     Query(query): Query<ListPositionsQuery>,
-) -> Json<ApiResponse<Vec<Position>>> {
+) -> Result<Json<ApiResponse<Vec<Position>>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&query.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(query.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
     let positions = state.trading_service.get_positions(&query.portfolio_id);
-    Json(ApiResponse { data: positions })
+    Ok(Json(ApiResponse { data: positions }))
 }
 
 /// GET /api/trading/positions/:id
@@ -359,12 +457,31 @@ async fn get_position(
 
 /// PUT /api/trading/positions/:id
 ///
-/// Modify position stop loss and take profit.
+/// Modify position stop loss and take profit. Requires authentication.
 async fn modify_position(
+    auth: Authenticated,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<ModifyPositionRequest>,
 ) -> Result<Json<ApiResponse<Position>>, TradingError> {
+    // Get the position to find its portfolio
+    let pos = state
+        .trading_service
+        .get_position(&id)
+        .ok_or_else(|| TradingError::PositionNotFound(id.clone()))?;
+
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&pos.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(pos.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this position".to_string(),
+        ));
+    }
+
     let position = state
         .trading_service
         .modify_position(&id, request.stop_loss, request.take_profit)?;
@@ -374,12 +491,31 @@ async fn modify_position(
 
 /// DELETE /api/trading/positions/:id
 ///
-/// Close a position at market price.
+/// Close a position at market price. Requires authentication.
 async fn close_position(
+    auth: Authenticated,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<ClosePositionQuery>,
 ) -> Result<Json<ApiResponse<Trade>>, TradingError> {
+    // Get the position to find its portfolio
+    let pos = state
+        .trading_service
+        .get_position(&id)
+        .ok_or_else(|| TradingError::PositionNotFound(id.clone()))?;
+
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&pos.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(pos.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this position".to_string(),
+        ));
+    }
+
     let trade = state.trading_service.close_position(&id, query.price)?;
     Ok(Json(ApiResponse { data: trade }))
 }
@@ -390,14 +526,43 @@ async fn close_position(
 
 /// GET /api/trading/trades
 ///
-/// List trade history for a portfolio.
+/// List trade history for a portfolio. Requires authentication.
 async fn list_trades(
+    auth: Authenticated,
     State(state): State<AppState>,
     Query(query): Query<ListTradesQuery>,
-) -> Json<ApiResponse<Vec<Trade>>> {
+) -> Result<Json<ApiResponse<Vec<Trade>>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&query.portfolio_id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(query.portfolio_id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
     let limit = query.limit.unwrap_or(100);
     let trades = state.trading_service.get_trades(&query.portfolio_id, limit);
-    Json(ApiResponse { data: trades })
+    Ok(Json(ApiResponse { data: trades }))
+}
+
+// =============================================================================
+// Leaderboard Handlers
+// =============================================================================
+
+/// GET /api/trading/leaderboard
+///
+/// Get leaderboard of portfolios ranked by total return percentage.
+async fn get_leaderboard(
+    State(state): State<AppState>,
+    Query(query): Query<LeaderboardQuery>,
+) -> Json<ApiResponse<Vec<LeaderboardEntry>>> {
+    let limit = query.limit.unwrap_or(100);
+    let leaderboard = state.trading_service.get_leaderboard(limit);
+    Json(ApiResponse { data: leaderboard })
 }
 
 // =============================================================================

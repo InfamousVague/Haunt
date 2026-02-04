@@ -104,7 +104,7 @@ impl AuthService {
     /// Verify HMAC-SHA256 signature.
     ///
     /// The signature is created by signing the challenge with the private key.
-    fn verify_signature(
+    pub fn verify_signature(
         &self,
         public_key: &str,
         _challenge: &str,
@@ -220,8 +220,9 @@ impl AuthService {
             }
         }
 
-        // Create new profile
-        let profile = Profile::new(public_key.to_string());
+        // Create new profile with generated username
+        let username = crate::services::names::generate_username_from_seed(public_key.as_bytes());
+        let profile = Profile::new(public_key.to_string(), username);
         self.profiles
             .insert(public_key.to_string(), profile.clone());
 

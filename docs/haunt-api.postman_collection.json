@@ -569,6 +569,486 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Trading",
+      "item": [
+        {
+          "name": "Leaderboard",
+          "item": [
+            {
+              "name": "Get Leaderboard",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/leaderboard?limit=100",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "leaderboard"],
+                  "query": [
+                    { "key": "limit", "value": "100" }
+                  ]
+                },
+                "description": "Get leaderboard of portfolios ranked by total return percentage."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Portfolios",
+          "item": [
+            {
+              "name": "List Portfolios",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios?user_id=user-123",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios"],
+                  "query": [
+                    { "key": "user_id", "value": "user-123" }
+                  ]
+                },
+                "description": "List all portfolios for a user."
+              },
+              "response": []
+            },
+            {
+              "name": "Create Portfolio",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"userId\": \"user-123\",\n  \"name\": \"My Trading Portfolio\",\n  \"description\": \"Paper trading account\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios"]
+                },
+                "description": "Create a new paper trading portfolio with $5M starting balance."
+              },
+              "response": []
+            },
+            {
+              "name": "Get Portfolio",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "Get portfolio details by ID."
+              },
+              "response": []
+            },
+            {
+              "name": "Get Portfolio Summary",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios/:id/summary",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios", ":id", "summary"],
+                  "variable": [
+                    { "key": "id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "Get portfolio summary with performance metrics."
+              },
+              "response": []
+            },
+            {
+              "name": "Update Portfolio Settings",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"maxPositionSize\": 100000.0,\n  \"maxLeverage\": 10.0,\n  \"maxDrawdown\": 0.25\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "Update portfolio risk settings."
+              },
+              "response": []
+            },
+            {
+              "name": "Reset Portfolio",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios/:id/reset",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios", ":id", "reset"],
+                  "variable": [
+                    { "key": "id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "Reset portfolio to starting balance, closing all positions."
+              },
+              "response": []
+            },
+            {
+              "name": "Delete Portfolio",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/portfolios/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "portfolios", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "Delete a portfolio and all associated data."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Orders",
+          "item": [
+            {
+              "name": "List Orders",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/orders?portfolio_id=portfolio-123&status=open&limit=100",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "orders"],
+                  "query": [
+                    { "key": "portfolio_id", "value": "portfolio-123" },
+                    { "key": "status", "value": "open" },
+                    { "key": "limit", "value": "100" }
+                  ]
+                },
+                "description": "List orders for a portfolio. Status can be 'open' or omit for all."
+              },
+              "response": []
+            },
+            {
+              "name": "Place Order",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"portfolioId\": \"portfolio-123\",\n  \"symbol\": \"BTC\",\n  \"assetClass\": \"crypto_spot\",\n  \"side\": \"buy\",\n  \"orderType\": \"market\",\n  \"quantity\": 1.0,\n  \"leverage\": 1.0,\n  \"stopLoss\": 40000.0,\n  \"takeProfit\": 60000.0\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/orders",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "orders"]
+                },
+                "description": "Place a new order. Order types: market, limit, stop_loss, take_profit, trailing_stop."
+              },
+              "response": []
+            },
+            {
+              "name": "Get Order",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/orders/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "orders", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "order-123" }
+                  ]
+                },
+                "description": "Get order details by ID."
+              },
+              "response": []
+            },
+            {
+              "name": "Cancel Order",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/orders/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "orders", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "order-123" }
+                  ]
+                },
+                "description": "Cancel an open order."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Positions",
+          "item": [
+            {
+              "name": "List Positions",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/positions?portfolio_id=portfolio-123",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "positions"],
+                  "query": [
+                    { "key": "portfolio_id", "value": "portfolio-123" }
+                  ]
+                },
+                "description": "List open positions for a portfolio."
+              },
+              "response": []
+            },
+            {
+              "name": "Get Position",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/positions/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "positions", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "position-123" }
+                  ]
+                },
+                "description": "Get position details by ID."
+              },
+              "response": []
+            },
+            {
+              "name": "Modify Position",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"stopLoss\": 42000.0,\n  \"takeProfit\": 55000.0\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/positions/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "positions", ":id"],
+                  "variable": [
+                    { "key": "id", "value": "position-123" }
+                  ]
+                },
+                "description": "Modify position stop loss and take profit."
+              },
+              "response": []
+            },
+            {
+              "name": "Close Position",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/positions/:id?price=47000.0",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "positions", ":id"],
+                  "query": [
+                    { "key": "price", "value": "47000.0" }
+                  ],
+                  "variable": [
+                    { "key": "id", "value": "position-123" }
+                  ]
+                },
+                "description": "Close a position at the specified price."
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Trades",
+          "item": [
+            {
+              "name": "List Trades",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/trading/trades?portfolio_id=portfolio-123&limit=100",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "trading", "trades"],
+                  "query": [
+                    { "key": "portfolio_id", "value": "portfolio-123" },
+                    { "key": "limit", "value": "100" }
+                  ]
+                },
+                "description": "List trade history for a portfolio."
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bots",
+      "item": [
+        {
+          "name": "List Bots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots"]
+            },
+            "description": "List all AI trading bots."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Bot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots", ":id"],
+              "variable": [
+                { "key": "id", "value": "grandma" }
+              ]
+            },
+            "description": "Get bot details by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Bot Performance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/:id/performance",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots", ":id", "performance"],
+              "variable": [
+                { "key": "id", "value": "grandma" }
+              ]
+            },
+            "description": "Get bot performance metrics."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Bot Trades",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/:id/trades?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots", ":id", "trades"],
+              "query": [
+                { "key": "limit", "value": "50" }
+              ],
+              "variable": [
+                { "key": "id", "value": "grandma" }
+              ]
+            },
+            "description": "Get bot's trade history."
+          },
+          "response": []
+        },
+        {
+          "name": "Follow Bot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user-123\",\n  \"autoCopy\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/:id/follow",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots", ":id", "follow"],
+              "variable": [
+                { "key": "id", "value": "grandma" }
+              ]
+            },
+            "description": "Follow a bot to get trade notifications. Set autoCopy to true to copy trades."
+          },
+          "response": []
+        },
+        {
+          "name": "Unfollow Bot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"user-123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/:id/unfollow",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "bots", ":id", "unfollow"],
+              "variable": [
+                { "key": "id", "value": "grandma" }
+              ]
+            },
+            "description": "Unfollow a bot."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

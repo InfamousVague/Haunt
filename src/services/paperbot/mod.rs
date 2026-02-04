@@ -4,14 +4,20 @@
 //! users with bots to trade against and follow.
 
 pub mod config;
+pub mod crypto_bro;
 pub mod decision;
 pub mod grandma;
+pub mod quant;
 pub mod runner;
+pub mod scalper;
 
 pub use config::{BotConfig, BotPersonality};
+pub use crypto_bro::CryptoBroBot;
 pub use decision::{DecisionContext, SellReason, SignalStrength, TradeDecision, TradeSignal};
 pub use grandma::GrandmaBot;
+pub use quant::QuantBot;
 pub use runner::{BotRunner, BotStatus};
+pub use scalper::ScalperBot;
 
 use crate::error::AppError;
 use crate::types::AssetClass;

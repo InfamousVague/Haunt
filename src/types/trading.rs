@@ -362,10 +362,10 @@ fn default_base_currency() -> String {
 }
 
 impl Portfolio {
-    /// Create a new portfolio with default starting balance of $5,000,000.
+    /// Create a new portfolio with default starting balance of $250,000.
     pub fn new(user_id: String, name: String) -> Self {
         let now = chrono::Utc::now().timestamp_millis();
-        let starting_balance = 5_000_000.0;
+        let starting_balance = 250_000.0;
 
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -2526,6 +2526,7 @@ pub struct LeaderboardEntry {
     pub total_trades: u64,
     pub winning_trades: u64,
     pub win_rate: f64,
+    pub open_positions: u32,
 }
 
 /// Order query parameters.

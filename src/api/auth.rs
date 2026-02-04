@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::services::AuthError;
 use crate::types::{
@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/verify", post(verify))
         .route("/me", get(get_me))
         .route("/profile", put(update_profile))
+        .route("/profile/leaderboard", post(update_leaderboard_visibility))
         .route("/logout", post(logout))
 }
 
@@ -86,6 +87,58 @@ async fn update_profile(
     Ok(Json(ApiResponse { data: updated }))
 }
 
+/// POST /api/auth/profile/leaderboard
+///
+/// Opt in or out of the public leaderboard.
+/// Opting in requires signing a consent message.
+async fn update_leaderboard_visibility(
+    State(state): State<AppState>,
+    auth: Authenticated,
+    Json(request): Json<LeaderboardConsentRequest>,
+) -> Result<Json<ApiResponse<Profile>>, AuthError> {
+    let mut profile = auth.user.profile;
+
+    if request.show_on_leaderboard {
+        // Verify the signature to prove consent
+        // The message format: "I consent to showing my trading performance on the Haunt leaderboard. Timestamp: {timestamp}"
+        let expected_message = format!(
+            "I consent to showing my trading performance on the Haunt leaderboard. Timestamp: {}",
+            request.timestamp
+        );
+
+        // Verify timestamp is recent (within 5 minutes)
+        let now = chrono::Utc::now().timestamp_millis();
+        if (now - request.timestamp).abs() > 5 * 60 * 1000 {
+            return Err(AuthError::ExpiredChallenge);
+        }
+
+        // Verify signature using the auth service
+        let signature = request.signature.as_ref().ok_or(AuthError::InvalidSignature)?;
+        let is_valid = state.auth_service.verify_signature(
+            &profile.public_key,
+            &expected_message,
+            signature,
+        )?;
+
+        if !is_valid {
+            return Err(AuthError::InvalidSignature);
+        }
+
+        profile.show_on_leaderboard = true;
+        profile.leaderboard_signature = Some(signature.clone());
+        profile.leaderboard_consent_at = Some(request.timestamp);
+    } else {
+        // Opting out doesn't require signature
+        profile.show_on_leaderboard = false;
+        profile.leaderboard_signature = None;
+        profile.leaderboard_consent_at = None;
+    }
+
+    let updated = state.auth_service.update_profile(profile).await?;
+
+    Ok(Json(ApiResponse { data: updated }))
+}
+
 /// POST /api/auth/logout
 ///
 /// Logout and invalidate the current session.
@@ -99,6 +152,18 @@ async fn logout(_auth: Authenticated) -> Json<ApiResponse<LogoutResponse>> {
     Json(ApiResponse {
         data: LogoutResponse { success: true },
     })
+}
+
+/// Request to update leaderboard visibility.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardConsentRequest {
+    /// Whether to show on leaderboard
+    pub show_on_leaderboard: bool,
+    /// Signature of consent message (required when opting in)
+    pub signature: Option<String>,
+    /// Timestamp included in consent message
+    pub timestamp: i64,
 }
 
 /// Authenticated user extractor.

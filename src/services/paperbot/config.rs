@@ -92,7 +92,7 @@ impl BotConfig {
             max_trades_per_day: 1,            // Max 1 trade per day
             decision_interval_secs: 900,      // Check every 15 minutes
             enabled: true,
-            initial_capital: 100_000.0,       // $100k starting
+            initial_capital: 250_000.0,       // $250k starting
         }
     }
 
@@ -111,7 +111,7 @@ impl BotConfig {
             max_trades_per_day: 20,           // Very active
             decision_interval_secs: 60,       // Check every minute
             enabled: true,
-            initial_capital: 100_000.0,
+            initial_capital: 250_000.0,
         }
     }
 
@@ -130,7 +130,7 @@ impl BotConfig {
             max_trades_per_day: 10,           // Moderate activity
             decision_interval_secs: 300,      // Check every 5 minutes
             enabled: true,
-            initial_capital: 100_000.0,
+            initial_capital: 250_000.0,
         }
     }
 }
