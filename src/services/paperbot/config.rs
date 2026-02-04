@@ -83,7 +83,7 @@ impl BotConfig {
             id: "grandma".to_string(),
             name: "Grandma".to_string(),
             personality: BotPersonality::Grandma,
-            asset_classes: vec![AssetClass::CryptoSpot, AssetClass::Stock],
+            asset_classes: vec![AssetClass::CryptoSpot, AssetClass::Stock, AssetClass::Forex],
             symbols: vec![],
             max_position_size_pct: 0.05,      // 5% max position
             risk_per_trade_pct: 0.02,         // 2% risk per trade
