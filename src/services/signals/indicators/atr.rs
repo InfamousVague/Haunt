@@ -61,11 +61,12 @@ impl Signal for Atr {
         }
 
         // Calculate ATR using Wilder's smoothing
-        let initial_atr: f64 = true_ranges.iter().take(self.period).sum::<f64>() / self.period as f64;
+        let initial_atr: f64 =
+            true_ranges.iter().take(self.period).sum::<f64>() / self.period as f64;
 
         let mut atr = initial_atr;
-        for i in self.period..true_ranges.len() {
-            atr = (atr * (self.period - 1) as f64 + true_ranges[i]) / self.period as f64;
+        for tr in true_ranges.iter().skip(self.period) {
+            atr = (atr * (self.period - 1) as f64 + tr) / self.period as f64;
         }
 
         // Calculate ATR as percentage of current price
@@ -101,5 +102,75 @@ impl Signal for Atr {
             atr_pct, // Return ATR as percentage of price
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_atr_id_and_name() {
+        let atr = Atr::default();
+        assert_eq!(atr.id(), "atr");
+        assert_eq!(atr.name(), "ATR (14)");
+    }
+
+    #[test]
+    fn test_atr_category() {
+        let atr = Atr::default();
+        assert_eq!(atr.category(), SignalCategory::Volatility);
+    }
+
+    #[test]
+    fn test_atr_min_periods() {
+        let atr = Atr::default();
+        assert_eq!(atr.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_atr_insufficient_data() {
+        let atr = Atr::default();
+        let candles = create_uptrend_candles(10);
+        let result = atr.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_atr_positive_value() {
+        let atr = Atr::default();
+        let candles = create_uptrend_candles(30);
+        let result = atr.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value > 0.0,
+            "ATR should be positive, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_atr_score_range() {
+        let atr = Atr::default();
+        let candles = create_uptrend_candles(30);
+        let result = atr.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
     }
 }

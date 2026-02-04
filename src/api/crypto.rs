@@ -1,12 +1,12 @@
+use crate::error::{AppError, Result};
+use crate::types::{AssetListing, ChartData, ChartRange, Quote};
+use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
     routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use crate::error::{AppError, Result};
-use crate::types::{Asset, AssetListing, ChartData, ChartRange, Quote};
-use crate::AppState;
 
 /// API response wrapper matching frontend expectations
 #[derive(Debug, Serialize)]
@@ -138,7 +138,7 @@ async fn get_listings(
     Query(params): Query<ListingsQuery>,
 ) -> Result<Json<ApiResponse<Vec<AssetListing>>>> {
     let start = params.start.unwrap_or(1).max(1);
-    let limit = params.limit.unwrap_or(20).min(100).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
     let page = ((start - 1) / limit) + 1;
     let asset_type = params.asset_type.unwrap_or_default();
 
@@ -147,7 +147,7 @@ async fn get_listings(
         .asset_service
         .get_listings(asset_type, page, limit)
         .await
-        .map_err(|e| crate::error::AppError::Internal(e))?;
+        .map_err(crate::error::AppError::Internal)?;
 
     // Filter by listing filter type
     if let Some(filter) = params.filter {
@@ -159,14 +159,19 @@ async fn get_listings(
                 // Sort by absolute change, take most volatile
                 let mut volatile = data;
                 volatile.sort_by(|a, b| {
-                    b.change_24h.abs().partial_cmp(&a.change_24h.abs()).unwrap_or(std::cmp::Ordering::Equal)
+                    b.change_24h
+                        .abs()
+                        .partial_cmp(&a.change_24h.abs())
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 volatile
             }
             ListingFilter::TopVolume => {
                 let mut by_volume = data;
                 by_volume.sort_by(|a, b| {
-                    b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal)
+                    b.volume_24h
+                        .partial_cmp(&a.volume_24h)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 });
                 by_volume
             }
@@ -199,7 +204,9 @@ async fn get_listings(
                 }
             } else {
                 // Crypto - use 168 points for 7 days of hourly data
-                state.chart_store.generate_sparkline_from_history(&symbol, 168)
+                state
+                    .chart_store
+                    .generate_sparkline_from_history(&symbol, 168)
             };
 
             if !sparkline.is_empty() {
@@ -209,7 +216,10 @@ async fn get_listings(
 
         // Calculate 7d change from chart store if it's 0 (stocks/ETFs)
         if listing.change_7d == 0.0 {
-            if let Some(change_7d) = state.chart_store.get_price_change(&symbol, 7 * 24 * 60 * 60) {
+            if let Some(change_7d) = state
+                .chart_store
+                .get_price_change(&symbol, 7 * 24 * 60 * 60)
+            {
                 listing.change_7d = change_7d;
             }
         }
@@ -259,7 +269,7 @@ async fn search(
     State(state): State<AppState>,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<ApiResponse<Vec<AssetListing>>>> {
-    let limit = params.limit.unwrap_or(10).min(50).max(1);
+    let limit = params.limit.unwrap_or(10).clamp(1, 50);
     let query = params.q.clone();
 
     let results = state.cmc_client.search(&params.q, limit).await?;
@@ -292,10 +302,12 @@ async fn get_asset(
             rank: asset.rank.unwrap_or(0),
             name: asset.name,
             symbol: asset.symbol,
-            image: asset.logo.unwrap_or_else(|| format!(
-                "https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png",
-                asset.id
-            )),
+            image: asset.logo.unwrap_or_else(|| {
+                format!(
+                    "https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png",
+                    asset.id
+                )
+            }),
             price: quote.map(|q| q.price).unwrap_or(0.0),
             change_1h: quote.and_then(|q| q.percent_change_1h).unwrap_or(0.0),
             change_24h: quote.and_then(|q| q.percent_change_24h).unwrap_or(0.0),
@@ -346,7 +358,8 @@ async fn get_quotes(
 ) -> Result<Json<ApiResponse<Quote>>> {
     // First try crypto from CMC
     if let Ok(Some(asset)) = state.cmc_client.get_asset(id).await {
-        let quote = asset.quote
+        let quote = asset
+            .quote
             .ok_or_else(|| AppError::NotFound("Quote not available".to_string()))?;
         return Ok(Json(ApiResponse {
             data: quote,
@@ -388,7 +401,7 @@ async fn get_chart(
     Query(params): Query<ChartQuery>,
 ) -> Result<Json<ApiResponse<ChartData>>> {
     let range_str = params.range.as_deref().unwrap_or("1d");
-    let range = ChartRange::from_str(range_str)
+    let range = ChartRange::parse(range_str)
         .ok_or_else(|| AppError::BadRequest(format!("Invalid range: {}", range_str)))?;
 
     // Get the asset to find the symbol - try crypto first, then stocks/ETFs
@@ -408,18 +421,30 @@ async fn get_chart(
 
     // Auto-trigger seeding if data is empty and not already seeding/seeded
     let should_auto_seed = data.is_empty()
-        && (status == crate::services::SeedStatus::NotSeeded || status == crate::services::SeedStatus::Failed);
+        && (status == crate::services::SeedStatus::NotSeeded
+            || status == crate::services::SeedStatus::Failed);
 
     if should_auto_seed {
-        tracing::info!("Auto-triggering historical data seed for {} (empty chart data)", symbol);
+        tracing::info!(
+            "Auto-triggering historical data seed for {} (empty chart data)",
+            symbol
+        );
         let service = state.historical_service.clone();
         let symbol_clone = symbol.clone();
         tokio::spawn(async move {
             service.seed_historical_data(symbol_clone).await;
         });
-    } else if state.historical_service.should_seed(&symbol, range_str).await {
+    } else if state
+        .historical_service
+        .should_seed(&symbol, range_str)
+        .await
+    {
         // Regular seeding check for inadequate data
-        tracing::info!("Triggering historical data seed for {} (range: {})", symbol, range_str);
+        tracing::info!(
+            "Triggering historical data seed for {} (range: {})",
+            symbol,
+            range_str
+        );
         let service = state.historical_service.clone();
         let symbol_clone = symbol.clone();
         tokio::spawn(async move {
@@ -446,11 +471,11 @@ async fn get_chart(
 
     // Calculate data completeness
     let expected_points = match range {
-        ChartRange::OneHour => 60,      // 1-minute buckets for 1 hour
-        ChartRange::FourHours => 48,    // 5-minute buckets for 4 hours
-        ChartRange::OneDay => 288,      // 5-minute buckets for 24 hours
-        ChartRange::OneWeek => 168,     // 1-hour buckets for 7 days
-        ChartRange::OneMonth => 720,    // 1-hour buckets for 30 days
+        ChartRange::OneHour => 60,   // 1-minute buckets for 1 hour
+        ChartRange::FourHours => 48, // 5-minute buckets for 4 hours
+        ChartRange::OneDay => 288,   // 5-minute buckets for 24 hours
+        ChartRange::OneWeek => 168,  // 1-hour buckets for 7 days
+        ChartRange::OneMonth => 720, // 1-hour buckets for 30 days
     };
 
     let data_completeness = if expected_points > 0 {
@@ -460,9 +485,11 @@ async fn get_chart(
     };
 
     // Get actual seeding progress if available
-    let seeding_progress = state.historical_service.get_seed_progress(&symbol)
+    let seeding_progress = state
+        .historical_service
+        .get_seed_progress(&symbol)
         .map(|p| p.progress)
-        .or_else(|| {
+        .or({
             // Fallback based on status
             match status {
                 crate::services::SeedStatus::NotSeeded => Some(0),
@@ -523,7 +550,9 @@ async fn seed_symbol(
     };
 
     // Only start seeding if not already seeding or seeded
-    if status == crate::services::SeedStatus::NotSeeded || status == crate::services::SeedStatus::Failed {
+    if status == crate::services::SeedStatus::NotSeeded
+        || status == crate::services::SeedStatus::Failed
+    {
         let service = state.historical_service.clone();
         let symbol_clone = symbol.clone();
         tokio::spawn(async move {
@@ -561,7 +590,9 @@ async fn seed_batch(
         let symbol_lower = symbol.to_lowercase();
         let status = state.historical_service.get_seed_status(&symbol_lower);
 
-        if status == crate::services::SeedStatus::NotSeeded || status == crate::services::SeedStatus::Failed {
+        if status == crate::services::SeedStatus::NotSeeded
+            || status == crate::services::SeedStatus::Failed
+        {
             let service = state.historical_service.clone();
             let symbol_clone = symbol_lower.clone();
             tokio::spawn(async move {
@@ -599,8 +630,8 @@ async fn seed_status(
 ) -> Result<Json<ApiResponse<Vec<SeedResponse>>>> {
     // Get status for common symbols
     let symbols = vec![
-        "btc", "eth", "bnb", "xrp", "ada", "doge", "sol", "dot", "matic", "ltc",
-        "shib", "trx", "avax", "link", "atom", "uni", "xlm", "etc", "bch", "fil",
+        "btc", "eth", "bnb", "xrp", "ada", "doge", "sol", "dot", "matic", "ltc", "shib", "trx",
+        "avax", "link", "atom", "uni", "xlm", "etc", "bch", "fil",
     ];
 
     let responses: Vec<SeedResponse> = symbols
@@ -637,4 +668,337 @@ pub fn router() -> Router<AppState> {
         .route("/:id", get(get_asset))
         .route("/:id/quotes", get(get_quotes))
         .route("/:id/chart", get(get_chart))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // ApiMeta Tests
+    // =========================================================================
+
+    #[test]
+    fn test_api_meta_simple() {
+        let meta = ApiMeta::simple();
+        assert!(!meta.cached);
+        assert!(meta.total.is_none());
+        assert!(meta.start.is_none());
+        assert!(meta.limit.is_none());
+        assert!(meta.query.is_none());
+    }
+
+    #[test]
+    fn test_api_meta_with_pagination() {
+        let meta = ApiMeta::with_pagination(1, 20, 100);
+        assert!(!meta.cached);
+        assert_eq!(meta.total, Some(100));
+        assert_eq!(meta.start, Some(1));
+        assert_eq!(meta.limit, Some(20));
+        assert!(meta.query.is_none());
+    }
+
+    #[test]
+    fn test_api_meta_with_query() {
+        let meta = ApiMeta::with_query("bitcoin".to_string(), 10);
+        assert!(!meta.cached);
+        assert!(meta.total.is_none());
+        assert!(meta.start.is_none());
+        assert_eq!(meta.limit, Some(10));
+        assert_eq!(meta.query, Some("bitcoin".to_string()));
+    }
+
+    #[test]
+    fn test_api_meta_serialization_simple() {
+        let meta = ApiMeta::simple();
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("\"cached\":false"));
+        // Optional fields should be skipped
+        assert!(!json.contains("total"));
+        assert!(!json.contains("start"));
+        assert!(!json.contains("limit"));
+        assert!(!json.contains("query"));
+    }
+
+    #[test]
+    fn test_api_meta_serialization_with_pagination() {
+        let meta = ApiMeta::with_pagination(1, 20, 100);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("\"total\":100"));
+        assert!(json.contains("\"start\":1"));
+        assert!(json.contains("\"limit\":20"));
+    }
+
+    // =========================================================================
+    // SortField Tests
+    // =========================================================================
+
+    #[test]
+    fn test_sort_field_default() {
+        let field = SortField::default();
+        matches!(field, SortField::MarketCap);
+    }
+
+    #[test]
+    fn test_sort_field_deserialization() {
+        let json = r#""market_cap""#;
+        let field: SortField = serde_json::from_str(json).unwrap();
+        matches!(field, SortField::MarketCap);
+
+        let json = r#""price""#;
+        let field: SortField = serde_json::from_str(json).unwrap();
+        matches!(field, SortField::Price);
+
+        let json = r#""volume24h""#;
+        let field: SortField = serde_json::from_str(json).unwrap();
+        matches!(field, SortField::Volume24h);
+    }
+
+    #[test]
+    fn test_sort_field_debug() {
+        let field = SortField::PercentChange24h;
+        let debug_str = format!("{:?}", field);
+        assert!(debug_str.contains("PercentChange24h"));
+    }
+
+    // =========================================================================
+    // SortDirection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_sort_direction_default() {
+        let dir = SortDirection::default();
+        matches!(dir, SortDirection::Desc);
+    }
+
+    #[test]
+    fn test_sort_direction_deserialization() {
+        let json = r#""asc""#;
+        let dir: SortDirection = serde_json::from_str(json).unwrap();
+        matches!(dir, SortDirection::Asc);
+
+        let json = r#""desc""#;
+        let dir: SortDirection = serde_json::from_str(json).unwrap();
+        matches!(dir, SortDirection::Desc);
+    }
+
+    // =========================================================================
+    // ListingFilter Tests
+    // =========================================================================
+
+    #[test]
+    fn test_listing_filter_deserialization() {
+        let json = r#""all""#;
+        let filter: ListingFilter = serde_json::from_str(json).unwrap();
+        matches!(filter, ListingFilter::All);
+
+        let json = r#""gainers""#;
+        let filter: ListingFilter = serde_json::from_str(json).unwrap();
+        matches!(filter, ListingFilter::Gainers);
+
+        let json = r#""losers""#;
+        let filter: ListingFilter = serde_json::from_str(json).unwrap();
+        matches!(filter, ListingFilter::Losers);
+
+        let json = r#""most_volatile""#;
+        let filter: ListingFilter = serde_json::from_str(json).unwrap();
+        matches!(filter, ListingFilter::MostVolatile);
+
+        let json = r#""top_volume""#;
+        let filter: ListingFilter = serde_json::from_str(json).unwrap();
+        matches!(filter, ListingFilter::TopVolume);
+    }
+
+    #[test]
+    fn test_listing_filter_debug() {
+        let filter = ListingFilter::Gainers;
+        let debug_str = format!("{:?}", filter);
+        assert!(debug_str.contains("Gainers"));
+    }
+
+    // =========================================================================
+    // AssetType Tests
+    // =========================================================================
+
+    #[test]
+    fn test_asset_type_default() {
+        let at = AssetType::default();
+        assert_eq!(at, AssetType::All);
+    }
+
+    #[test]
+    fn test_asset_type_deserialization() {
+        let json = r#""all""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::All);
+
+        let json = r#""crypto""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::Crypto);
+
+        let json = r#""stock""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::Stock);
+
+        let json = r#""etf""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::Etf);
+
+        let json = r#""forex""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::Forex);
+
+        let json = r#""commodity""#;
+        let at: AssetType = serde_json::from_str(json).unwrap();
+        assert_eq!(at, AssetType::Commodity);
+    }
+
+    #[test]
+    fn test_asset_type_equality() {
+        assert_eq!(AssetType::Crypto, AssetType::Crypto);
+        assert_ne!(AssetType::Crypto, AssetType::Stock);
+    }
+
+    // =========================================================================
+    // ListingsQuery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_listings_query_deserialization() {
+        let json = r#"{"start": 1, "limit": 20, "sort": "price", "sort_dir": "asc", "filter": "gainers", "asset_type": "crypto", "min_change": -10.0, "max_change": 100.0}"#;
+        let query: ListingsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.start, Some(1));
+        assert_eq!(query.limit, Some(20));
+        assert_eq!(query.min_change, Some(-10.0));
+        assert_eq!(query.max_change, Some(100.0));
+    }
+
+    #[test]
+    fn test_listings_query_empty() {
+        let json = r#"{}"#;
+        let query: ListingsQuery = serde_json::from_str(json).unwrap();
+        assert!(query.start.is_none());
+        assert!(query.limit.is_none());
+        assert!(query.sort.is_none());
+        assert!(query.sort_dir.is_none());
+        assert!(query.filter.is_none());
+        assert!(query.asset_type.is_none());
+    }
+
+    // =========================================================================
+    // SearchQuery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_search_query_deserialization() {
+        let json = r#"{"q": "bitcoin", "limit": 10}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q, "bitcoin");
+        assert_eq!(query.limit, Some(10));
+    }
+
+    #[test]
+    fn test_search_query_minimal() {
+        let json = r#"{"q": "eth"}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q, "eth");
+        assert!(query.limit.is_none());
+    }
+
+    // =========================================================================
+    // ChartQuery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_chart_query_deserialization() {
+        let json = r#"{"range": "1d"}"#;
+        let query: ChartQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.range, Some("1d".to_string()));
+    }
+
+    #[test]
+    fn test_chart_query_empty() {
+        let json = r#"{}"#;
+        let query: ChartQuery = serde_json::from_str(json).unwrap();
+        assert!(query.range.is_none());
+    }
+
+    // =========================================================================
+    // SeedRequest Tests
+    // =========================================================================
+
+    #[test]
+    fn test_seed_request_deserialization() {
+        let json = r#"{"symbol": "BTC"}"#;
+        let req: SeedRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.symbol, "BTC");
+    }
+
+    // =========================================================================
+    // BatchSeedRequest Tests
+    // =========================================================================
+
+    #[test]
+    fn test_batch_seed_request_deserialization() {
+        let json = r#"{"symbols": ["BTC", "ETH", "SOL"]}"#;
+        let req: BatchSeedRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.symbols.len(), 3);
+        assert_eq!(req.symbols[0], "BTC");
+        assert_eq!(req.symbols[1], "ETH");
+        assert_eq!(req.symbols[2], "SOL");
+    }
+
+    // =========================================================================
+    // SeedResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_seed_response_serialization() {
+        let response = SeedResponse {
+            symbol: "btc".to_string(),
+            status: "seeding".to_string(),
+            message: "Seeding started".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"symbol\":\"btc\""));
+        assert!(json.contains("\"status\":\"seeding\""));
+        assert!(json.contains("\"message\":\"Seeding started\""));
+    }
+
+    #[test]
+    fn test_seed_response_debug() {
+        let response = SeedResponse {
+            symbol: "eth".to_string(),
+            status: "seeded".to_string(),
+            message: "Complete".to_string(),
+        };
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("SeedResponse"));
+    }
+
+    // =========================================================================
+    // ApiResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_api_response_serialization() {
+        let response = ApiResponse {
+            data: "test",
+            meta: ApiMeta::simple(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"data\":\"test\""));
+        assert!(json.contains("\"meta\":{\"cached\":false}"));
+    }
+
+    #[test]
+    fn test_api_response_with_pagination() {
+        let response = ApiResponse {
+            data: vec![1, 2, 3],
+            meta: ApiMeta::with_pagination(1, 10, 100),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"data\":[1,2,3]"));
+        assert!(json.contains("\"total\":100"));
+    }
 }

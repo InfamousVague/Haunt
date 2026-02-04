@@ -8,11 +8,17 @@
 //! - Sessions (24-hour TTL, ephemeral)
 //! - Recent predictions (7-day TTL, quick access)
 
-use crate::types::{Profile, ProfileSettings, SignalPrediction, PredictionOutcome};
-use rusqlite::{Connection, params};
+use crate::types::{
+    AssetClass, BracketRole, CostBasisMethod, Fill, FundingPayment, Greeks, InsuranceFund,
+    Liquidation, MarginChangeType, MarginHistory, MarginMode, OptionPosition, OptionStyle,
+    OptionType, Order, OrderSide, OrderStatus, OrderType, Position, PositionSide, Portfolio,
+    PredictionOutcome, Profile, ProfileSettings, RiskSettings, SignalPrediction, StrategyStatus,
+    TimeInForce, Trade, TradingRule, TradingStrategy,
+};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// SQLite store for persistent profile and prediction data.
@@ -102,6 +108,354 @@ impl SqliteStore {
             [],
         )?;
 
+        // ========== Trading Tables ==========
+
+        // Portfolios table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS portfolios (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                base_currency TEXT NOT NULL DEFAULT 'USD',
+                starting_balance REAL NOT NULL,
+                cash_balance REAL NOT NULL,
+                margin_used REAL NOT NULL DEFAULT 0,
+                margin_available REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                total_value REAL NOT NULL,
+                cost_basis_method TEXT NOT NULL DEFAULT 'fifo',
+                risk_settings_json TEXT DEFAULT '{}',
+                is_competition INTEGER NOT NULL DEFAULT 0,
+                competition_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolios_user_id ON portfolios(user_id)",
+            [],
+        )?;
+
+        // Orders table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS orders (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                side TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                filled_quantity REAL NOT NULL DEFAULT 0,
+                price REAL,
+                stop_price REAL,
+                trail_amount REAL,
+                trail_percent REAL,
+                time_in_force TEXT NOT NULL DEFAULT 'gtc',
+                status TEXT NOT NULL,
+                linked_order_id TEXT,
+                bracket_id TEXT,
+                leverage REAL NOT NULL DEFAULT 1.0,
+                fills_json TEXT DEFAULT '[]',
+                avg_fill_price REAL,
+                total_fees REAL NOT NULL DEFAULT 0,
+                client_order_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                trail_high_price REAL,
+                trail_low_price REAL,
+                bracket_role TEXT,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_portfolio_id ON orders(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol)",
+            [],
+        )?;
+
+        // Positions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS positions (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                current_price REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                unrealized_pnl_pct REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                margin_used REAL NOT NULL,
+                leverage REAL NOT NULL DEFAULT 1.0,
+                margin_mode TEXT NOT NULL DEFAULT 'isolated',
+                liquidation_price REAL,
+                stop_loss REAL,
+                take_profit REAL,
+                cost_basis_json TEXT DEFAULT '[]',
+                funding_payments REAL NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                closed_at INTEGER,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_portfolio_id ON positions(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)",
+            [],
+        )?;
+
+        // Trades table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS trades (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                portfolio_id TEXT NOT NULL,
+                position_id TEXT,
+                symbol TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                fee REAL NOT NULL DEFAULT 0,
+                slippage REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL,
+                executed_at INTEGER NOT NULL,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
+                FOREIGN KEY (position_id) REFERENCES positions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_portfolio_id ON trades(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(order_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_executed_at ON trades(executed_at DESC)",
+            [],
+        )?;
+
+        // ========== Perpetual Futures Tables ==========
+
+        // Funding payments table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS funding_payments (
+                id TEXT PRIMARY KEY,
+                position_id TEXT NOT NULL,
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                position_size REAL NOT NULL,
+                side TEXT NOT NULL,
+                funding_rate REAL NOT NULL,
+                payment REAL NOT NULL,
+                paid_at INTEGER NOT NULL,
+                FOREIGN KEY (position_id) REFERENCES positions(id),
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_funding_payments_position ON funding_payments(position_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_funding_payments_portfolio ON funding_payments(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_funding_payments_paid_at ON funding_payments(paid_at DESC)",
+            [],
+        )?;
+
+        // Liquidations table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS liquidations (
+                id TEXT PRIMARY KEY,
+                position_id TEXT NOT NULL,
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                liquidation_price REAL NOT NULL,
+                mark_price REAL NOT NULL,
+                loss REAL NOT NULL,
+                liquidation_fee REAL NOT NULL,
+                is_partial INTEGER NOT NULL DEFAULT 0,
+                remaining_quantity REAL,
+                liquidated_at INTEGER NOT NULL,
+                FOREIGN KEY (position_id) REFERENCES positions(id),
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_liquidations_portfolio ON liquidations(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_liquidations_liquidated_at ON liquidations(liquidated_at DESC)",
+            [],
+        )?;
+
+        // Margin history table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS margin_history (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                position_id TEXT,
+                change_type TEXT NOT NULL,
+                previous_margin_level REAL NOT NULL,
+                new_margin_level REAL NOT NULL,
+                previous_margin_used REAL NOT NULL,
+                new_margin_used REAL NOT NULL,
+                amount_changed REAL NOT NULL,
+                reason TEXT,
+                timestamp INTEGER NOT NULL,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
+                FOREIGN KEY (position_id) REFERENCES positions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_margin_history_portfolio ON margin_history(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_margin_history_timestamp ON margin_history(timestamp DESC)",
+            [],
+        )?;
+
+        // Insurance fund table (single row, global state)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS insurance_fund (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                balance REAL NOT NULL DEFAULT 0,
+                total_contributions REAL NOT NULL DEFAULT 0,
+                total_payouts REAL NOT NULL DEFAULT 0,
+                liquidations_covered INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Initialize insurance fund if not exists
+        conn.execute(
+            "INSERT OR IGNORE INTO insurance_fund (id, balance, total_contributions, total_payouts, liquidations_covered, updated_at)
+             VALUES (1, 0, 0, 0, 0, ?1)",
+            params![chrono::Utc::now().timestamp_millis()],
+        )?;
+
+        // ========== Options Trading Tables ==========
+
+        // Options positions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS options_positions (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                contract_symbol TEXT NOT NULL,
+                underlying_symbol TEXT NOT NULL,
+                option_type TEXT NOT NULL,
+                strike REAL NOT NULL,
+                expiration INTEGER NOT NULL,
+                style TEXT NOT NULL,
+                contracts INTEGER NOT NULL,
+                multiplier INTEGER NOT NULL DEFAULT 100,
+                entry_premium REAL NOT NULL,
+                current_premium REAL NOT NULL,
+                underlying_price REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                greeks_json TEXT DEFAULT '{}',
+                entry_iv REAL NOT NULL,
+                current_iv REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                closed_at INTEGER,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_options_positions_portfolio ON options_positions(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_options_positions_underlying ON options_positions(underlying_symbol)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_options_positions_expiration ON options_positions(expiration)",
+            [],
+        )?;
+
+        // ========== Auto-Trading Strategy Tables ==========
+
+        // Strategies table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS strategies (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                symbols_json TEXT NOT NULL DEFAULT '[]',
+                asset_class TEXT,
+                rules_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'paused',
+                cooldown_seconds INTEGER NOT NULL DEFAULT 3600,
+                max_positions INTEGER NOT NULL DEFAULT 3,
+                max_position_size_pct REAL NOT NULL DEFAULT 0.10,
+                last_trade_at INTEGER,
+                total_trades INTEGER NOT NULL DEFAULT 0,
+                winning_trades INTEGER NOT NULL DEFAULT 0,
+                losing_trades INTEGER NOT NULL DEFAULT 0,
+                realized_pnl REAL NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_strategies_portfolio ON strategies(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_strategies_status ON strategies(status)",
+            [],
+        )?;
+
         info!("SQLite schema initialized");
         Ok(())
     }
@@ -161,7 +515,10 @@ impl SqliteStore {
             ],
         )?;
 
-        debug!("Saved profile for {}", &profile.public_key[..16.min(profile.public_key.len())]);
+        debug!(
+            "Saved profile for {}",
+            &profile.public_key[..16.min(profile.public_key.len())]
+        );
         Ok(())
     }
 
@@ -181,7 +538,10 @@ impl SqliteStore {
     /// Delete a profile.
     pub fn delete_profile(&self, public_key: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM profiles WHERE public_key = ?1", params![public_key])?;
+        conn.execute(
+            "DELETE FROM profiles WHERE public_key = ?1",
+            params![public_key],
+        )?;
         Ok(())
     }
 
@@ -225,14 +585,29 @@ impl SqliteStore {
                 prediction.price_after_1h,
                 prediction.price_after_4h,
                 prediction.price_after_24h,
-                prediction.outcome_5m.as_ref().map(|o| format!("{:?}", o).to_lowercase()),
-                prediction.outcome_1h.as_ref().map(|o| format!("{:?}", o).to_lowercase()),
-                prediction.outcome_4h.as_ref().map(|o| format!("{:?}", o).to_lowercase()),
-                prediction.outcome_24h.as_ref().map(|o| format!("{:?}", o).to_lowercase()),
+                prediction
+                    .outcome_5m
+                    .as_ref()
+                    .map(|o| format!("{:?}", o).to_lowercase()),
+                prediction
+                    .outcome_1h
+                    .as_ref()
+                    .map(|o| format!("{:?}", o).to_lowercase()),
+                prediction
+                    .outcome_4h
+                    .as_ref()
+                    .map(|o| format!("{:?}", o).to_lowercase()),
+                prediction
+                    .outcome_24h
+                    .as_ref()
+                    .map(|o| format!("{:?}", o).to_lowercase()),
             ],
         )?;
 
-        debug!("Archived prediction {} for {}", prediction.id, prediction.symbol);
+        debug!(
+            "Archived prediction {} for {}",
+            prediction.id, prediction.symbol
+        );
         Ok(())
     }
 
@@ -318,7 +693,8 @@ impl SqliteStore {
     pub fn get_all_predictions(&self, limit: usize) -> Vec<SignalPrediction> {
         let conn = self.conn.lock().unwrap();
 
-        let query = "SELECT id, symbol, indicator, direction, score, price_at_prediction, timestamp,
+        let query =
+            "SELECT id, symbol, indicator, direction, score, price_at_prediction, timestamp,
                             price_after_5m, price_after_1h, price_after_4h, price_after_24h,
                             outcome_5m, outcome_1h, outcome_4h, outcome_24h
                      FROM prediction_history
@@ -400,7 +776,7 @@ impl SqliteStore {
             })
         });
 
-        result.unwrap_or(AccuracyStats::default())
+        result.unwrap_or_default()
     }
 
     /// Get overall accuracy across all symbols.
@@ -435,7 +811,7 @@ impl SqliteStore {
             })
         });
 
-        result.unwrap_or(AccuracyStats::default())
+        result.unwrap_or_default()
     }
 
     /// Get prediction count for a symbol.
@@ -464,6 +840,1786 @@ impl SqliteStore {
         }
 
         Ok(count)
+    }
+
+    // ========== Portfolio Methods ==========
+
+    /// Create a new portfolio.
+    pub fn create_portfolio(&self, portfolio: &Portfolio) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let risk_settings_json = serde_json::to_string(&portfolio.risk_settings).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO portfolios (
+                id, user_id, name, description, base_currency, starting_balance,
+                cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
+                total_value, cost_basis_method, risk_settings_json, is_competition,
+                competition_id, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                portfolio.id,
+                portfolio.user_id,
+                portfolio.name,
+                portfolio.description,
+                portfolio.base_currency,
+                portfolio.starting_balance,
+                portfolio.cash_balance,
+                portfolio.margin_used,
+                portfolio.margin_available,
+                portfolio.unrealized_pnl,
+                portfolio.realized_pnl,
+                portfolio.total_value,
+                portfolio.cost_basis_method.to_string(),
+                risk_settings_json,
+                portfolio.is_competition as i32,
+                portfolio.competition_id,
+                portfolio.created_at,
+                portfolio.updated_at,
+            ],
+        )?;
+
+        debug!("Created portfolio {} for user {}", portfolio.id, portfolio.user_id);
+        Ok(())
+    }
+
+    /// Get a portfolio by ID.
+    pub fn get_portfolio(&self, id: &str) -> Option<Portfolio> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, user_id, name, description, base_currency, starting_balance,
+                    cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
+                    total_value, cost_basis_method, risk_settings_json, is_competition,
+                    competition_id, created_at, updated_at
+             FROM portfolios WHERE id = ?1",
+            params![id],
+            |row| Self::row_to_portfolio(row),
+        );
+
+        match result {
+            Ok(portfolio) => Some(portfolio),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching portfolio: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get all portfolios for a user.
+    pub fn get_user_portfolios(&self, user_id: &str) -> Vec<Portfolio> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, user_id, name, description, base_currency, starting_balance,
+                    cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
+                    total_value, cost_basis_method, risk_settings_json, is_competition,
+                    competition_id, created_at, updated_at
+             FROM portfolios WHERE user_id = ?1 ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing portfolio query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![user_id], |row| Self::row_to_portfolio(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Update a portfolio.
+    pub fn update_portfolio(&self, portfolio: &Portfolio) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let risk_settings_json = serde_json::to_string(&portfolio.risk_settings).unwrap_or_default();
+
+        conn.execute(
+            "UPDATE portfolios SET
+                name = ?1, description = ?2, cash_balance = ?3, margin_used = ?4,
+                margin_available = ?5, unrealized_pnl = ?6, realized_pnl = ?7,
+                total_value = ?8, cost_basis_method = ?9, risk_settings_json = ?10,
+                updated_at = ?11
+             WHERE id = ?12",
+            params![
+                portfolio.name,
+                portfolio.description,
+                portfolio.cash_balance,
+                portfolio.margin_used,
+                portfolio.margin_available,
+                portfolio.unrealized_pnl,
+                portfolio.realized_pnl,
+                portfolio.total_value,
+                portfolio.cost_basis_method.to_string(),
+                risk_settings_json,
+                portfolio.updated_at,
+                portfolio.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete a portfolio (and all associated data).
+    pub fn delete_portfolio(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // Delete in order due to foreign keys
+        conn.execute("DELETE FROM trades WHERE portfolio_id = ?1", params![id])?;
+        conn.execute("DELETE FROM positions WHERE portfolio_id = ?1", params![id])?;
+        conn.execute("DELETE FROM orders WHERE portfolio_id = ?1", params![id])?;
+        conn.execute("DELETE FROM portfolios WHERE id = ?1", params![id])?;
+
+        info!("Deleted portfolio {}", id);
+        Ok(())
+    }
+
+    /// Helper to convert a row to a Portfolio.
+    fn row_to_portfolio(row: &rusqlite::Row) -> Result<Portfolio, rusqlite::Error> {
+        let risk_settings_json: String = row.get(13)?;
+        let risk_settings: RiskSettings =
+            serde_json::from_str(&risk_settings_json).unwrap_or_default();
+        let cost_basis_str: String = row.get(12)?;
+
+        Ok(Portfolio {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            base_currency: row.get(4)?,
+            starting_balance: row.get(5)?,
+            cash_balance: row.get(6)?,
+            margin_used: row.get(7)?,
+            margin_available: row.get(8)?,
+            unrealized_pnl: row.get(9)?,
+            realized_pnl: row.get(10)?,
+            total_value: row.get(11)?,
+            cost_basis_method: parse_cost_basis_method(&cost_basis_str),
+            risk_settings,
+            is_competition: row.get::<_, i32>(14)? != 0,
+            competition_id: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
+        })
+    }
+
+    // ========== Order Methods ==========
+
+    /// Create a new order.
+    pub fn create_order(&self, order: &Order) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let fills_json = serde_json::to_string(&order.fills).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO orders (
+                id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                filled_quantity, price, stop_price, trail_amount, trail_percent,
+                time_in_force, status, linked_order_id, bracket_id, leverage,
+                fills_json, avg_fill_price, total_fees, client_order_id,
+                created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+            params![
+                order.id,
+                order.portfolio_id,
+                order.symbol,
+                order.asset_class.to_string(),
+                order.side.to_string(),
+                order.order_type.to_string(),
+                order.quantity,
+                order.filled_quantity,
+                order.price,
+                order.stop_price,
+                order.trail_amount,
+                order.trail_percent,
+                order.time_in_force.to_string(),
+                order.status.to_string(),
+                order.linked_order_id,
+                order.bracket_id,
+                order.leverage,
+                fills_json,
+                order.avg_fill_price,
+                order.total_fees,
+                order.client_order_id,
+                order.created_at,
+                order.updated_at,
+                order.expires_at,
+                order.trail_high_price,
+                order.trail_low_price,
+                order.bracket_role.as_ref().map(|r| r.to_string()),
+            ],
+        )?;
+
+        debug!("Created order {} for symbol {}", order.id, order.symbol);
+        Ok(())
+    }
+
+    /// Get an order by ID.
+    pub fn get_order(&self, id: &str) -> Option<Order> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                    filled_quantity, price, stop_price, trail_amount, trail_percent,
+                    time_in_force, status, linked_order_id, bracket_id, leverage,
+                    fills_json, avg_fill_price, total_fees, client_order_id,
+                    created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+             FROM orders WHERE id = ?1",
+            params![id],
+            |row| Self::row_to_order(row),
+        );
+
+        match result {
+            Ok(order) => Some(order),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching order: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get orders for a portfolio with optional status filter.
+    pub fn get_portfolio_orders(
+        &self,
+        portfolio_id: &str,
+        status: Option<OrderStatus>,
+        limit: usize,
+    ) -> Vec<Order> {
+        let conn = self.conn.lock().unwrap();
+
+        if let Some(s) = status {
+            let mut stmt = match conn.prepare(
+                "SELECT id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                        filled_quantity, price, stop_price, trail_amount, trail_percent,
+                        time_in_force, status, linked_order_id, bracket_id, leverage,
+                        fills_json, avg_fill_price, total_fees, client_order_id,
+                        created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+                 FROM orders WHERE portfolio_id = ?1 AND status = ?2
+                 ORDER BY created_at DESC LIMIT ?3",
+            ) {
+                Ok(stmt) => stmt,
+                Err(e) => {
+                    error!("Error preparing orders query: {}", e);
+                    return Vec::new();
+                }
+            };
+
+            stmt.query_map(
+                params![portfolio_id, s.to_string(), limit as i64],
+                |row| Self::row_to_order(row),
+            )
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+        } else {
+            let mut stmt = match conn.prepare(
+                "SELECT id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                        filled_quantity, price, stop_price, trail_amount, trail_percent,
+                        time_in_force, status, linked_order_id, bracket_id, leverage,
+                        fills_json, avg_fill_price, total_fees, client_order_id,
+                        created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+                 FROM orders WHERE portfolio_id = ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+            ) {
+                Ok(stmt) => stmt,
+                Err(e) => {
+                    error!("Error preparing orders query: {}", e);
+                    return Vec::new();
+                }
+            };
+
+            stmt.query_map(params![portfolio_id, limit as i64], |row| {
+                Self::row_to_order(row)
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+        }
+    }
+
+    /// Get open orders (pending, open, partially_filled).
+    pub fn get_open_orders(&self, portfolio_id: &str) -> Vec<Order> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                    filled_quantity, price, stop_price, trail_amount, trail_percent,
+                    time_in_force, status, linked_order_id, bracket_id, leverage,
+                    fills_json, avg_fill_price, total_fees, client_order_id,
+                    created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+             FROM orders WHERE portfolio_id = ?1
+             AND status IN ('pending', 'open', 'partially_filled')
+             ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing open orders query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id], |row| Self::row_to_order(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Update an order.
+    pub fn update_order(&self, order: &Order) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let fills_json = serde_json::to_string(&order.fills).unwrap_or_default();
+
+        conn.execute(
+            "UPDATE orders SET
+                filled_quantity = ?1, status = ?2, fills_json = ?3,
+                avg_fill_price = ?4, total_fees = ?5, updated_at = ?6,
+                stop_price = ?7, trail_high_price = ?8, trail_low_price = ?9,
+                linked_order_id = ?10
+             WHERE id = ?11",
+            params![
+                order.filled_quantity,
+                order.status.to_string(),
+                fills_json,
+                order.avg_fill_price,
+                order.total_fees,
+                order.updated_at,
+                order.stop_price,
+                order.trail_high_price,
+                order.trail_low_price,
+                order.linked_order_id,
+                order.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Helper to convert a row to an Order.
+    fn row_to_order(row: &rusqlite::Row) -> Result<Order, rusqlite::Error> {
+        let fills_json: String = row.get(17)?;
+        let fills: Vec<Fill> = serde_json::from_str(&fills_json).unwrap_or_default();
+
+        Ok(Order {
+            id: row.get(0)?,
+            portfolio_id: row.get(1)?,
+            symbol: row.get(2)?,
+            asset_class: parse_asset_class(&row.get::<_, String>(3)?),
+            side: parse_order_side(&row.get::<_, String>(4)?),
+            order_type: parse_order_type(&row.get::<_, String>(5)?),
+            quantity: row.get(6)?,
+            filled_quantity: row.get(7)?,
+            price: row.get(8)?,
+            stop_price: row.get(9)?,
+            trail_amount: row.get(10)?,
+            trail_percent: row.get(11)?,
+            time_in_force: parse_time_in_force(&row.get::<_, String>(12)?),
+            status: parse_order_status(&row.get::<_, String>(13)?),
+            linked_order_id: row.get(14)?,
+            bracket_id: row.get(15)?,
+            leverage: row.get(16)?,
+            fills,
+            avg_fill_price: row.get(18)?,
+            total_fees: row.get(19)?,
+            client_order_id: row.get(20)?,
+            created_at: row.get(21)?,
+            updated_at: row.get(22)?,
+            expires_at: row.get(23)?,
+            trail_high_price: row.get(24).ok(),
+            trail_low_price: row.get(25).ok(),
+            bracket_role: row.get::<_, Option<String>>(26)?.map(|s| parse_bracket_role(&s)),
+        })
+    }
+
+    // ========== Position Methods ==========
+
+    /// Create a new position.
+    pub fn create_position(&self, position: &Position) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let cost_basis_json = serde_json::to_string(&position.cost_basis).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO positions (
+                id, portfolio_id, symbol, asset_class, side, quantity, entry_price,
+                current_price, unrealized_pnl, unrealized_pnl_pct, realized_pnl,
+                margin_used, leverage, margin_mode, liquidation_price, stop_loss,
+                take_profit, cost_basis_json, funding_payments, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            params![
+                position.id,
+                position.portfolio_id,
+                position.symbol,
+                position.asset_class.to_string(),
+                position.side.to_string(),
+                position.quantity,
+                position.entry_price,
+                position.current_price,
+                position.unrealized_pnl,
+                position.unrealized_pnl_pct,
+                position.realized_pnl,
+                position.margin_used,
+                position.leverage,
+                position.margin_mode.to_string(),
+                position.liquidation_price,
+                position.stop_loss,
+                position.take_profit,
+                cost_basis_json,
+                position.funding_payments,
+                position.created_at,
+                position.updated_at,
+            ],
+        )?;
+
+        debug!("Created position {} for symbol {}", position.id, position.symbol);
+        Ok(())
+    }
+
+    /// Get a position by ID.
+    pub fn get_position(&self, id: &str) -> Option<Position> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, symbol, asset_class, side, quantity, entry_price,
+                    current_price, unrealized_pnl, unrealized_pnl_pct, realized_pnl,
+                    margin_used, leverage, margin_mode, liquidation_price, stop_loss,
+                    take_profit, cost_basis_json, funding_payments, created_at, updated_at
+             FROM positions WHERE id = ?1 AND closed_at IS NULL",
+            params![id],
+            |row| Self::row_to_position(row),
+        );
+
+        match result {
+            Ok(position) => Some(position),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching position: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get open positions for a portfolio.
+    pub fn get_portfolio_positions(&self, portfolio_id: &str) -> Vec<Position> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, symbol, asset_class, side, quantity, entry_price,
+                    current_price, unrealized_pnl, unrealized_pnl_pct, realized_pnl,
+                    margin_used, leverage, margin_mode, liquidation_price, stop_loss,
+                    take_profit, cost_basis_json, funding_payments, created_at, updated_at
+             FROM positions WHERE portfolio_id = ?1 AND closed_at IS NULL
+             ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing positions query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id], |row| Self::row_to_position(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get position for a specific symbol in a portfolio.
+    pub fn get_position_by_symbol(
+        &self,
+        portfolio_id: &str,
+        symbol: &str,
+        side: PositionSide,
+    ) -> Option<Position> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, symbol, asset_class, side, quantity, entry_price,
+                    current_price, unrealized_pnl, unrealized_pnl_pct, realized_pnl,
+                    margin_used, leverage, margin_mode, liquidation_price, stop_loss,
+                    take_profit, cost_basis_json, funding_payments, created_at, updated_at
+             FROM positions
+             WHERE portfolio_id = ?1 AND symbol = ?2 AND side = ?3 AND closed_at IS NULL",
+            params![portfolio_id, symbol, side.to_string()],
+            |row| Self::row_to_position(row),
+        );
+
+        match result {
+            Ok(position) => Some(position),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching position by symbol: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Update a position.
+    pub fn update_position(&self, position: &Position) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let cost_basis_json = serde_json::to_string(&position.cost_basis).unwrap_or_default();
+
+        conn.execute(
+            "UPDATE positions SET
+                quantity = ?1, current_price = ?2, unrealized_pnl = ?3,
+                unrealized_pnl_pct = ?4, realized_pnl = ?5, margin_used = ?6,
+                stop_loss = ?7, take_profit = ?8, cost_basis_json = ?9,
+                funding_payments = ?10, updated_at = ?11
+             WHERE id = ?12",
+            params![
+                position.quantity,
+                position.current_price,
+                position.unrealized_pnl,
+                position.unrealized_pnl_pct,
+                position.realized_pnl,
+                position.margin_used,
+                position.stop_loss,
+                position.take_profit,
+                cost_basis_json,
+                position.funding_payments,
+                position.updated_at,
+                position.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Close a position.
+    pub fn close_position(&self, position_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        conn.execute(
+            "UPDATE positions SET closed_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now, position_id],
+        )?;
+
+        debug!("Closed position {}", position_id);
+        Ok(())
+    }
+
+    /// Helper to convert a row to a Position.
+    fn row_to_position(row: &rusqlite::Row) -> Result<Position, rusqlite::Error> {
+        let cost_basis_json: String = row.get(17)?;
+        let cost_basis = serde_json::from_str(&cost_basis_json).unwrap_or_default();
+
+        Ok(Position {
+            id: row.get(0)?,
+            portfolio_id: row.get(1)?,
+            symbol: row.get(2)?,
+            asset_class: parse_asset_class(&row.get::<_, String>(3)?),
+            side: parse_position_side(&row.get::<_, String>(4)?),
+            quantity: row.get(5)?,
+            entry_price: row.get(6)?,
+            current_price: row.get(7)?,
+            unrealized_pnl: row.get(8)?,
+            unrealized_pnl_pct: row.get(9)?,
+            realized_pnl: row.get(10)?,
+            margin_used: row.get(11)?,
+            leverage: row.get(12)?,
+            margin_mode: parse_margin_mode(&row.get::<_, String>(13)?),
+            liquidation_price: row.get(14)?,
+            stop_loss: row.get(15)?,
+            take_profit: row.get(16)?,
+            cost_basis,
+            funding_payments: row.get(18)?,
+            created_at: row.get(19)?,
+            updated_at: row.get(20)?,
+        })
+    }
+
+    // ========== Trade Methods ==========
+
+    /// Create a new trade record.
+    pub fn create_trade(&self, trade: &Trade) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO trades (
+                id, order_id, portfolio_id, position_id, symbol, asset_class,
+                side, quantity, price, fee, slippage, realized_pnl, executed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                trade.id,
+                trade.order_id,
+                trade.portfolio_id,
+                trade.position_id,
+                trade.symbol,
+                trade.asset_class.to_string(),
+                trade.side.to_string(),
+                trade.quantity,
+                trade.price,
+                trade.fee,
+                trade.slippage,
+                trade.realized_pnl,
+                trade.executed_at,
+            ],
+        )?;
+
+        debug!("Created trade {} for order {}", trade.id, trade.order_id);
+        Ok(())
+    }
+
+    /// Get trades for a portfolio.
+    pub fn get_portfolio_trades(&self, portfolio_id: &str, limit: usize) -> Vec<Trade> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, order_id, portfolio_id, position_id, symbol, asset_class,
+                    side, quantity, price, fee, slippage, realized_pnl, executed_at
+             FROM trades WHERE portfolio_id = ?1
+             ORDER BY executed_at DESC LIMIT ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing trades query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, limit as i64], |row| {
+            Self::row_to_trade(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Get trades for an order.
+    pub fn get_order_trades(&self, order_id: &str) -> Vec<Trade> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, order_id, portfolio_id, position_id, symbol, asset_class,
+                    side, quantity, price, fee, slippage, realized_pnl, executed_at
+             FROM trades WHERE order_id = ?1 ORDER BY executed_at ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing order trades query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![order_id], |row| Self::row_to_trade(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Helper to convert a row to a Trade.
+    fn row_to_trade(row: &rusqlite::Row) -> Result<Trade, rusqlite::Error> {
+        Ok(Trade {
+            id: row.get(0)?,
+            order_id: row.get(1)?,
+            portfolio_id: row.get(2)?,
+            position_id: row.get(3)?,
+            symbol: row.get(4)?,
+            asset_class: parse_asset_class(&row.get::<_, String>(5)?),
+            side: parse_order_side(&row.get::<_, String>(6)?),
+            quantity: row.get(7)?,
+            price: row.get(8)?,
+            fee: row.get(9)?,
+            slippage: row.get(10)?,
+            realized_pnl: row.get(11)?,
+            executed_at: row.get(12)?,
+        })
+    }
+
+    /// Get total number of open positions for a portfolio.
+    pub fn position_count(&self, portfolio_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM positions WHERE portfolio_id = ?1 AND closed_at IS NULL",
+            params![portfolio_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Get total number of open orders for a portfolio.
+    pub fn open_order_count(&self, portfolio_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM orders WHERE portfolio_id = ?1
+             AND status IN ('pending', 'open', 'partially_filled')",
+            params![portfolio_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    // ========== Funding Payment Methods ==========
+
+    /// Create a funding payment record.
+    pub fn create_funding_payment(&self, payment: &FundingPayment) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO funding_payments (
+                id, position_id, portfolio_id, symbol, position_size,
+                side, funding_rate, payment, paid_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                payment.id,
+                payment.position_id,
+                payment.portfolio_id,
+                payment.symbol,
+                payment.position_size,
+                payment.side.to_string(),
+                payment.funding_rate,
+                payment.payment,
+                payment.paid_at,
+            ],
+        )?;
+
+        debug!(
+            "Created funding payment {} for position {}",
+            payment.id, payment.position_id
+        );
+        Ok(())
+    }
+
+    /// Get funding payments for a position.
+    pub fn get_position_funding_payments(&self, position_id: &str) -> Vec<FundingPayment> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, position_id, portfolio_id, symbol, position_size,
+                    side, funding_rate, payment, paid_at
+             FROM funding_payments WHERE position_id = ?1
+             ORDER BY paid_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing funding payments query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![position_id], |row| Self::row_to_funding_payment(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get funding payments for a portfolio.
+    pub fn get_portfolio_funding_payments(
+        &self,
+        portfolio_id: &str,
+        limit: usize,
+    ) -> Vec<FundingPayment> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, position_id, portfolio_id, symbol, position_size,
+                    side, funding_rate, payment, paid_at
+             FROM funding_payments WHERE portfolio_id = ?1
+             ORDER BY paid_at DESC LIMIT ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing portfolio funding payments query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, limit as i64], |row| {
+            Self::row_to_funding_payment(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Helper to convert a row to a FundingPayment.
+    fn row_to_funding_payment(row: &rusqlite::Row) -> Result<FundingPayment, rusqlite::Error> {
+        Ok(FundingPayment {
+            id: row.get(0)?,
+            position_id: row.get(1)?,
+            portfolio_id: row.get(2)?,
+            symbol: row.get(3)?,
+            position_size: row.get(4)?,
+            side: parse_position_side(&row.get::<_, String>(5)?),
+            funding_rate: row.get(6)?,
+            payment: row.get(7)?,
+            paid_at: row.get(8)?,
+        })
+    }
+
+    // ========== Liquidation Methods ==========
+
+    /// Create a liquidation record.
+    pub fn create_liquidation(&self, liquidation: &Liquidation) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO liquidations (
+                id, position_id, portfolio_id, symbol, quantity,
+                liquidation_price, mark_price, loss, liquidation_fee,
+                is_partial, remaining_quantity, liquidated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                liquidation.id,
+                liquidation.position_id,
+                liquidation.portfolio_id,
+                liquidation.symbol,
+                liquidation.quantity,
+                liquidation.liquidation_price,
+                liquidation.mark_price,
+                liquidation.loss,
+                liquidation.liquidation_fee,
+                liquidation.is_partial as i32,
+                liquidation.remaining_quantity,
+                liquidation.liquidated_at,
+            ],
+        )?;
+
+        debug!(
+            "Created liquidation {} for position {}",
+            liquidation.id, liquidation.position_id
+        );
+        Ok(())
+    }
+
+    /// Get liquidations for a portfolio.
+    pub fn get_portfolio_liquidations(&self, portfolio_id: &str, limit: usize) -> Vec<Liquidation> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, position_id, portfolio_id, symbol, quantity,
+                    liquidation_price, mark_price, loss, liquidation_fee,
+                    is_partial, remaining_quantity, liquidated_at
+             FROM liquidations WHERE portfolio_id = ?1
+             ORDER BY liquidated_at DESC LIMIT ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing liquidations query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, limit as i64], |row| {
+            Self::row_to_liquidation(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Get a liquidation by ID.
+    pub fn get_liquidation(&self, id: &str) -> Option<Liquidation> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, position_id, portfolio_id, symbol, quantity,
+                    liquidation_price, mark_price, loss, liquidation_fee,
+                    is_partial, remaining_quantity, liquidated_at
+             FROM liquidations WHERE id = ?1",
+            params![id],
+            |row| Self::row_to_liquidation(row),
+        );
+
+        match result {
+            Ok(liq) => Some(liq),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching liquidation: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Helper to convert a row to a Liquidation.
+    fn row_to_liquidation(row: &rusqlite::Row) -> Result<Liquidation, rusqlite::Error> {
+        Ok(Liquidation {
+            id: row.get(0)?,
+            position_id: row.get(1)?,
+            portfolio_id: row.get(2)?,
+            symbol: row.get(3)?,
+            quantity: row.get(4)?,
+            liquidation_price: row.get(5)?,
+            mark_price: row.get(6)?,
+            loss: row.get(7)?,
+            liquidation_fee: row.get(8)?,
+            is_partial: row.get::<_, i32>(9)? != 0,
+            remaining_quantity: row.get(10)?,
+            liquidated_at: row.get(11)?,
+        })
+    }
+
+    // ========== Margin History Methods ==========
+
+    /// Create a margin history entry.
+    pub fn create_margin_history(&self, entry: &MarginHistory) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO margin_history (
+                id, portfolio_id, position_id, change_type,
+                previous_margin_level, new_margin_level,
+                previous_margin_used, new_margin_used,
+                amount_changed, reason, timestamp
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                entry.id,
+                entry.portfolio_id,
+                entry.position_id,
+                entry.change_type.to_string(),
+                entry.previous_margin_level,
+                entry.new_margin_level,
+                entry.previous_margin_used,
+                entry.new_margin_used,
+                entry.amount_changed,
+                entry.reason,
+                entry.timestamp,
+            ],
+        )?;
+
+        debug!("Created margin history entry {} for portfolio {}", entry.id, entry.portfolio_id);
+        Ok(())
+    }
+
+    /// Get margin history for a portfolio.
+    pub fn get_portfolio_margin_history(
+        &self,
+        portfolio_id: &str,
+        limit: usize,
+    ) -> Vec<MarginHistory> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, position_id, change_type,
+                    previous_margin_level, new_margin_level,
+                    previous_margin_used, new_margin_used,
+                    amount_changed, reason, timestamp
+             FROM margin_history WHERE portfolio_id = ?1
+             ORDER BY timestamp DESC LIMIT ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing margin history query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, limit as i64], |row| {
+            Self::row_to_margin_history(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Helper to convert a row to a MarginHistory.
+    fn row_to_margin_history(row: &rusqlite::Row) -> Result<MarginHistory, rusqlite::Error> {
+        Ok(MarginHistory {
+            id: row.get(0)?,
+            portfolio_id: row.get(1)?,
+            position_id: row.get(2)?,
+            change_type: parse_margin_change_type(&row.get::<_, String>(3)?),
+            previous_margin_level: row.get(4)?,
+            new_margin_level: row.get(5)?,
+            previous_margin_used: row.get(6)?,
+            new_margin_used: row.get(7)?,
+            amount_changed: row.get(8)?,
+            reason: row.get(9)?,
+            timestamp: row.get(10)?,
+        })
+    }
+
+    // ========== Insurance Fund Methods ==========
+
+    /// Get the insurance fund state.
+    pub fn get_insurance_fund(&self) -> InsuranceFund {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT balance, total_contributions, total_payouts, liquidations_covered, updated_at
+             FROM insurance_fund WHERE id = 1",
+            [],
+            |row| {
+                Ok(InsuranceFund {
+                    balance: row.get(0)?,
+                    total_contributions: row.get(1)?,
+                    total_payouts: row.get(2)?,
+                    liquidations_covered: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(fund) => fund,
+            Err(e) => {
+                error!("Error fetching insurance fund: {}", e);
+                InsuranceFund::default()
+            }
+        }
+    }
+
+    /// Update the insurance fund state.
+    pub fn update_insurance_fund(&self, fund: &InsuranceFund) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE insurance_fund SET
+                balance = ?1,
+                total_contributions = ?2,
+                total_payouts = ?3,
+                liquidations_covered = ?4,
+                updated_at = ?5
+             WHERE id = 1",
+            params![
+                fund.balance,
+                fund.total_contributions,
+                fund.total_payouts,
+                fund.liquidations_covered,
+                fund.updated_at,
+            ],
+        )?;
+
+        debug!("Updated insurance fund, balance: {}", fund.balance);
+        Ok(())
+    }
+
+    /// Add a contribution to the insurance fund (from liquidation fee).
+    pub fn add_insurance_contribution(&self, amount: f64) -> Result<InsuranceFund, rusqlite::Error> {
+        let mut fund = self.get_insurance_fund();
+        fund.add_contribution(amount);
+        self.update_insurance_fund(&fund)?;
+        Ok(fund)
+    }
+
+    /// Cover a loss from the insurance fund.
+    /// Returns the actual amount covered (may be less if fund is insufficient).
+    pub fn cover_loss_from_insurance(&self, loss: f64) -> Result<f64, rusqlite::Error> {
+        let mut fund = self.get_insurance_fund();
+        let covered = fund.cover_loss(loss);
+        self.update_insurance_fund(&fund)?;
+        Ok(covered)
+    }
+
+    // ========== Options Position Methods ==========
+
+    /// Create a new option position.
+    pub fn create_option_position(&self, position: &OptionPosition) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let greeks_json = serde_json::to_string(&position.greeks).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO options_positions (
+                id, portfolio_id, contract_symbol, underlying_symbol, option_type,
+                strike, expiration, style, contracts, multiplier, entry_premium,
+                current_premium, underlying_price, unrealized_pnl, realized_pnl,
+                greeks_json, entry_iv, current_iv, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                position.id,
+                position.portfolio_id,
+                position.contract_symbol,
+                position.underlying_symbol,
+                position.option_type.to_string(),
+                position.strike,
+                position.expiration,
+                position.style.to_string(),
+                position.contracts,
+                position.multiplier,
+                position.entry_premium,
+                position.current_premium,
+                position.underlying_price,
+                position.unrealized_pnl,
+                position.realized_pnl,
+                greeks_json,
+                position.entry_iv,
+                position.current_iv,
+                position.created_at,
+                position.updated_at,
+            ],
+        )?;
+
+        debug!(
+            "Created option position {} for contract {}",
+            position.id, position.contract_symbol
+        );
+        Ok(())
+    }
+
+    /// Get an option position by ID.
+    pub fn get_option_position(&self, id: &str) -> Option<OptionPosition> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, contract_symbol, underlying_symbol, option_type,
+                    strike, expiration, style, contracts, multiplier, entry_premium,
+                    current_premium, underlying_price, unrealized_pnl, realized_pnl,
+                    greeks_json, entry_iv, current_iv, created_at, updated_at
+             FROM options_positions WHERE id = ?1 AND closed_at IS NULL",
+            params![id],
+            |row| Self::row_to_option_position(row),
+        );
+
+        match result {
+            Ok(position) => Some(position),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching option position: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get open option positions for a portfolio.
+    pub fn get_portfolio_option_positions(&self, portfolio_id: &str) -> Vec<OptionPosition> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, contract_symbol, underlying_symbol, option_type,
+                    strike, expiration, style, contracts, multiplier, entry_premium,
+                    current_premium, underlying_price, unrealized_pnl, realized_pnl,
+                    greeks_json, entry_iv, current_iv, created_at, updated_at
+             FROM options_positions WHERE portfolio_id = ?1 AND closed_at IS NULL
+             ORDER BY expiration ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing option positions query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id], |row| Self::row_to_option_position(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get option positions for a specific underlying symbol.
+    pub fn get_option_positions_by_underlying(
+        &self,
+        portfolio_id: &str,
+        underlying_symbol: &str,
+    ) -> Vec<OptionPosition> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, contract_symbol, underlying_symbol, option_type,
+                    strike, expiration, style, contracts, multiplier, entry_premium,
+                    current_premium, underlying_price, unrealized_pnl, realized_pnl,
+                    greeks_json, entry_iv, current_iv, created_at, updated_at
+             FROM options_positions
+             WHERE portfolio_id = ?1 AND underlying_symbol = ?2 AND closed_at IS NULL
+             ORDER BY expiration ASC, strike ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing option positions by underlying query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, underlying_symbol], |row| {
+            Self::row_to_option_position(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Get option positions expiring before a given date.
+    pub fn get_expiring_option_positions(
+        &self,
+        portfolio_id: &str,
+        before_timestamp: i64,
+    ) -> Vec<OptionPosition> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, contract_symbol, underlying_symbol, option_type,
+                    strike, expiration, style, contracts, multiplier, entry_premium,
+                    current_premium, underlying_price, unrealized_pnl, realized_pnl,
+                    greeks_json, entry_iv, current_iv, created_at, updated_at
+             FROM options_positions
+             WHERE portfolio_id = ?1 AND expiration < ?2 AND closed_at IS NULL
+             ORDER BY expiration ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing expiring options query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id, before_timestamp], |row| {
+            Self::row_to_option_position(row)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Update an option position.
+    pub fn update_option_position(&self, position: &OptionPosition) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let greeks_json = serde_json::to_string(&position.greeks).unwrap_or_default();
+
+        conn.execute(
+            "UPDATE options_positions SET
+                contracts = ?1, current_premium = ?2, underlying_price = ?3,
+                unrealized_pnl = ?4, realized_pnl = ?5, greeks_json = ?6,
+                current_iv = ?7, updated_at = ?8
+             WHERE id = ?9",
+            params![
+                position.contracts,
+                position.current_premium,
+                position.underlying_price,
+                position.unrealized_pnl,
+                position.realized_pnl,
+                greeks_json,
+                position.current_iv,
+                position.updated_at,
+                position.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Close an option position.
+    pub fn close_option_position(&self, position_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        conn.execute(
+            "UPDATE options_positions SET closed_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now, position_id],
+        )?;
+
+        debug!("Closed option position {}", position_id);
+        Ok(())
+    }
+
+    /// Get count of open option positions for a portfolio.
+    pub fn option_position_count(&self, portfolio_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM options_positions WHERE portfolio_id = ?1 AND closed_at IS NULL",
+            params![portfolio_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Helper to convert a row to an OptionPosition.
+    fn row_to_option_position(row: &rusqlite::Row) -> Result<OptionPosition, rusqlite::Error> {
+        let greeks_json: String = row.get(15)?;
+        let greeks: Greeks = serde_json::from_str(&greeks_json).unwrap_or_default();
+
+        Ok(OptionPosition {
+            id: row.get(0)?,
+            portfolio_id: row.get(1)?,
+            contract_symbol: row.get(2)?,
+            underlying_symbol: row.get(3)?,
+            option_type: parse_option_type(&row.get::<_, String>(4)?),
+            strike: row.get(5)?,
+            expiration: row.get(6)?,
+            style: parse_option_style(&row.get::<_, String>(7)?),
+            contracts: row.get(8)?,
+            multiplier: row.get(9)?,
+            entry_premium: row.get(10)?,
+            current_premium: row.get(11)?,
+            underlying_price: row.get(12)?,
+            unrealized_pnl: row.get(13)?,
+            realized_pnl: row.get(14)?,
+            greeks,
+            entry_iv: row.get(16)?,
+            current_iv: row.get(17)?,
+            created_at: row.get(18)?,
+            updated_at: row.get(19)?,
+        })
+    }
+
+    // ========== Strategy Methods ==========
+
+    /// Create a new trading strategy.
+    pub fn create_strategy(&self, strategy: &TradingStrategy) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let symbols_json = serde_json::to_string(&strategy.symbols).unwrap_or_default();
+        let rules_json = serde_json::to_string(&strategy.rules).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO strategies (
+                id, portfolio_id, name, description, symbols_json, asset_class,
+                rules_json, status, cooldown_seconds, max_positions, max_position_size_pct,
+                last_trade_at, total_trades, winning_trades, losing_trades, realized_pnl,
+                created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                strategy.id,
+                strategy.portfolio_id,
+                strategy.name,
+                strategy.description,
+                symbols_json,
+                strategy.asset_class.as_ref().map(|c| c.to_string()),
+                rules_json,
+                strategy.status.to_string(),
+                strategy.cooldown_seconds,
+                strategy.max_positions,
+                strategy.max_position_size_pct,
+                strategy.last_trade_at,
+                strategy.total_trades,
+                strategy.winning_trades,
+                strategy.losing_trades,
+                strategy.realized_pnl,
+                strategy.created_at,
+                strategy.updated_at,
+            ],
+        )?;
+
+        debug!("Created strategy {} for portfolio {}", strategy.id, strategy.portfolio_id);
+        Ok(())
+    }
+
+    /// Get a strategy by ID.
+    pub fn get_strategy(&self, id: &str) -> Option<TradingStrategy> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, name, description, symbols_json, asset_class,
+                    rules_json, status, cooldown_seconds, max_positions, max_position_size_pct,
+                    last_trade_at, total_trades, winning_trades, losing_trades, realized_pnl,
+                    created_at, updated_at
+             FROM strategies WHERE id = ?1",
+            params![id],
+            |row| Self::row_to_strategy(row),
+        );
+
+        match result {
+            Ok(strategy) => Some(strategy),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching strategy: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get all strategies for a portfolio.
+    pub fn get_portfolio_strategies(&self, portfolio_id: &str) -> Vec<TradingStrategy> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, name, description, symbols_json, asset_class,
+                    rules_json, status, cooldown_seconds, max_positions, max_position_size_pct,
+                    last_trade_at, total_trades, winning_trades, losing_trades, realized_pnl,
+                    created_at, updated_at
+             FROM strategies WHERE portfolio_id = ?1 AND status != 'deleted'
+             ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing strategies query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id], |row| Self::row_to_strategy(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all active strategies for a portfolio.
+    pub fn get_active_strategies(&self, portfolio_id: &str) -> Vec<TradingStrategy> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, name, description, symbols_json, asset_class,
+                    rules_json, status, cooldown_seconds, max_positions, max_position_size_pct,
+                    last_trade_at, total_trades, winning_trades, losing_trades, realized_pnl,
+                    created_at, updated_at
+             FROM strategies WHERE portfolio_id = ?1 AND status = 'active'
+             ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing active strategies query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![portfolio_id], |row| Self::row_to_strategy(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Update a strategy.
+    pub fn update_strategy(&self, strategy: &TradingStrategy) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let symbols_json = serde_json::to_string(&strategy.symbols).unwrap_or_default();
+        let rules_json = serde_json::to_string(&strategy.rules).unwrap_or_default();
+
+        conn.execute(
+            "UPDATE strategies SET
+                name = ?1, description = ?2, symbols_json = ?3, asset_class = ?4,
+                rules_json = ?5, status = ?6, cooldown_seconds = ?7, max_positions = ?8,
+                max_position_size_pct = ?9, last_trade_at = ?10, total_trades = ?11,
+                winning_trades = ?12, losing_trades = ?13, realized_pnl = ?14, updated_at = ?15
+             WHERE id = ?16",
+            params![
+                strategy.name,
+                strategy.description,
+                symbols_json,
+                strategy.asset_class.as_ref().map(|c| c.to_string()),
+                rules_json,
+                strategy.status.to_string(),
+                strategy.cooldown_seconds,
+                strategy.max_positions,
+                strategy.max_position_size_pct,
+                strategy.last_trade_at,
+                strategy.total_trades,
+                strategy.winning_trades,
+                strategy.losing_trades,
+                strategy.realized_pnl,
+                strategy.updated_at,
+                strategy.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete a strategy (soft delete by setting status to deleted).
+    pub fn delete_strategy(&self, strategy_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        conn.execute(
+            "UPDATE strategies SET status = 'deleted', updated_at = ?1 WHERE id = ?2",
+            params![now, strategy_id],
+        )?;
+
+        debug!("Deleted strategy {}", strategy_id);
+        Ok(())
+    }
+
+    /// Get count of strategies for a portfolio.
+    pub fn strategy_count(&self, portfolio_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM strategies WHERE portfolio_id = ?1 AND status != 'deleted'",
+            params![portfolio_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Helper to convert a row to a TradingStrategy.
+    fn row_to_strategy(row: &rusqlite::Row) -> Result<TradingStrategy, rusqlite::Error> {
+        let symbols_json: String = row.get(4)?;
+        let symbols: Vec<String> = serde_json::from_str(&symbols_json).unwrap_or_default();
+        let rules_json: String = row.get(6)?;
+        let rules: Vec<TradingRule> = serde_json::from_str(&rules_json).unwrap_or_default();
+        let asset_class_str: Option<String> = row.get(5)?;
+
+        Ok(TradingStrategy {
+            id: row.get(0)?,
+            portfolio_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            symbols,
+            asset_class: asset_class_str.map(|s| parse_asset_class(&s)),
+            rules,
+            status: parse_strategy_status(&row.get::<_, String>(7)?),
+            cooldown_seconds: row.get(8)?,
+            max_positions: row.get(9)?,
+            max_position_size_pct: row.get(10)?,
+            last_trade_at: row.get(11)?,
+            total_trades: row.get(12)?,
+            winning_trades: row.get(13)?,
+            losing_trades: row.get(14)?,
+            realized_pnl: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
+        })
+    }
+
+    // ========== Backtest Methods ==========
+
+    /// Create a new backtest result.
+    pub fn create_backtest_result(&self, result: &crate::types::BacktestResult) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let config_json = serde_json::to_string(&result.config).unwrap_or_default();
+        let metrics_json = serde_json::to_string(&result.metrics).unwrap_or_default();
+        let trades_json = serde_json::to_string(&result.trades).unwrap_or_default();
+        let equity_json = serde_json::to_string(&result.equity_curve).unwrap_or_default();
+        let bnh_json = result.buy_and_hold.as_ref().map(|b| serde_json::to_string(b).unwrap_or_default());
+        let mc_json = result.monte_carlo.as_ref().map(|m| serde_json::to_string(m).unwrap_or_default());
+
+        conn.execute(
+            "INSERT INTO backtest_results (
+                id, strategy_id, status, config_json, metrics_json, trades_json,
+                equity_curve_json, buy_and_hold_json, monte_carlo_json, final_balance,
+                error_message, created_at, started_at, completed_at, execution_time_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                result.id,
+                result.strategy_id,
+                format!("{:?}", result.status).to_lowercase(),
+                config_json,
+                metrics_json,
+                trades_json,
+                equity_json,
+                bnh_json,
+                mc_json,
+                result.final_balance,
+                result.error_message,
+                result.created_at,
+                result.started_at,
+                result.completed_at,
+                result.execution_time_ms,
+            ],
+        )?;
+
+        debug!("Created backtest result {} for strategy {}", result.id, result.strategy_id);
+        Ok(())
+    }
+
+    /// Get a backtest result by ID.
+    pub fn get_backtest_result(&self, id: &str) -> Option<crate::types::BacktestResult> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, strategy_id, status, config_json, metrics_json, trades_json,
+                    equity_curve_json, buy_and_hold_json, monte_carlo_json, final_balance,
+                    error_message, created_at, started_at, completed_at, execution_time_ms
+             FROM backtest_results WHERE id = ?1",
+            params![id],
+            |row| Self::row_to_backtest_result(row),
+        );
+
+        match result {
+            Ok(backtest) => Some(backtest),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching backtest result: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get backtest results for a strategy.
+    pub fn get_strategy_backtests(&self, strategy_id: &str) -> Vec<crate::types::BacktestResult> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, strategy_id, status, config_json, metrics_json, trades_json,
+                    equity_curve_json, buy_and_hold_json, monte_carlo_json, final_balance,
+                    error_message, created_at, started_at, completed_at, execution_time_ms
+             FROM backtest_results WHERE strategy_id = ?1
+             ORDER BY created_at DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing backtest results query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![strategy_id], |row| Self::row_to_backtest_result(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Helper to convert a row to a BacktestResult.
+    fn row_to_backtest_result(row: &rusqlite::Row) -> Result<crate::types::BacktestResult, rusqlite::Error> {
+        let config_json: String = row.get(3)?;
+        let metrics_json: String = row.get(4)?;
+        let trades_json: String = row.get(5)?;
+        let equity_json: String = row.get(6)?;
+        let bnh_json: Option<String> = row.get(7)?;
+        let mc_json: Option<String> = row.get(8)?;
+
+        Ok(crate::types::BacktestResult {
+            id: row.get(0)?,
+            strategy_id: row.get(1)?,
+            status: parse_backtest_status(&row.get::<_, String>(2)?),
+            config: serde_json::from_str(&config_json).unwrap_or_else(|_| {
+                crate::types::BacktestConfig::new("".to_string(), 0, 0)
+            }),
+            metrics: serde_json::from_str(&metrics_json).unwrap_or_default(),
+            trades: serde_json::from_str(&trades_json).unwrap_or_default(),
+            equity_curve: serde_json::from_str(&equity_json).unwrap_or_default(),
+            buy_and_hold: bnh_json.and_then(|j| serde_json::from_str(&j).ok()),
+            monte_carlo: mc_json.and_then(|j| serde_json::from_str(&j).ok()),
+            final_balance: row.get(9)?,
+            error_message: row.get(10)?,
+            created_at: row.get(11)?,
+            started_at: row.get(12)?,
+            completed_at: row.get(13)?,
+            execution_time_ms: row.get(14)?,
+        })
+    }
+
+    // ========== Chart Data Methods ==========
+
+    /// Get chart data (OHLCV candles) for a symbol.
+    /// Returns None if no data is available.
+    pub fn get_chart_data(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_time: i64,
+        end_time: i64,
+    ) -> Option<Vec<crate::types::ChartCandle>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT timestamp, open, high, low, close, volume
+             FROM chart_candles
+             WHERE symbol = ?1 AND interval = ?2 AND timestamp >= ?3 AND timestamp <= ?4
+             ORDER BY timestamp ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return None,
+        };
+
+        let result: Result<Vec<crate::types::ChartCandle>, _> = stmt.query_map(
+            params![symbol, interval, start_time, end_time],
+            |row| {
+                Ok(crate::types::ChartCandle {
+                    timestamp: row.get(0)?,
+                    open: row.get(1)?,
+                    high: row.get(2)?,
+                    low: row.get(3)?,
+                    close: row.get(4)?,
+                    volume: row.get(5)?,
+                })
+            },
+        ).and_then(|rows| rows.collect());
+
+        match result {
+            Ok(candles) if !candles.is_empty() => Some(candles),
+            _ => None,
+        }
+    }
+}
+
+// ========== Parsing Helpers for Trading Types ==========
+
+fn parse_cost_basis_method(s: &str) -> CostBasisMethod {
+    match s {
+        "lifo" => CostBasisMethod::Lifo,
+        "average" => CostBasisMethod::Average,
+        _ => CostBasisMethod::Fifo,
+    }
+}
+
+fn parse_asset_class(s: &str) -> AssetClass {
+    match s {
+        "crypto_spot" => AssetClass::CryptoSpot,
+        "stock" => AssetClass::Stock,
+        "etf" => AssetClass::Etf,
+        "perp" => AssetClass::Perp,
+        "option" => AssetClass::Option,
+        "forex" => AssetClass::Forex,
+        _ => AssetClass::CryptoSpot,
+    }
+}
+
+fn parse_order_side(s: &str) -> OrderSide {
+    match s {
+        "sell" => OrderSide::Sell,
+        _ => OrderSide::Buy,
+    }
+}
+
+fn parse_order_type(s: &str) -> OrderType {
+    match s {
+        "limit" => OrderType::Limit,
+        "stop_loss" => OrderType::StopLoss,
+        "take_profit" => OrderType::TakeProfit,
+        "stop_limit" => OrderType::StopLimit,
+        "trailing_stop" => OrderType::TrailingStop,
+        _ => OrderType::Market,
+    }
+}
+
+fn parse_order_status(s: &str) -> OrderStatus {
+    match s {
+        "open" => OrderStatus::Open,
+        "partially_filled" => OrderStatus::PartiallyFilled,
+        "filled" => OrderStatus::Filled,
+        "cancelled" => OrderStatus::Cancelled,
+        "expired" => OrderStatus::Expired,
+        "rejected" => OrderStatus::Rejected,
+        _ => OrderStatus::Pending,
+    }
+}
+
+fn parse_time_in_force(s: &str) -> TimeInForce {
+    match s {
+        "gtd" => TimeInForce::Gtd,
+        "fok" => TimeInForce::Fok,
+        "ioc" => TimeInForce::Ioc,
+        _ => TimeInForce::Gtc,
+    }
+}
+
+fn parse_position_side(s: &str) -> PositionSide {
+    match s {
+        "short" => PositionSide::Short,
+        _ => PositionSide::Long,
+    }
+}
+
+fn parse_margin_mode(s: &str) -> MarginMode {
+    match s {
+        "cross" => MarginMode::Cross,
+        _ => MarginMode::Isolated,
+    }
+}
+
+fn parse_bracket_role(s: &str) -> BracketRole {
+    match s {
+        "stop_loss" => BracketRole::StopLoss,
+        "take_profit" => BracketRole::TakeProfit,
+        _ => BracketRole::Entry,
+    }
+}
+
+fn parse_margin_change_type(s: &str) -> MarginChangeType {
+    match s {
+        "position_opened" => MarginChangeType::PositionOpened,
+        "position_closed" => MarginChangeType::PositionClosed,
+        "position_increased" => MarginChangeType::PositionIncreased,
+        "position_decreased" => MarginChangeType::PositionDecreased,
+        "funding_payment" => MarginChangeType::FundingPayment,
+        "unrealized_pnl_change" => MarginChangeType::UnrealizedPnlChange,
+        "liquidation" => MarginChangeType::Liquidation,
+        "manual_adjustment" => MarginChangeType::ManualAdjustment,
+        _ => MarginChangeType::PositionOpened,
+    }
+}
+
+fn parse_option_type(s: &str) -> OptionType {
+    match s {
+        "put" => OptionType::Put,
+        _ => OptionType::Call,
+    }
+}
+
+fn parse_option_style(s: &str) -> OptionStyle {
+    match s {
+        "american" => OptionStyle::American,
+        _ => OptionStyle::European,
+    }
+}
+
+fn parse_strategy_status(s: &str) -> StrategyStatus {
+    match s {
+        "active" => StrategyStatus::Active,
+        "paused" => StrategyStatus::Paused,
+        "disabled" => StrategyStatus::Disabled,
+        "deleted" => StrategyStatus::Deleted,
+        _ => StrategyStatus::Paused,
+    }
+}
+
+fn parse_backtest_status(s: &str) -> crate::types::BacktestStatus {
+    match s {
+        "pending" => crate::types::BacktestStatus::Pending,
+        "running" => crate::types::BacktestStatus::Running,
+        "completed" => crate::types::BacktestStatus::Completed,
+        "failed" => crate::types::BacktestStatus::Failed,
+        "cancelled" => crate::types::BacktestStatus::Cancelled,
+        _ => crate::types::BacktestStatus::Pending,
     }
 }
 
@@ -586,5 +2742,535 @@ mod tests {
         assert_eq!(stats.correct, 7);
         assert_eq!(stats.incorrect, 3);
         assert!((stats.accuracy_pct() - 70.0).abs() < 0.01);
+    }
+
+    // ========== Trading Tests ==========
+
+    #[test]
+    fn test_portfolio_crud() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio
+        let portfolio = Portfolio::new("user123".to_string(), "Test Portfolio".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Read portfolio
+        let loaded = store.get_portfolio(&portfolio.id).unwrap();
+        assert_eq!(loaded.id, portfolio.id);
+        assert_eq!(loaded.user_id, "user123");
+        assert_eq!(loaded.name, "Test Portfolio");
+        assert_eq!(loaded.starting_balance, 5_000_000.0);
+
+        // Update portfolio
+        let mut updated = loaded.clone();
+        updated.cash_balance = 4_500_000.0;
+        updated.unrealized_pnl = 100_000.0;
+        updated.recalculate();
+        store.update_portfolio(&updated).unwrap();
+
+        let reloaded = store.get_portfolio(&portfolio.id).unwrap();
+        assert_eq!(reloaded.cash_balance, 4_500_000.0);
+
+        // Get user portfolios
+        let portfolios = store.get_user_portfolios("user123");
+        assert_eq!(portfolios.len(), 1);
+
+        // Delete portfolio
+        store.delete_portfolio(&portfolio.id).unwrap();
+        assert!(store.get_portfolio(&portfolio.id).is_none());
+    }
+
+    #[test]
+    fn test_order_crud() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio first
+        let portfolio = Portfolio::new("user123".to_string(), "Trading".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Create order
+        let order = Order::market(
+            portfolio.id.clone(),
+            "BTC".to_string(),
+            AssetClass::CryptoSpot,
+            OrderSide::Buy,
+            1.0,
+        );
+        store.create_order(&order).unwrap();
+
+        // Read order
+        let loaded = store.get_order(&order.id).unwrap();
+        assert_eq!(loaded.id, order.id);
+        assert_eq!(loaded.symbol, "BTC");
+        assert_eq!(loaded.side, OrderSide::Buy);
+        assert_eq!(loaded.order_type, OrderType::Market);
+        assert_eq!(loaded.status, OrderStatus::Pending);
+
+        // Update order with fill
+        let mut filled_order = loaded.clone();
+        filled_order.add_fill(Fill::new(1.0, 50000.0, 50.0));
+        store.update_order(&filled_order).unwrap();
+
+        let reloaded = store.get_order(&order.id).unwrap();
+        assert_eq!(reloaded.status, OrderStatus::Filled);
+        assert_eq!(reloaded.filled_quantity, 1.0);
+        assert_eq!(reloaded.avg_fill_price, Some(50000.0));
+
+        // Get open orders (should be empty now)
+        let open = store.get_open_orders(&portfolio.id);
+        assert!(open.is_empty());
+    }
+
+    #[test]
+    fn test_position_crud() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio
+        let portfolio = Portfolio::new("user123".to_string(), "Trading".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Create position
+        let position = Position::new(
+            portfolio.id.clone(),
+            "ETH".to_string(),
+            AssetClass::CryptoSpot,
+            PositionSide::Long,
+            10.0,
+            2500.0,
+            1.0,
+        );
+        store.create_position(&position).unwrap();
+
+        // Read position
+        let loaded = store.get_position(&position.id).unwrap();
+        assert_eq!(loaded.id, position.id);
+        assert_eq!(loaded.symbol, "ETH");
+        assert_eq!(loaded.side, PositionSide::Long);
+        assert_eq!(loaded.quantity, 10.0);
+        assert_eq!(loaded.entry_price, 2500.0);
+
+        // Get by symbol
+        let by_symbol = store
+            .get_position_by_symbol(&portfolio.id, "ETH", PositionSide::Long)
+            .unwrap();
+        assert_eq!(by_symbol.id, position.id);
+
+        // Update position
+        let mut updated = loaded.clone();
+        updated.update_price(2600.0);
+        store.update_position(&updated).unwrap();
+
+        let reloaded = store.get_position(&position.id).unwrap();
+        assert_eq!(reloaded.current_price, 2600.0);
+        assert!(reloaded.unrealized_pnl > 0.0);
+
+        // Position count
+        assert_eq!(store.position_count(&portfolio.id), 1);
+
+        // Close position
+        store.close_position(&position.id).unwrap();
+        assert!(store.get_position(&position.id).is_none());
+        assert_eq!(store.position_count(&portfolio.id), 0);
+    }
+
+    #[test]
+    fn test_trade_crud() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio and order
+        let portfolio = Portfolio::new("user123".to_string(), "Trading".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let order = Order::market(
+            portfolio.id.clone(),
+            "BTC".to_string(),
+            AssetClass::CryptoSpot,
+            OrderSide::Buy,
+            1.0,
+        );
+        store.create_order(&order).unwrap();
+
+        // Create trade
+        let trade = Trade::new(
+            order.id.clone(),
+            portfolio.id.clone(),
+            "BTC".to_string(),
+            AssetClass::CryptoSpot,
+            OrderSide::Buy,
+            1.0,
+            50000.0,
+            50.0,
+            10.0,
+        );
+        store.create_trade(&trade).unwrap();
+
+        // Get portfolio trades
+        let trades = store.get_portfolio_trades(&portfolio.id, 10);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].symbol, "BTC");
+        assert_eq!(trades[0].price, 50000.0);
+
+        // Get order trades
+        let order_trades = store.get_order_trades(&order.id);
+        assert_eq!(order_trades.len(), 1);
+    }
+
+    #[test]
+    fn test_limit_order_persistence() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Trading".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let order = Order::limit(
+            portfolio.id.clone(),
+            "AAPL".to_string(),
+            AssetClass::Stock,
+            OrderSide::Buy,
+            100.0,
+            150.0,
+        );
+        store.create_order(&order).unwrap();
+
+        let loaded = store.get_order(&order.id).unwrap();
+        assert_eq!(loaded.order_type, OrderType::Limit);
+        assert_eq!(loaded.price, Some(150.0));
+        assert_eq!(loaded.asset_class, AssetClass::Stock);
+    }
+
+    #[test]
+    fn test_leveraged_position() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Perps".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let mut position = Position::new(
+            portfolio.id.clone(),
+            "BTC".to_string(),
+            AssetClass::Perp,
+            PositionSide::Long,
+            1.0,
+            50000.0,
+            10.0, // 10x leverage
+        );
+        position.calculate_liquidation_price();
+        store.create_position(&position).unwrap();
+
+        let loaded = store.get_position(&position.id).unwrap();
+        assert_eq!(loaded.leverage, 10.0);
+        assert_eq!(loaded.margin_used, 5000.0); // 50000 / 10
+        assert!(loaded.liquidation_price.is_some());
+    }
+
+    // ========== Options Position Tests ==========
+
+    #[test]
+    fn test_option_position_crud() {
+        use crate::types::OptionContract;
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio
+        let portfolio = Portfolio::new("user123".to_string(), "Options".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Create option contract
+        let expiration = chrono::Utc::now().timestamp_millis() + 30 * 24 * 60 * 60 * 1000; // 30 days
+        let contract = OptionContract::new(
+            "AAPL".to_string(),
+            OptionType::Call,
+            180.0,
+            expiration,
+            OptionStyle::American,
+        );
+
+        // Create option position
+        let position = OptionPosition::new(
+            portfolio.id.clone(),
+            &contract,
+            5,      // 5 contracts
+            3.50,   // $3.50 premium per share
+        );
+        store.create_option_position(&position).unwrap();
+
+        // Read position
+        let loaded = store.get_option_position(&position.id).unwrap();
+        assert_eq!(loaded.id, position.id);
+        assert_eq!(loaded.underlying_symbol, "AAPL");
+        assert_eq!(loaded.option_type, OptionType::Call);
+        assert_eq!(loaded.strike, 180.0);
+        assert_eq!(loaded.contracts, 5);
+        assert_eq!(loaded.entry_premium, 3.50);
+        assert_eq!(loaded.style, OptionStyle::American);
+        assert_eq!(loaded.multiplier, 100);
+
+        // Get portfolio option positions
+        let positions = store.get_portfolio_option_positions(&portfolio.id);
+        assert_eq!(positions.len(), 1);
+
+        // Update position
+        let mut updated = loaded.clone();
+        updated.current_premium = 4.00;
+        updated.underlying_price = 185.0;
+        updated.unrealized_pnl = (4.00 - 3.50) * 5.0 * 100.0; // 250.0
+        updated.updated_at = chrono::Utc::now().timestamp_millis();
+        store.update_option_position(&updated).unwrap();
+
+        let reloaded = store.get_option_position(&position.id).unwrap();
+        assert_eq!(reloaded.current_premium, 4.00);
+        assert_eq!(reloaded.unrealized_pnl, 250.0);
+
+        // Position count
+        assert_eq!(store.option_position_count(&portfolio.id), 1);
+
+        // Close position
+        store.close_option_position(&position.id).unwrap();
+        assert!(store.get_option_position(&position.id).is_none());
+        assert_eq!(store.option_position_count(&portfolio.id), 0);
+    }
+
+    #[test]
+    fn test_option_positions_by_underlying() {
+        use crate::types::OptionContract;
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Options".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let expiration = chrono::Utc::now().timestamp_millis() + 30 * 24 * 60 * 60 * 1000;
+
+        // Create AAPL call
+        let aapl_call = OptionContract::new(
+            "AAPL".to_string(),
+            OptionType::Call,
+            180.0,
+            expiration,
+            OptionStyle::American,
+        );
+        let pos1 = OptionPosition::new(portfolio.id.clone(), &aapl_call, 5, 3.50);
+        store.create_option_position(&pos1).unwrap();
+
+        // Create AAPL put
+        let aapl_put = OptionContract::new(
+            "AAPL".to_string(),
+            OptionType::Put,
+            175.0,
+            expiration,
+            OptionStyle::American,
+        );
+        let pos2 = OptionPosition::new(portfolio.id.clone(), &aapl_put, -3, 2.00);
+        store.create_option_position(&pos2).unwrap();
+
+        // Create MSFT call
+        let msft_call = OptionContract::new(
+            "MSFT".to_string(),
+            OptionType::Call,
+            400.0,
+            expiration,
+            OptionStyle::American,
+        );
+        let pos3 = OptionPosition::new(portfolio.id.clone(), &msft_call, 2, 5.00);
+        store.create_option_position(&pos3).unwrap();
+
+        // Get AAPL positions
+        let aapl_positions = store.get_option_positions_by_underlying(&portfolio.id, "AAPL");
+        assert_eq!(aapl_positions.len(), 2);
+
+        // Get MSFT positions
+        let msft_positions = store.get_option_positions_by_underlying(&portfolio.id, "MSFT");
+        assert_eq!(msft_positions.len(), 1);
+
+        // Get all positions
+        let all_positions = store.get_portfolio_option_positions(&portfolio.id);
+        assert_eq!(all_positions.len(), 3);
+    }
+
+    #[test]
+    fn test_expiring_option_positions() {
+        use crate::types::OptionContract;
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Options".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Create position expiring in 7 days
+        let exp_7d = now + 7 * 24 * 60 * 60 * 1000;
+        let contract1 = OptionContract::new("AAPL".to_string(), OptionType::Call, 180.0, exp_7d, OptionStyle::American);
+        let pos1 = OptionPosition::new(portfolio.id.clone(), &contract1, 5, 3.50);
+        store.create_option_position(&pos1).unwrap();
+
+        // Create position expiring in 30 days
+        let exp_30d = now + 30 * 24 * 60 * 60 * 1000;
+        let contract2 = OptionContract::new("AAPL".to_string(), OptionType::Call, 185.0, exp_30d, OptionStyle::American);
+        let pos2 = OptionPosition::new(portfolio.id.clone(), &contract2, 3, 4.00);
+        store.create_option_position(&pos2).unwrap();
+
+        // Get positions expiring before 14 days
+        let exp_before_14d = now + 14 * 24 * 60 * 60 * 1000;
+        let expiring = store.get_expiring_option_positions(&portfolio.id, exp_before_14d);
+        assert_eq!(expiring.len(), 1);
+        assert_eq!(expiring[0].strike, 180.0);
+
+        // Get positions expiring before 45 days
+        let exp_before_45d = now + 45 * 24 * 60 * 60 * 1000;
+        let all_expiring = store.get_expiring_option_positions(&portfolio.id, exp_before_45d);
+        assert_eq!(all_expiring.len(), 2);
+    }
+
+    #[test]
+    fn test_option_position_greeks_persistence() {
+        use crate::types::OptionContract;
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Options".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let expiration = chrono::Utc::now().timestamp_millis() + 30 * 24 * 60 * 60 * 1000;
+        let contract = OptionContract::new("SPY".to_string(), OptionType::Put, 450.0, expiration, OptionStyle::European);
+
+        let mut position = OptionPosition::new(portfolio.id.clone(), &contract, 10, 5.00);
+        position.greeks = Greeks::new(0.45, 0.02, -0.05, 0.15, 0.01);
+        store.create_option_position(&position).unwrap();
+
+        let loaded = store.get_option_position(&position.id).unwrap();
+        assert!((loaded.greeks.delta - 0.45).abs() < 0.001);
+        assert!((loaded.greeks.gamma - 0.02).abs() < 0.001);
+        assert!((loaded.greeks.theta - (-0.05)).abs() < 0.001);
+        assert!((loaded.greeks.vega - 0.15).abs() < 0.001);
+        assert!((loaded.greeks.rho - 0.01).abs() < 0.001);
+
+        // Update Greeks
+        let mut updated = loaded.clone();
+        updated.greeks = Greeks::new(0.50, 0.025, -0.06, 0.14, 0.012);
+        updated.updated_at = chrono::Utc::now().timestamp_millis();
+        store.update_option_position(&updated).unwrap();
+
+        let reloaded = store.get_option_position(&position.id).unwrap();
+        assert!((reloaded.greeks.delta - 0.50).abs() < 0.001);
+        assert!((reloaded.greeks.gamma - 0.025).abs() < 0.001);
+    }
+
+    // ========== Strategy Tests ==========
+
+    #[test]
+    fn test_strategy_crud() {
+        use crate::types::{RuleCondition, RuleAction, TradingRule, IndicatorType, ComparisonOperator, PositionSizeType};
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio
+        let portfolio = Portfolio::new("user123".to_string(), "Strategies".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Create strategy
+        let mut strategy = TradingStrategy::new(
+            portfolio.id.clone(),
+            "RSI Strategy".to_string(),
+            vec!["BTC".to_string(), "ETH".to_string()],
+        );
+
+        // Add a rule
+        let rule = TradingRule::new(
+            "Buy Oversold".to_string(),
+            vec![RuleCondition::new(IndicatorType::Rsi, ComparisonOperator::LessThan, 30.0)],
+            RuleAction::market_buy(PositionSizeType::PortfolioPercent, 5.0),
+        );
+        strategy.add_rule(rule);
+        strategy.activate();
+
+        store.create_strategy(&strategy).unwrap();
+
+        // Read strategy
+        let loaded = store.get_strategy(&strategy.id).unwrap();
+        assert_eq!(loaded.id, strategy.id);
+        assert_eq!(loaded.name, "RSI Strategy");
+        assert_eq!(loaded.symbols.len(), 2);
+        assert_eq!(loaded.rules.len(), 1);
+        assert_eq!(loaded.status, StrategyStatus::Active);
+
+        // Get portfolio strategies
+        let strategies = store.get_portfolio_strategies(&portfolio.id);
+        assert_eq!(strategies.len(), 1);
+
+        // Get active strategies
+        let active = store.get_active_strategies(&portfolio.id);
+        assert_eq!(active.len(), 1);
+
+        // Update strategy
+        let mut updated = loaded.clone();
+        updated.record_trade(true, 100.0);
+        updated.pause();
+        store.update_strategy(&updated).unwrap();
+
+        let reloaded = store.get_strategy(&strategy.id).unwrap();
+        assert_eq!(reloaded.total_trades, 1);
+        assert_eq!(reloaded.winning_trades, 1);
+        assert_eq!(reloaded.realized_pnl, 100.0);
+        assert_eq!(reloaded.status, StrategyStatus::Paused);
+
+        // Active strategies should now be empty
+        let active = store.get_active_strategies(&portfolio.id);
+        assert_eq!(active.len(), 0);
+
+        // Strategy count
+        assert_eq!(store.strategy_count(&portfolio.id), 1);
+
+        // Delete strategy
+        store.delete_strategy(&strategy.id).unwrap();
+        let deleted = store.get_strategy(&strategy.id).unwrap();
+        assert_eq!(deleted.status, StrategyStatus::Deleted);
+
+        // Strategy count should be 0 now (deleted strategies excluded)
+        assert_eq!(store.strategy_count(&portfolio.id), 0);
+    }
+
+    #[test]
+    fn test_strategy_with_multiple_rules() {
+        use crate::types::{RuleCondition, RuleAction, TradingRule, IndicatorType, ComparisonOperator, PositionSizeType, LogicalOperator};
+
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        let portfolio = Portfolio::new("user123".to_string(), "Multi-Rule".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        let mut strategy = TradingStrategy::new(
+            portfolio.id.clone(),
+            "Complex Strategy".to_string(),
+            vec!["BTC".to_string()],
+        );
+
+        // Add buy rule
+        let buy_rule = TradingRule::new(
+            "Buy Signal".to_string(),
+            vec![
+                RuleCondition::new(IndicatorType::Rsi, ComparisonOperator::LessThan, 30.0),
+                RuleCondition::new(IndicatorType::Macd, ComparisonOperator::CrossesAbove, 0.0),
+            ],
+            RuleAction::market_buy(PositionSizeType::PortfolioPercent, 5.0),
+        );
+        strategy.add_rule(buy_rule);
+
+        // Add sell rule
+        let sell_rule = TradingRule::new(
+            "Sell Signal".to_string(),
+            vec![RuleCondition::new(IndicatorType::Rsi, ComparisonOperator::GreaterThan, 70.0)],
+            RuleAction::market_sell(PositionSizeType::PortfolioPercent, 100.0),
+        );
+        strategy.add_rule(sell_rule);
+
+        store.create_strategy(&strategy).unwrap();
+
+        let loaded = store.get_strategy(&strategy.id).unwrap();
+        assert_eq!(loaded.rules.len(), 2);
+        assert_eq!(loaded.rules[0].name, "Buy Signal");
+        assert_eq!(loaded.rules[0].conditions.len(), 2);
+        assert_eq!(loaded.rules[1].name, "Sell Signal");
+        assert_eq!(loaded.rules[1].conditions.len(), 1);
     }
 }

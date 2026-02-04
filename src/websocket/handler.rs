@@ -14,10 +14,7 @@ use crate::types::{ClientMessage, ServerMessage};
 use crate::AppState;
 
 /// WebSocket upgrade handler.
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -66,7 +63,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             }
 
             // Check throttling - skip if we shouldn't send yet
-            if !broadcast_room_manager.should_send_update(broadcast_client_id, &symbol).await {
+            if !broadcast_room_manager
+                .should_send_update(broadcast_client_id, &symbol)
+                .await
+            {
                 continue;
             }
 
@@ -144,7 +144,9 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             let unsubscribed = state.room_manager.unsubscribe(client_id, &assets);
             debug!("Client {} unsubscribed from: {:?}", client_id, unsubscribed);
 
-            let response = ServerMessage::Unsubscribed { assets: unsubscribed };
+            let response = ServerMessage::Unsubscribed {
+                assets: unsubscribed,
+            };
             send_message(state, client_id, &response);
         }
         ClientMessage::SetThrottle { throttle_ms } => {
@@ -169,7 +171,11 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             send_message(state, client_id, &response);
         }
         // Peer mesh protocol - respond to ping with pong
-        ClientMessage::Ping { from_id, from_region, timestamp } => {
+        ClientMessage::Ping {
+            from_id,
+            from_region,
+            timestamp,
+        } => {
             debug!("Received peer ping from {} ({})", from_id, from_region);
             let response = ServerMessage::Pong {
                 from_id: state.config.server_id.clone(),
@@ -179,18 +185,57 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
             send_message(state, client_id, &response);
         }
         // Peer mesh pong - just log it (actual handling is in peer_mesh.rs)
-        ClientMessage::Pong { from_id, from_region, original_timestamp } => {
-            debug!("Received peer pong from {} ({}) - original_ts: {}", from_id, from_region, original_timestamp);
+        ClientMessage::Pong {
+            from_id,
+            from_region,
+            original_timestamp,
+        } => {
+            debug!(
+                "Received peer pong from {} ({}) - original_ts: {}",
+                from_id, from_region, original_timestamp
+            );
         }
         // Peer mesh auth - accept all for now (production should verify signature)
         ClientMessage::Auth { id, region, .. } => {
             debug!("Received peer auth from {} ({})", id, region);
-            let response = ServerMessage::AuthResponse { success: true, error: None };
+            let response = ServerMessage::AuthResponse {
+                success: true,
+                error: None,
+            };
             send_message(state, client_id, &response);
         }
         // Peer mesh identify - just acknowledge
-        ClientMessage::Identify { id, region, version } => {
+        ClientMessage::Identify {
+            id,
+            region,
+            version,
+        } => {
             debug!("Peer identified: {} ({}) v{}", id, region, version);
+        }
+        // Trading subscriptions
+        ClientMessage::SubscribeTrading { portfolio_id } => {
+            let subscribed = state.room_manager.subscribe_trading(client_id, &portfolio_id).await;
+            if subscribed {
+                debug!("Client {} subscribed to trading for portfolio {}", client_id, portfolio_id);
+                let response = ServerMessage::TradingSubscribed {
+                    portfolio_id: portfolio_id.clone(),
+                };
+                send_message(state, client_id, &response);
+            } else {
+                send_error(state, client_id, &format!("Failed to subscribe to portfolio {}", portfolio_id));
+            }
+        }
+        ClientMessage::UnsubscribeTrading { portfolio_id } => {
+            let unsubscribed = state.room_manager.unsubscribe_trading(client_id, &portfolio_id).await;
+            if unsubscribed {
+                debug!("Client {} unsubscribed from trading for portfolio {}", client_id, portfolio_id);
+                let response = ServerMessage::TradingUnsubscribed {
+                    portfolio_id: portfolio_id.clone(),
+                };
+                send_message(state, client_id, &response);
+            } else {
+                send_error(state, client_id, &format!("Not subscribed to portfolio {}", portfolio_id));
+            }
         }
     }
 }

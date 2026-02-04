@@ -5,10 +5,10 @@
 
 use crate::error::{AppError, Result};
 use crate::services::ChartStore;
+use crate::sources::finnhub::{ETF_SYMBOLS, STOCK_SYMBOLS};
 use crate::sources::{AlphaVantageClient, YahooFinanceClient};
-use crate::sources::finnhub::{STOCK_SYMBOLS, ETF_SYMBOLS};
 use dashmap::DashMap;
-use redis::{aio::ConnectionManager, AsyncCommands};
+use redis::aio::ConnectionManager;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 
 /// Redis key prefixes for historical data
 const REDIS_OHLC_PREFIX: &str = "haunt:ohlc:";
+#[allow(dead_code)]
 const REDIS_SEED_STATUS_PREFIX: &str = "haunt:seed:";
 
 /// Minimum number of data points required for adequate chart data
@@ -29,7 +30,7 @@ const MIN_POINTS_1M: usize = 120;
 /// OHLC data point for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OhlcDataPoint {
-    pub time: i64,      // Unix timestamp in seconds
+    pub time: i64, // Unix timestamp in seconds
     pub open: f64,
     pub high: f64,
     pub low: f64,
@@ -42,8 +43,9 @@ type CoinGeckoOhlc = Vec<[f64; 5]>;
 
 /// CoinGecko market chart response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CoinGeckoMarketChart {
-    prices: Vec<[f64; 2]>,        // [[timestamp, price], ...]
+    prices: Vec<[f64; 2]>, // [[timestamp, price], ...]
     market_caps: Vec<[f64; 2]>,
     total_volumes: Vec<[f64; 2]>,
 }
@@ -64,6 +66,7 @@ struct CryptoCompareData {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CryptoCompareOhlc {
     time: i64,
     high: f64,
@@ -179,8 +182,8 @@ pub enum SeedStatus {
 #[derive(Debug, Clone)]
 pub struct SeedProgress {
     pub status: SeedStatus,
-    pub progress: u8,         // 0-100
-    pub points: u64,          // Total points fetched
+    pub progress: u8, // 0-100
+    pub points: u64,  // Total points fetched
     pub message: Option<String>,
 }
 
@@ -233,17 +236,15 @@ impl HistoricalDataService {
     /// Connect to Redis.
     pub async fn connect_redis(&self, redis_url: &str) {
         match redis::Client::open(redis_url) {
-            Ok(client) => {
-                match ConnectionManager::new(client).await {
-                    Ok(conn) => {
-                        info!("HistoricalDataService connected to Redis");
-                        *self.redis.write().await = Some(conn);
-                    }
-                    Err(e) => {
-                        warn!("Failed to connect HistoricalDataService to Redis: {}", e);
-                    }
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(conn) => {
+                    info!("HistoricalDataService connected to Redis");
+                    *self.redis.write().await = Some(conn);
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to connect HistoricalDataService to Redis: {}", e);
+                }
+            },
             Err(e) => {
                 warn!("Invalid Redis URL for HistoricalDataService: {}", e);
             }
@@ -254,21 +255,25 @@ impl HistoricalDataService {
     /// This ensures charts have data immediately after server restart.
     pub async fn load_common_symbols(&self) {
         let common_symbols = vec![
-            "btc", "eth", "bnb", "xrp", "ada", "doge", "sol", "dot", "matic", "ltc",
-            "shib", "trx", "avax", "link", "atom", "uni", "xlm", "etc", "bch", "fil",
-            "apt", "arb", "near", "op", "aave", "mkr", "crv", "ldo", "snx", "comp",
+            "btc", "eth", "bnb", "xrp", "ada", "doge", "sol", "dot", "matic", "ltc", "shib", "trx",
+            "avax", "link", "atom", "uni", "xlm", "etc", "bch", "fil", "apt", "arb", "near", "op",
+            "aave", "mkr", "crv", "ldo", "snx", "comp",
         ];
 
         let mut loaded_count = 0;
         for symbol in common_symbols {
             if self.load_from_redis(symbol).await {
-                self.seed_status.insert(symbol.to_string(), SeedStatus::Seeded);
+                self.seed_status
+                    .insert(symbol.to_string(), SeedStatus::Seeded);
                 loaded_count += 1;
             }
         }
 
         if loaded_count > 0 {
-            info!("Loaded historical data for {} common symbols from Redis", loaded_count);
+            info!(
+                "Loaded historical data for {} common symbols from Redis",
+                loaded_count
+            );
         }
     }
 
@@ -335,7 +340,8 @@ impl HistoricalDataService {
         if self.load_from_redis(&symbol_lower).await {
             // Data loaded from Redis, check again
             if self.has_adequate_data(symbol, range) {
-                self.seed_status.insert(symbol_lower.clone(), SeedStatus::Seeded);
+                self.seed_status
+                    .insert(symbol_lower.clone(), SeedStatus::Seeded);
                 return false;
             }
         }
@@ -354,17 +360,22 @@ impl HistoricalDataService {
         let key = format!("{}{}:1h", REDIS_OHLC_PREFIX, symbol.to_lowercase());
 
         // Get all OHLC data from sorted set
-        let result: std::result::Result<Vec<(String, f64)>, redis::RedisError> = redis::cmd("ZRANGEBYSCORE")
-            .arg(&key)
-            .arg("-inf")
-            .arg("+inf")
-            .arg("WITHSCORES")
-            .query_async(&mut conn)
-            .await;
+        let result: std::result::Result<Vec<(String, f64)>, redis::RedisError> =
+            redis::cmd("ZRANGEBYSCORE")
+                .arg(&key)
+                .arg("-inf")
+                .arg("+inf")
+                .arg("WITHSCORES")
+                .query_async(&mut conn)
+                .await;
 
         match result {
             Ok(data) if !data.is_empty() => {
-                debug!("Loading {} historical points for {} from Redis", data.len(), symbol);
+                debug!(
+                    "Loading {} historical points for {} from Redis",
+                    data.len(),
+                    symbol
+                );
 
                 for (json_str, _score) in &data {
                     if let Ok(point) = serde_json::from_str::<OhlcDataPoint>(json_str) {
@@ -412,7 +423,11 @@ impl HistoricalDataService {
             .await
             .map_err(|e| AppError::Internal(format!("Redis pipeline error: {}", e)))?;
 
-        info!("Saved {} historical OHLC points for {} to Redis", data.len(), symbol);
+        info!(
+            "Saved {} historical OHLC points for {} to Redis",
+            data.len(),
+            symbol
+        );
         Ok(())
     }
 
@@ -425,14 +440,21 @@ impl HistoricalDataService {
         let symbol_upper = symbol.to_uppercase();
 
         // Mark as seeding and initialize progress
-        self.seed_status.insert(symbol_lower.clone(), SeedStatus::Seeding);
-        self.update_progress(&symbol_lower, 0, 0, Some("Starting data fetch...".to_string()));
+        self.seed_status
+            .insert(symbol_lower.clone(), SeedStatus::Seeding);
+        self.update_progress(
+            &symbol_lower,
+            0,
+            0,
+            Some("Starting data fetch...".to_string()),
+        );
 
         info!("Starting historical data seed for {}", symbol);
 
         // Check if this is a stock/ETF - use different data source
         if is_stock_or_etf(&symbol_upper) {
-            self.seed_stock_historical_data(&symbol_lower, &symbol_upper).await;
+            self.seed_stock_historical_data(&symbol_lower, &symbol_upper)
+                .await;
             return;
         }
 
@@ -441,44 +463,83 @@ impl HistoricalDataService {
 
         // === Source 1: CoinGecko ===
         if let Some(coingecko_id) = get_coingecko_id(&symbol_lower) {
-            self.update_progress(&symbol_lower, 10, 0, Some("Fetching from CoinGecko...".to_string()));
+            self.update_progress(
+                &symbol_lower,
+                10,
+                0,
+                Some("Fetching from CoinGecko...".to_string()),
+            );
 
             for (i, days) in [1, 7, 30, 90].iter().enumerate() {
                 match self.fetch_coingecko_market_chart(coingecko_id, *days).await {
                     Ok(points) => {
-                        info!("[CoinGecko] Fetched {} points for {} ({} days)", points.len(), symbol, days);
+                        info!(
+                            "[CoinGecko] Fetched {} points for {} ({} days)",
+                            points.len(),
+                            symbol,
+                            days
+                        );
                         all_points.extend(points);
                         coingecko_succeeded = true;
                         // Progress: 10-50% during CoinGecko fetches
                         let progress = 10 + ((i + 1) * 10) as u8;
-                        self.update_progress(&symbol_lower, progress, all_points.len() as u64, None);
+                        self.update_progress(
+                            &symbol_lower,
+                            progress,
+                            all_points.len() as u64,
+                            None,
+                        );
                     }
                     Err(e) => {
-                        warn!("[CoinGecko] Failed to fetch {} day data for {}: {}", days, symbol, e);
+                        warn!(
+                            "[CoinGecko] Failed to fetch {} day data for {}: {}",
+                            days, symbol, e
+                        );
                     }
                 }
                 // Small delay to avoid rate limiting
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         } else {
-            debug!("No CoinGecko ID mapping for symbol: {}, trying CryptoCompare only", symbol);
+            debug!(
+                "No CoinGecko ID mapping for symbol: {}, trying CryptoCompare only",
+                symbol
+            );
         }
 
         // === Source 2: CryptoCompare (supplement or fallback) ===
-        self.update_progress(&symbol_lower, 60, all_points.len() as u64, Some("Fetching from CryptoCompare...".to_string()));
+        self.update_progress(
+            &symbol_lower,
+            60,
+            all_points.len() as u64,
+            Some("Fetching from CryptoCompare...".to_string()),
+        );
 
         // Fetch hourly data (up to 2000 hours = ~83 days)
-        match self.fetch_cryptocompare_histohour(&symbol_lower, 2000).await {
+        match self
+            .fetch_cryptocompare_histohour(&symbol_lower, 2000)
+            .await
+        {
             Ok(points) => {
-                info!("[CryptoCompare] Fetched {} hourly points for {}", points.len(), symbol);
+                info!(
+                    "[CryptoCompare] Fetched {} hourly points for {}",
+                    points.len(),
+                    symbol
+                );
                 all_points.extend(points);
                 self.update_progress(&symbol_lower, 75, all_points.len() as u64, None);
             }
             Err(e) => {
                 if !coingecko_succeeded {
-                    warn!("[CryptoCompare] Failed to fetch hourly data for {}: {}", symbol, e);
+                    warn!(
+                        "[CryptoCompare] Failed to fetch hourly data for {}: {}",
+                        symbol, e
+                    );
                 } else {
-                    debug!("[CryptoCompare] Hourly fetch failed (using CoinGecko data): {}", e);
+                    debug!(
+                        "[CryptoCompare] Hourly fetch failed (using CoinGecko data): {}",
+                        e
+                    );
                 }
             }
         }
@@ -487,11 +548,20 @@ impl HistoricalDataService {
         // Fetch daily data for longer history (up to 365 days)
         match self.fetch_cryptocompare_histoday(&symbol_lower, 365).await {
             Ok(points) => {
-                info!("[CryptoCompare] Fetched {} daily points for {}", points.len(), symbol);
+                info!(
+                    "[CryptoCompare] Fetched {} daily points for {}",
+                    points.len(),
+                    symbol
+                );
                 // Convert daily points to hourly timestamps (use closing time)
                 // These fill in gaps for longer time ranges
                 all_points.extend(points);
-                self.update_progress(&symbol_lower, 85, all_points.len() as u64, Some("Processing data...".to_string()));
+                self.update_progress(
+                    &symbol_lower,
+                    85,
+                    all_points.len() as u64,
+                    Some("Processing data...".to_string()),
+                );
             }
             Err(e) => {
                 debug!("[CryptoCompare] Daily fetch failed: {}", e);
@@ -500,8 +570,14 @@ impl HistoricalDataService {
 
         if all_points.is_empty() {
             warn!("No historical data fetched for {} from any source", symbol);
-            self.seed_status.insert(symbol_lower.clone(), SeedStatus::Failed);
-            self.update_progress(&symbol_lower, 0, 0, Some("Failed to fetch data".to_string()));
+            self.seed_status
+                .insert(symbol_lower.clone(), SeedStatus::Failed);
+            self.update_progress(
+                &symbol_lower,
+                0,
+                0,
+                Some("Failed to fetch data".to_string()),
+            );
             return;
         }
 
@@ -529,7 +605,11 @@ impl HistoricalDataService {
             deduped.push(point);
         }
 
-        info!("Aggregated {} unique historical data points for {} from multiple sources", deduped.len(), symbol);
+        info!(
+            "Aggregated {} unique historical data points for {} from multiple sources",
+            deduped.len(),
+            symbol
+        );
 
         // Add to chart store
         for point in &deduped {
@@ -547,20 +627,33 @@ impl HistoricalDataService {
             error!("Failed to save historical data to Redis: {}", e);
         }
 
-        self.seed_status.insert(symbol_lower.clone(), SeedStatus::Seeded);
-        self.update_progress(&symbol_lower, 100, deduped.len() as u64, Some("Complete".to_string()));
+        self.seed_status
+            .insert(symbol_lower.clone(), SeedStatus::Seeded);
+        self.update_progress(
+            &symbol_lower,
+            100,
+            deduped.len() as u64,
+            Some("Complete".to_string()),
+        );
         info!("Completed historical data seed for {}", symbol);
     }
 
     /// Fetch market chart data from CoinGecko and convert to OHLC points.
-    async fn fetch_coingecko_market_chart(&self, coin_id: &str, days: u32) -> Result<Vec<OhlcDataPoint>> {
+    async fn fetch_coingecko_market_chart(
+        &self,
+        coin_id: &str,
+        days: u32,
+    ) -> Result<Vec<OhlcDataPoint>> {
         // CoinGecko free API - market_chart endpoint gives price/volume history
         let url = format!(
             "https://api.coingecko.com/api/v3/coins/{}/market_chart?vs_currency=usd&days={}",
             coin_id, days
         );
 
-        debug!("Fetching CoinGecko market chart: {} days for {}", days, coin_id);
+        debug!(
+            "Fetching CoinGecko market chart: {} days for {}",
+            days, coin_id
+        );
 
         let mut request = self.http_client.get(&url);
 
@@ -578,28 +671,26 @@ impl HistoricalDataService {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(AppError::ExternalApi(format!(
-                "CoinGecko API error {}: {}", status, body
+                "CoinGecko API error {}: {}",
+                status, body
             )));
         }
 
-        let chart: CoinGeckoMarketChart = response
-            .json()
-            .await
-            .map_err(|e| AppError::ExternalApi(format!("Failed to parse CoinGecko response: {}", e)))?;
+        let chart: CoinGeckoMarketChart = response.json().await.map_err(|e| {
+            AppError::ExternalApi(format!("Failed to parse CoinGecko response: {}", e))
+        })?;
 
         // Convert price/volume data to OHLC-like points
         // Group by hour for hourly resolution
-        let mut hourly_data: std::collections::BTreeMap<i64, OhlcDataPoint> = std::collections::BTreeMap::new();
+        let mut hourly_data: std::collections::BTreeMap<i64, OhlcDataPoint> =
+            std::collections::BTreeMap::new();
 
         for (i, price_point) in chart.prices.iter().enumerate() {
             let timestamp_ms = price_point[0] as i64;
             let price = price_point[1];
 
             // Get corresponding volume if available
-            let volume = chart.total_volumes
-                .get(i)
-                .map(|v| v[1])
-                .unwrap_or(0.0);
+            let volume = chart.total_volumes.get(i).map(|v| v[1]).unwrap_or(0.0);
 
             // Round to hour
             let hour_ts = (timestamp_ms / 1000 / 3600) * 3600;
@@ -644,7 +735,10 @@ impl HistoricalDataService {
             coin_id, valid_days
         );
 
-        debug!("Fetching CoinGecko OHLC: {} days for {}", valid_days, coin_id);
+        debug!(
+            "Fetching CoinGecko OHLC: {} days for {}",
+            valid_days, coin_id
+        );
 
         let mut request = self.http_client.get(&url);
 
@@ -659,7 +753,10 @@ impl HistoricalDataService {
 
         if !response.status().is_success() {
             let status = response.status();
-            return Err(AppError::ExternalApi(format!("CoinGecko API error: {}", status)));
+            return Err(AppError::ExternalApi(format!(
+                "CoinGecko API error: {}",
+                status
+            )));
         }
 
         let ohlc: CoinGeckoOhlc = response
@@ -684,15 +781,23 @@ impl HistoricalDataService {
 
     /// Fetch hourly OHLC data from CryptoCompare.
     /// CryptoCompare provides up to 2000 hourly data points per request.
-    async fn fetch_cryptocompare_histohour(&self, symbol: &str, limit: u32) -> Result<Vec<OhlcDataPoint>> {
+    async fn fetch_cryptocompare_histohour(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<OhlcDataPoint>> {
         // CryptoCompare uses uppercase symbols directly
         let fsym = symbol.to_uppercase();
         let url = format!(
             "https://min-api.cryptocompare.com/data/v2/histohour?fsym={}&tsym=USD&limit={}",
-            fsym, limit.min(2000)
+            fsym,
+            limit.min(2000)
         );
 
-        debug!("Fetching CryptoCompare histohour: {} hours for {}", limit, symbol);
+        debug!(
+            "Fetching CryptoCompare histohour: {} hours for {}",
+            limit, symbol
+        );
 
         let mut request = self.http_client.get(&url);
 
@@ -710,25 +815,28 @@ impl HistoricalDataService {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(AppError::ExternalApi(format!(
-                "CryptoCompare API error {}: {}", status, body
+                "CryptoCompare API error {}: {}",
+                status, body
             )));
         }
 
-        let resp: CryptoCompareResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::ExternalApi(format!("Failed to parse CryptoCompare response: {}", e)))?;
+        let resp: CryptoCompareResponse = response.json().await.map_err(|e| {
+            AppError::ExternalApi(format!("Failed to parse CryptoCompare response: {}", e))
+        })?;
 
         if resp.response != "Success" {
             return Err(AppError::ExternalApi(format!(
-                "CryptoCompare API returned error: {}", resp.response
+                "CryptoCompare API returned error: {}",
+                resp.response
             )));
         }
 
-        let data = resp.data
+        let data = resp
+            .data
             .ok_or_else(|| AppError::ExternalApi("CryptoCompare returned no data".to_string()))?;
 
-        let points: Vec<OhlcDataPoint> = data.data
+        let points: Vec<OhlcDataPoint> = data
+            .data
             .into_iter()
             .filter(|ohlc| ohlc.close > 0.0) // Filter out zero-price entries
             .map(|ohlc| OhlcDataPoint {
@@ -745,14 +853,22 @@ impl HistoricalDataService {
     }
 
     /// Fetch daily OHLC data from CryptoCompare for longer time ranges.
-    async fn fetch_cryptocompare_histoday(&self, symbol: &str, limit: u32) -> Result<Vec<OhlcDataPoint>> {
+    async fn fetch_cryptocompare_histoday(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<OhlcDataPoint>> {
         let fsym = symbol.to_uppercase();
         let url = format!(
             "https://min-api.cryptocompare.com/data/v2/histoday?fsym={}&tsym=USD&limit={}",
-            fsym, limit.min(2000)
+            fsym,
+            limit.min(2000)
         );
 
-        debug!("Fetching CryptoCompare histoday: {} days for {}", limit, symbol);
+        debug!(
+            "Fetching CryptoCompare histoday: {} days for {}",
+            limit, symbol
+        );
 
         let mut request = self.http_client.get(&url);
 
@@ -767,22 +883,28 @@ impl HistoricalDataService {
 
         if !response.status().is_success() {
             let status = response.status();
-            return Err(AppError::ExternalApi(format!("CryptoCompare API error: {}", status)));
+            return Err(AppError::ExternalApi(format!(
+                "CryptoCompare API error: {}",
+                status
+            )));
         }
 
-        let resp: CryptoCompareResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::ExternalApi(format!("Failed to parse CryptoCompare response: {}", e)))?;
+        let resp: CryptoCompareResponse = response.json().await.map_err(|e| {
+            AppError::ExternalApi(format!("Failed to parse CryptoCompare response: {}", e))
+        })?;
 
         if resp.response != "Success" {
-            return Err(AppError::ExternalApi("CryptoCompare API returned error".to_string()));
+            return Err(AppError::ExternalApi(
+                "CryptoCompare API returned error".to_string(),
+            ));
         }
 
-        let data = resp.data
+        let data = resp
+            .data
             .ok_or_else(|| AppError::ExternalApi("CryptoCompare returned no data".to_string()))?;
 
-        let points: Vec<OhlcDataPoint> = data.data
+        let points: Vec<OhlcDataPoint> = data
+            .data
             .into_iter()
             .filter(|ohlc| ohlc.close > 0.0)
             .map(|ohlc| OhlcDataPoint {
@@ -800,7 +922,10 @@ impl HistoricalDataService {
 
     /// Seed data for multiple symbols concurrently with rate limiting.
     pub async fn seed_multiple(self: Arc<Self>, symbols: Vec<String>) {
-        info!("Starting batch historical data seed for {} symbols", symbols.len());
+        info!(
+            "Starting batch historical data seed for {} symbols",
+            symbols.len()
+        );
 
         for (i, symbol) in symbols.into_iter().enumerate() {
             // Rate limit: CoinGecko free tier allows ~10-30 calls/minute
@@ -820,18 +945,35 @@ impl HistoricalDataService {
 
     /// Seed historical data for stocks/ETFs using Alpha Vantage with Yahoo Finance fallback.
     async fn seed_stock_historical_data(&self, symbol_lower: &str, symbol_upper: &str) {
-        self.update_progress(symbol_lower, 10, 0, Some("Fetching historical data...".to_string()));
+        self.update_progress(
+            symbol_lower,
+            10,
+            0,
+            Some("Fetching historical data...".to_string()),
+        );
 
         let mut ohlc_points: Vec<OhlcDataPoint> = Vec::new();
         let mut source = "unknown";
 
         // Try Alpha Vantage first (if configured)
         if let Some(ref av_client) = self.alphavantage_client {
-            self.update_progress(symbol_lower, 15, 0, Some("Trying Alpha Vantage...".to_string()));
+            self.update_progress(
+                symbol_lower,
+                15,
+                0,
+                Some("Trying Alpha Vantage...".to_string()),
+            );
 
-            match av_client.get_daily_time_series(symbol_upper, "compact").await {
+            match av_client
+                .get_daily_time_series(symbol_upper, "compact")
+                .await
+            {
                 Ok(points) if !points.is_empty() => {
-                    info!("[AlphaVantage] Fetched {} daily points for {}", points.len(), symbol_upper);
+                    info!(
+                        "[AlphaVantage] Fetched {} daily points for {}",
+                        points.len(),
+                        symbol_upper
+                    );
                     source = "AlphaVantage";
 
                     ohlc_points = points
@@ -847,21 +989,36 @@ impl HistoricalDataService {
                         .collect();
                 }
                 Ok(_) => {
-                    debug!("[AlphaVantage] No data returned for {}, trying Yahoo Finance", symbol_upper);
+                    debug!(
+                        "[AlphaVantage] No data returned for {}, trying Yahoo Finance",
+                        symbol_upper
+                    );
                 }
                 Err(e) => {
-                    debug!("[AlphaVantage] Failed for {}: {}, trying Yahoo Finance", symbol_upper, e);
+                    debug!(
+                        "[AlphaVantage] Failed for {}: {}, trying Yahoo Finance",
+                        symbol_upper, e
+                    );
                 }
             }
         }
 
         // Fallback to Yahoo Finance (no rate limits!)
         if ohlc_points.is_empty() {
-            self.update_progress(symbol_lower, 30, 0, Some("Trying Yahoo Finance...".to_string()));
+            self.update_progress(
+                symbol_lower,
+                30,
+                0,
+                Some("Trying Yahoo Finance...".to_string()),
+            );
 
             match self.yahoo_client.get_daily_history(symbol_upper).await {
                 Ok(points) if !points.is_empty() => {
-                    info!("[Yahoo] Fetched {} daily points for {}", points.len(), symbol_upper);
+                    info!(
+                        "[Yahoo] Fetched {} daily points for {}",
+                        points.len(),
+                        symbol_upper
+                    );
                     source = "Yahoo";
 
                     ohlc_points = points
@@ -887,23 +1044,28 @@ impl HistoricalDataService {
 
         // Process the data if we got any
         if ohlc_points.is_empty() {
-            warn!("No historical data available for {} from any source", symbol_upper);
-            self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Failed);
+            warn!(
+                "No historical data available for {} from any source",
+                symbol_upper
+            );
+            self.seed_status
+                .insert(symbol_lower.to_string(), SeedStatus::Failed);
             self.update_progress(symbol_lower, 0, 0, Some("No data available".to_string()));
             return;
         }
 
-        self.update_progress(symbol_lower, 50, ohlc_points.len() as u64, Some("Processing data...".to_string()));
+        self.update_progress(
+            symbol_lower,
+            50,
+            ohlc_points.len() as u64,
+            Some("Processing data...".to_string()),
+        );
 
         // Add to chart store
         for point in &ohlc_points {
             let timestamp_ms = point.time * 1000;
-            self.chart_store.add_price(
-                symbol_lower,
-                point.close,
-                Some(point.volume),
-                timestamp_ms,
-            );
+            self.chart_store
+                .add_price(symbol_lower, point.close, Some(point.volume), timestamp_ms);
         }
 
         // Save to Redis
@@ -911,9 +1073,20 @@ impl HistoricalDataService {
             error!("Failed to save stock historical data to Redis: {}", e);
         }
 
-        self.seed_status.insert(symbol_lower.to_string(), SeedStatus::Seeded);
-        self.update_progress(symbol_lower, 100, ohlc_points.len() as u64, Some("Complete".to_string()));
-        info!("Completed historical data seed for {} ({} points from {})", symbol_upper, ohlc_points.len(), source);
+        self.seed_status
+            .insert(symbol_lower.to_string(), SeedStatus::Seeded);
+        self.update_progress(
+            symbol_lower,
+            100,
+            ohlc_points.len() as u64,
+            Some("Complete".to_string()),
+        );
+        info!(
+            "Completed historical data seed for {} ({} points from {})",
+            symbol_upper,
+            ohlc_points.len(),
+            source
+        );
     }
 
     /// Load common stock symbols from Redis on startup.
@@ -929,7 +1102,10 @@ impl HistoricalDataService {
         }
 
         if loaded_count > 0 {
-            info!("Loaded historical data for {} stock/ETF symbols from Redis", loaded_count);
+            info!(
+                "Loaded historical data for {} stock/ETF symbols from Redis",
+                loaded_count
+            );
         }
     }
 }

@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo test --test peer_mesh_test -- --nocapture
 
-use std::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::time::Duration;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const WS_URL: &str = "ws://localhost:3001/ws";
 
@@ -41,7 +41,9 @@ async fn test_peer_subscription() {
                     }
                     Some("peer_update") => {
                         received_updates += 1;
-                        let peers = json["data"]["peers"].as_array().expect("Missing peers array");
+                        let peers = json["data"]["peers"]
+                            .as_array()
+                            .expect("Missing peers array");
 
                         println!("✓ Peer update #{}: {} peers", received_updates, peers.len());
 
@@ -51,8 +53,10 @@ async fn test_peer_subscription() {
                             let latency = peer["latencyMs"].as_f64().unwrap_or(0.0);
                             let ping_count = peer["pingCount"].as_u64().unwrap_or(0);
 
-                            println!("  - {}: status={}, latency={:.2}ms, pingCount={}",
-                                id, status, latency, ping_count);
+                            println!(
+                                "  - {}: status={}, latency={:.2}ms, pingCount={}",
+                                id, status, latency, ping_count
+                            );
                         }
 
                         if received_updates >= 3 {
@@ -101,7 +105,9 @@ async fn test_ping_pong_protocol() {
                 let json: Value = serde_json::from_str(&text).expect("Invalid JSON");
 
                 if json["type"].as_str() == Some("pong") {
-                    let original_ts = json["original_timestamp"].as_i64().expect("Missing original_timestamp");
+                    let original_ts = json["original_timestamp"]
+                        .as_i64()
+                        .expect("Missing original_timestamp");
                     let from_id = json["from_id"].as_str().expect("Missing from_id");
 
                     assert_eq!(original_ts, timestamp, "Timestamp mismatch in pong");
@@ -140,17 +146,23 @@ async fn test_latency_recording() {
                 let json: Value = serde_json::from_str(&text).expect("Invalid JSON");
 
                 if json["type"].as_str() == Some("peer_update") {
-                    let peers = json["data"]["peers"].as_array().expect("Missing peers array");
+                    let peers = json["data"]["peers"]
+                        .as_array()
+                        .expect("Missing peers array");
 
                     for peer in peers {
                         let latency = peer["latencyMs"].as_f64();
                         let ping_count = peer["pingCount"].as_u64().unwrap_or(0);
 
-                        if latency.is_some() && ping_count > 0 {
-                            let id = peer["id"].as_str().unwrap_or("unknown");
-                            println!("✓ Found peer {} with latency {:.2}ms (pingCount={})",
-                                id, latency.unwrap(), ping_count);
-                            found_latency = true;
+                        if let Some(lat) = latency {
+                            if ping_count > 0 {
+                                let id = peer["id"].as_str().unwrap_or("unknown");
+                                println!(
+                                    "✓ Found peer {} with latency {:.2}ms (pingCount={})",
+                                    id, lat, ping_count
+                                );
+                                found_latency = true;
+                            }
                         }
                     }
 
@@ -164,5 +176,8 @@ async fn test_latency_recording() {
 
     timeout.await.expect("Test timed out");
 
-    assert!(found_latency, "No peer with recorded latency found (make sure haunt is running with peers configured)");
+    assert!(
+        found_latency,
+        "No peer with recorded latency found (make sure haunt is running with peers configured)"
+    );
 }

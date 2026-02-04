@@ -20,12 +20,14 @@ struct AssetListing {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ApiResponse<T> {
     data: T,
     meta: ApiMeta,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ApiMeta {
     #[serde(default)]
     total: Option<i32>,
@@ -43,7 +45,10 @@ struct ApiMeta {
 #[ignore] // Run manually or in CI with server running
 async fn test_crypto_listings_returns_data() {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/crypto/listings?asset_type=crypto&limit=20", API_BASE_URL);
+    let url = format!(
+        "{}/api/crypto/listings?asset_type=crypto&limit=20",
+        API_BASE_URL
+    );
 
     let response = client
         .get(&url)
@@ -93,10 +98,18 @@ async fn test_crypto_listings_returns_data() {
     // Verify assets have valid data
     for asset in &body.data {
         assert!(asset.id > 0, "Asset {} has invalid ID", asset.symbol);
-        assert!(!asset.name.is_empty(), "Asset {} has empty name", asset.symbol);
+        assert!(
+            !asset.name.is_empty(),
+            "Asset {} has empty name",
+            asset.symbol
+        );
         assert!(!asset.symbol.is_empty(), "Asset has empty symbol");
         // Price can be 0 for some very small cap coins, but should be non-negative
-        assert!(asset.price >= 0.0, "Asset {} has negative price", asset.symbol);
+        assert!(
+            asset.price >= 0.0,
+            "Asset {} has negative price",
+            asset.symbol
+        );
     }
 
     // Check for well-known crypto assets
@@ -112,8 +125,18 @@ async fn test_crypto_listings_returns_data() {
         );
     }
 
-    println!("✓ Crypto listings endpoint returned {} assets", body.data.len());
-    println!("  Top 5: {:?}", body.data.iter().take(5).map(|a| &a.symbol).collect::<Vec<_>>());
+    println!(
+        "✓ Crypto listings endpoint returned {} assets",
+        body.data.len()
+    );
+    println!(
+        "  Top 5: {:?}",
+        body.data
+            .iter()
+            .take(5)
+            .map(|a| &a.symbol)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Test that the listings endpoint works with different asset type filters.
@@ -123,7 +146,10 @@ async fn test_asset_type_filtering() {
     let client = reqwest::Client::new();
 
     // Test crypto filter
-    let crypto_url = format!("{}/api/crypto/listings?asset_type=crypto&limit=10", API_BASE_URL);
+    let crypto_url = format!(
+        "{}/api/crypto/listings?asset_type=crypto&limit=10",
+        API_BASE_URL
+    );
     let crypto_resp: ApiResponse<Vec<AssetListing>> = client
         .get(&crypto_url)
         .send()

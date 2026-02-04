@@ -84,7 +84,8 @@ impl OkxClient {
         loop {
             if let Err(e) = self.fetch_prices().await {
                 error!("OKX fetch error: {}", e);
-                self.price_cache.report_source_error(PriceSource::Okx, &e.to_string());
+                self.price_cache
+                    .report_source_error(PriceSource::Okx, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
@@ -104,7 +105,11 @@ impl OkxClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            warn!("OKX API returned {}: {}", status, &text[..text.len().min(200)]);
+            warn!(
+                "OKX API returned {}: {}",
+                status,
+                &text[..text.len().min(200)]
+            );
             return Err(anyhow::anyhow!("OKX API error: {}", status));
         }
 
@@ -118,9 +123,8 @@ impl OkxClient {
         let timestamp = chrono::Utc::now().timestamp_millis();
 
         // Build pair lookup
-        let pair_to_symbol: HashMap<&str, &str> = SYMBOL_PAIRS.iter()
-            .map(|(s, p)| (*p, *s))
-            .collect();
+        let pair_to_symbol: HashMap<&str, &str> =
+            SYMBOL_PAIRS.iter().map(|(s, p)| (*p, *s)).collect();
 
         for ticker in data.data {
             if let Some(symbol) = pair_to_symbol.get(ticker.inst_id.as_str()) {
@@ -135,11 +139,117 @@ impl OkxClient {
                         price,
                         Some(volume_24h),
                     );
-                    self.chart_store.add_price(symbol, price, Some(volume_24h), timestamp);
+                    self.chart_store
+                        .add_price(symbol, price, Some(volume_24h), timestamp);
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // SYMBOL_PAIRS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_symbol_pairs_contains_btc() {
+        let btc = SYMBOL_PAIRS.iter().find(|(s, _)| *s == "btc");
+        assert!(btc.is_some());
+        assert_eq!(btc.unwrap().1, "BTC-USDT");
+    }
+
+    #[test]
+    fn test_symbol_pairs_count() {
+        assert!(SYMBOL_PAIRS.len() >= 19);
+    }
+
+    #[test]
+    fn test_symbol_pairs_all_usdt() {
+        for (_, pair) in SYMBOL_PAIRS {
+            assert!(pair.ends_with("-USDT"));
+        }
+    }
+
+    // =========================================================================
+    // OkxTicker Tests
+    // =========================================================================
+
+    #[test]
+    fn test_okx_ticker_deserialization() {
+        let json = r#"{
+            "instId": "BTC-USDT",
+            "last": "43500.50",
+            "volCcy24h": "15000000000"
+        }"#;
+
+        let ticker: OkxTicker = serde_json::from_str(json).unwrap();
+        assert_eq!(ticker.inst_id, "BTC-USDT");
+        assert_eq!(ticker.last, "43500.50");
+        assert_eq!(ticker.vol_ccy24h, "15000000000");
+    }
+
+    #[test]
+    fn test_okx_ticker_parse_values() {
+        let json = r#"{"instId": "ETH-USDT", "last": "2500.00", "volCcy24h": "8000000000"}"#;
+        let ticker: OkxTicker = serde_json::from_str(json).unwrap();
+        let price: f64 = ticker.last.parse().unwrap();
+        let volume: f64 = ticker.vol_ccy24h.parse().unwrap();
+        assert_eq!(price, 2500.0);
+        assert_eq!(volume, 8000000000.0);
+    }
+
+    // =========================================================================
+    // OkxResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_okx_response_success() {
+        let json = r#"{
+            "code": "0",
+            "msg": "",
+            "data": [
+                {"instId": "BTC-USDT", "last": "43500.50", "volCcy24h": "15000000000"}
+            ]
+        }"#;
+
+        let response: OkxResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, "0");
+        assert!(response.msg.is_empty());
+        assert_eq!(response.data.len(), 1);
+    }
+
+    #[test]
+    fn test_okx_response_error() {
+        let json = r#"{
+            "code": "50001",
+            "msg": "Invalid request",
+            "data": []
+        }"#;
+
+        let response: OkxResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, "50001");
+        assert_eq!(response.msg, "Invalid request");
+        assert!(response.data.is_empty());
+    }
+
+    #[test]
+    fn test_okx_response_multiple_tickers() {
+        let json = r#"{
+            "code": "0",
+            "msg": "",
+            "data": [
+                {"instId": "BTC-USDT", "last": "43500.50", "volCcy24h": "15000000000"},
+                {"instId": "ETH-USDT", "last": "2500.00", "volCcy24h": "8000000000"}
+            ]
+        }"#;
+
+        let response: OkxResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.len(), 2);
     }
 }

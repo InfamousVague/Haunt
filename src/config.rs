@@ -142,15 +142,17 @@ impl Config {
             .unwrap_or(3001);
 
         // Public URLs for mesh announcements (defaults to local address)
-        let public_ws_url = env::var("PUBLIC_WS_URL")
-            .unwrap_or_else(|_| format!("ws://{}:{}/ws", host, port));
-        let public_api_url = env::var("PUBLIC_API_URL")
-            .unwrap_or_else(|_| format!("http://{}:{}", host, port));
+        let public_ws_url =
+            env::var("PUBLIC_WS_URL").unwrap_or_else(|_| format!("ws://{}:{}/ws", host, port));
+        let public_api_url =
+            env::var("PUBLIC_API_URL").unwrap_or_else(|_| format!("http://{}:{}", host, port));
 
         Self {
             host,
             port,
-            redis_url: env::var("REDIS_URL").ok().or_else(|| Some("redis://127.0.0.1:6379".to_string())),
+            redis_url: env::var("REDIS_URL")
+                .ok()
+                .or_else(|| Some("redis://127.0.0.1:6379".to_string())),
             cmc_api_key: env::var("CMC_API_KEY").ok(),
             coingecko_api_key: env::var("COINGECKO_API_KEY").ok(),
             cryptocompare_api_key: env::var("CRYPTOCOMPARE_API_KEY").ok(),
@@ -199,5 +201,261 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self::from_env()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // PeerServerConfig Tests
+    // =========================================================================
+
+    #[test]
+    fn test_peer_server_config_creation() {
+        let config = PeerServerConfig {
+            id: "tokyo".to_string(),
+            region: "Asia Pacific".to_string(),
+            ws_url: "wss://tokyo.example.com/ws".to_string(),
+            api_url: "https://tokyo.example.com".to_string(),
+        };
+
+        assert_eq!(config.id, "tokyo");
+        assert_eq!(config.region, "Asia Pacific");
+        assert!(config.ws_url.starts_with("wss://"));
+    }
+
+    #[test]
+    fn test_peer_server_config_clone() {
+        let config = PeerServerConfig {
+            id: "test".to_string(),
+            region: "Test".to_string(),
+            ws_url: "ws://test".to_string(),
+            api_url: "http://test".to_string(),
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.id, config.id);
+        assert_eq!(cloned.region, config.region);
+    }
+
+    // =========================================================================
+    // BootstrapServerConfig Tests
+    // =========================================================================
+
+    #[test]
+    fn test_bootstrap_server_config_creation() {
+        let config = BootstrapServerConfig {
+            id: "bootstrap1".to_string(),
+            address: "192.168.1.1:3001".to_string(),
+        };
+
+        assert_eq!(config.id, "bootstrap1");
+        assert!(config.address.contains(":"));
+    }
+
+    // =========================================================================
+    // MeshAuthConfig Tests
+    // =========================================================================
+
+    #[test]
+    fn test_mesh_auth_config_creation() {
+        let config = MeshAuthConfig {
+            shared_key: "secret123".to_string(),
+            require_auth: true,
+        };
+
+        assert_eq!(config.shared_key, "secret123");
+        assert!(config.require_auth);
+    }
+
+    #[test]
+    fn test_mesh_auth_config_disabled() {
+        let config = MeshAuthConfig {
+            shared_key: String::new(),
+            require_auth: false,
+        };
+
+        assert!(config.shared_key.is_empty());
+        assert!(!config.require_auth);
+    }
+
+    // =========================================================================
+    // Config Tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_default_values() {
+        // Note: This test may be affected by environment variables
+        // In a clean environment, these defaults should apply
+        let config = Config {
+            host: "0.0.0.0".to_string(),
+            port: 3001,
+            redis_url: Some("redis://127.0.0.1:6379".to_string()),
+            cmc_api_key: None,
+            coingecko_api_key: None,
+            cryptocompare_api_key: None,
+            binance_api_key: None,
+            kraken_api_key: None,
+            kucoin_api_key: None,
+            okx_api_key: None,
+            huobi_api_key: None,
+            finnhub_api_key: None,
+            alpha_vantage_api_key: None,
+            alpaca_api_key: None,
+            alpaca_api_secret: None,
+            tiingo_api_key: None,
+            price_change_threshold: 0.01,
+            throttle_ms: 100,
+            stale_threshold_ms: 120_000,
+            server_id: "test-server".to_string(),
+            server_region: "unknown".to_string(),
+            peer_servers: vec![],
+            bootstrap_servers: vec![],
+            public_ws_url: "ws://0.0.0.0:3001/ws".to_string(),
+            public_api_url: "http://0.0.0.0:3001".to_string(),
+            mesh_auth: MeshAuthConfig {
+                shared_key: String::new(),
+                require_auth: false,
+            },
+        };
+
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 3001);
+        assert_eq!(config.price_change_threshold, 0.01);
+        assert_eq!(config.throttle_ms, 100);
+        assert_eq!(config.stale_threshold_ms, 120_000);
+    }
+
+    #[test]
+    fn test_config_with_api_keys() {
+        let config = Config {
+            host: "localhost".to_string(),
+            port: 8080,
+            redis_url: None,
+            cmc_api_key: Some("cmc-key".to_string()),
+            coingecko_api_key: Some("gecko-key".to_string()),
+            cryptocompare_api_key: Some("cc-key".to_string()),
+            binance_api_key: Some("binance-key".to_string()),
+            kraken_api_key: Some("kraken-key".to_string()),
+            kucoin_api_key: None,
+            okx_api_key: None,
+            huobi_api_key: None,
+            finnhub_api_key: Some("finnhub-key".to_string()),
+            alpha_vantage_api_key: None,
+            alpaca_api_key: None,
+            alpaca_api_secret: None,
+            tiingo_api_key: None,
+            price_change_threshold: 0.05,
+            throttle_ms: 200,
+            stale_threshold_ms: 60_000,
+            server_id: "prod-server".to_string(),
+            server_region: "US East".to_string(),
+            peer_servers: vec![],
+            bootstrap_servers: vec![],
+            public_ws_url: "wss://api.example.com/ws".to_string(),
+            public_api_url: "https://api.example.com".to_string(),
+            mesh_auth: MeshAuthConfig {
+                shared_key: "production-secret".to_string(),
+                require_auth: true,
+            },
+        };
+
+        assert_eq!(config.cmc_api_key, Some("cmc-key".to_string()));
+        assert_eq!(config.finnhub_api_key, Some("finnhub-key".to_string()));
+        assert!(config.mesh_auth.require_auth);
+    }
+
+    #[test]
+    fn test_config_with_peer_servers() {
+        let config = Config {
+            host: "0.0.0.0".to_string(),
+            port: 3001,
+            redis_url: None,
+            cmc_api_key: None,
+            coingecko_api_key: None,
+            cryptocompare_api_key: None,
+            binance_api_key: None,
+            kraken_api_key: None,
+            kucoin_api_key: None,
+            okx_api_key: None,
+            huobi_api_key: None,
+            finnhub_api_key: None,
+            alpha_vantage_api_key: None,
+            alpaca_api_key: None,
+            alpaca_api_secret: None,
+            tiingo_api_key: None,
+            price_change_threshold: 0.01,
+            throttle_ms: 100,
+            stale_threshold_ms: 120_000,
+            server_id: "us-east".to_string(),
+            server_region: "US East".to_string(),
+            peer_servers: vec![
+                PeerServerConfig {
+                    id: "eu-west".to_string(),
+                    region: "EU West".to_string(),
+                    ws_url: "wss://eu.example.com/ws".to_string(),
+                    api_url: "https://eu.example.com".to_string(),
+                },
+                PeerServerConfig {
+                    id: "asia".to_string(),
+                    region: "Asia Pacific".to_string(),
+                    ws_url: "wss://asia.example.com/ws".to_string(),
+                    api_url: "https://asia.example.com".to_string(),
+                },
+            ],
+            bootstrap_servers: vec![],
+            public_ws_url: "wss://us.example.com/ws".to_string(),
+            public_api_url: "https://us.example.com".to_string(),
+            mesh_auth: MeshAuthConfig {
+                shared_key: String::new(),
+                require_auth: false,
+            },
+        };
+
+        assert_eq!(config.peer_servers.len(), 2);
+        assert_eq!(config.peer_servers[0].id, "eu-west");
+        assert_eq!(config.peer_servers[1].region, "Asia Pacific");
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config {
+            host: "test".to_string(),
+            port: 1234,
+            redis_url: Some("redis://test".to_string()),
+            cmc_api_key: None,
+            coingecko_api_key: None,
+            cryptocompare_api_key: None,
+            binance_api_key: None,
+            kraken_api_key: None,
+            kucoin_api_key: None,
+            okx_api_key: None,
+            huobi_api_key: None,
+            finnhub_api_key: None,
+            alpha_vantage_api_key: None,
+            alpaca_api_key: None,
+            alpaca_api_secret: None,
+            tiingo_api_key: None,
+            price_change_threshold: 0.01,
+            throttle_ms: 100,
+            stale_threshold_ms: 120_000,
+            server_id: "test".to_string(),
+            server_region: "test".to_string(),
+            peer_servers: vec![],
+            bootstrap_servers: vec![],
+            public_ws_url: "ws://test/ws".to_string(),
+            public_api_url: "http://test".to_string(),
+            mesh_auth: MeshAuthConfig {
+                shared_key: String::new(),
+                require_auth: false,
+            },
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.host, config.host);
+        assert_eq!(cloned.port, config.port);
+        assert_eq!(cloned.server_id, config.server_id);
     }
 }

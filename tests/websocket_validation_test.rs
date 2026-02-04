@@ -37,6 +37,7 @@ const COINGECKO_API_URL: &str = "https://api.coingecko.com/api/v3";
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[allow(dead_code)]
 enum ClientMessage {
     Subscribe { assets: Vec<String> },
     Unsubscribe { assets: Vec<String> },
@@ -44,17 +45,27 @@ enum ClientMessage {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
 enum ServerMessage {
-    PriceUpdate { data: PriceUpdateData },
-    Subscribed { assets: Vec<String> },
-    Unsubscribed { assets: Vec<String> },
-    Error { error: String },
+    PriceUpdate {
+        data: PriceUpdateData,
+    },
+    Subscribed {
+        assets: Vec<String>,
+    },
+    Unsubscribed {
+        assets: Vec<String>,
+    },
+    Error {
+        error: String,
+    },
     #[serde(other)]
     Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct PriceUpdateData {
     id: String,
     symbol: String,
@@ -73,6 +84,7 @@ struct PriceUpdateData {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CoinGeckoPrice {
     usd: f64,
     #[serde(default)]
@@ -83,12 +95,14 @@ struct CoinGeckoPrice {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct HauntApiResponse<T> {
     data: T,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct HauntListing {
     symbol: String,
     price: f64,
@@ -110,7 +124,9 @@ fn create_http_client() -> Client {
 
 fn calculate_deviation(our_value: f64, reference_value: f64) -> f64 {
     if reference_value == 0.0 {
-        if our_value == 0.0 { return 0.0; }
+        if our_value == 0.0 {
+            return 0.0;
+        }
         return 100.0;
     }
     ((our_value - reference_value).abs() / reference_value.abs()) * 100.0
@@ -135,7 +151,10 @@ async fn test_websocket_connection_and_subscription() {
         assets: vec!["btc".to_string()],
     };
     let msg_text = serde_json::to_string(&subscribe_msg).unwrap();
-    write.send(Message::Text(msg_text)).await.expect("Failed to send");
+    write
+        .send(Message::Text(msg_text))
+        .await
+        .expect("Failed to send");
 
     // Wait for subscribed confirmation
     let response = timeout(Duration::from_secs(5), read.next())
@@ -173,7 +192,10 @@ async fn test_websocket_price_update_structure() {
         assets: vec!["btc".to_string(), "eth".to_string()],
     };
     let msg_text = serde_json::to_string(&subscribe_msg).unwrap();
-    write.send(Message::Text(msg_text)).await.expect("Failed to send");
+    write
+        .send(Message::Text(msg_text))
+        .await
+        .expect("Failed to send");
 
     // Skip the subscribed confirmation
     let _ = timeout(Duration::from_secs(5), read.next()).await;
@@ -184,28 +206,44 @@ async fn test_websocket_price_update_structure() {
 
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(30) && received_updates.len() < 2 {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
-            if let Ok(msg) = serde_json::from_str::<ServerMessage>(&text) {
-                if let ServerMessage::PriceUpdate { data } = msg {
-                    println!("Received price update for {}: ${:.2}", data.symbol, data.price);
-                    println!("  - change_24h: {:?}", data.change_24h);
-                    println!("  - volume_24h: {:?}", data.volume_24h);
-                    println!("  - trade_direction: {:?}", data.trade_direction);
-                    println!("  - sources: {:?}", data.sources);
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
+            if let Ok(ServerMessage::PriceUpdate { data }) =
+                serde_json::from_str::<ServerMessage>(&text)
+            {
+                println!(
+                    "Received price update for {}: ${:.2}",
+                    data.symbol, data.price
+                );
+                println!("  - change_24h: {:?}", data.change_24h);
+                println!("  - volume_24h: {:?}", data.volume_24h);
+                println!("  - trade_direction: {:?}", data.trade_direction);
+                println!("  - sources: {:?}", data.sources);
 
-                    received_updates.insert(data.symbol.clone(), data);
-                }
+                received_updates.insert(data.symbol.clone(), data);
             }
         }
     }
 
-    assert!(!received_updates.is_empty(), "Should have received at least one price update");
+    assert!(
+        !received_updates.is_empty(),
+        "Should have received at least one price update"
+    );
 
     for (symbol, update) in &received_updates {
         // Validate required fields
         assert!(update.price > 0.0, "{} price should be positive", symbol);
-        assert!(!update.sources.is_empty(), "{} should have at least one source", symbol);
-        assert!(update.timestamp > 0, "{} should have valid timestamp", symbol);
+        assert!(
+            !update.sources.is_empty(),
+            "{} should have at least one source",
+            symbol
+        );
+        assert!(
+            update.timestamp > 0,
+            "{} should have valid timestamp",
+            symbol
+        );
 
         // Check for optional fields that should ideally be present
         if update.volume_24h.is_none() {
@@ -235,7 +273,8 @@ async fn test_websocket_price_matches_api() {
         .await
         .expect("Failed to parse API response");
 
-    let api_prices: HashMap<String, &HauntListing> = api_resp.data
+    let api_prices: HashMap<String, &HauntListing> = api_resp
+        .data
         .iter()
         .map(|l| (l.symbol.to_lowercase(), l))
         .collect();
@@ -248,9 +287,14 @@ async fn test_websocket_price_matches_api() {
     let (mut write, mut read) = ws_stream.split();
 
     let symbols: Vec<String> = api_prices.keys().cloned().collect();
-    let subscribe_msg = ClientMessage::Subscribe { assets: symbols.clone() };
+    let subscribe_msg = ClientMessage::Subscribe {
+        assets: symbols.clone(),
+    };
     let msg_text = serde_json::to_string(&subscribe_msg).unwrap();
-    write.send(Message::Text(msg_text)).await.expect("Failed to send");
+    write
+        .send(Message::Text(msg_text))
+        .await
+        .expect("Failed to send");
 
     // Skip subscribed confirmation
     let _ = timeout(Duration::from_secs(5), read.next()).await;
@@ -260,7 +304,9 @@ async fn test_websocket_price_matches_api() {
     let start = std::time::Instant::now();
 
     while start.elapsed() < Duration::from_secs(30) && ws_prices.len() < symbols.len() {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
             if let Ok(ServerMessage::PriceUpdate { data }) = serde_json::from_str(&text) {
                 ws_prices.insert(data.symbol.clone(), data);
             }
@@ -268,31 +314,50 @@ async fn test_websocket_price_matches_api() {
     }
 
     println!("\n=== API vs WebSocket Price Comparison ===\n");
-    println!("{:<8} {:>14} {:>14} {:>10}", "Symbol", "API Price", "WS Price", "Deviation");
+    println!(
+        "{:<8} {:>14} {:>14} {:>10}",
+        "Symbol", "API Price", "WS Price", "Deviation"
+    );
     println!("{}", "-".repeat(50));
 
     let mut all_passed = true;
     for (symbol, api_listing) in &api_prices {
         if let Some(ws_data) = ws_prices.get(symbol) {
             let deviation = calculate_deviation(ws_data.price, api_listing.price);
-            let status = if deviation <= PRICE_DEVIATION_THRESHOLD { "✓" } else { "✗" };
+            let status = if deviation <= PRICE_DEVIATION_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
 
             println!(
                 "{} {:<6} {:>14.4} {:>14.4} {:>9.2}%",
-                status, symbol.to_uppercase(), api_listing.price, ws_data.price, deviation
+                status,
+                symbol.to_uppercase(),
+                api_listing.price,
+                ws_data.price,
+                deviation
             );
 
             if deviation > PRICE_DEVIATION_THRESHOLD {
                 all_passed = false;
             }
         } else {
-            println!("✗ {:<6} {:>14.4} {:>14} {:>10}",
-                symbol.to_uppercase(), api_listing.price, "N/A", "N/A");
+            println!(
+                "✗ {:<6} {:>14.4} {:>14} {:>10}",
+                symbol.to_uppercase(),
+                api_listing.price,
+                "N/A",
+                "N/A"
+            );
             all_passed = false;
         }
     }
 
-    assert!(all_passed, "Some WebSocket prices deviate too much from API prices");
+    assert!(
+        all_passed,
+        "Some WebSocket prices deviate too much from API prices"
+    );
 }
 
 /// Compare WebSocket volume with API volume
@@ -311,7 +376,8 @@ async fn test_websocket_volume_matches_api() {
         .await
         .expect("Failed to parse API response");
 
-    let api_volumes: HashMap<String, f64> = api_resp.data
+    let api_volumes: HashMap<String, f64> = api_resp
+        .data
         .iter()
         .map(|l| (l.symbol.to_lowercase(), l.volume_24h))
         .collect();
@@ -324,8 +390,15 @@ async fn test_websocket_volume_matches_api() {
     let (mut write, mut read) = ws_stream.split();
 
     let symbols: Vec<String> = api_volumes.keys().cloned().collect();
-    let subscribe_msg = ClientMessage::Subscribe { assets: symbols.clone() };
-    write.send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap())).await.unwrap();
+    let subscribe_msg = ClientMessage::Subscribe {
+        assets: symbols.clone(),
+    };
+    write
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
+        .await
+        .unwrap();
 
     // Skip subscribed
     let _ = timeout(Duration::from_secs(5), read.next()).await;
@@ -335,7 +408,9 @@ async fn test_websocket_volume_matches_api() {
     let start = std::time::Instant::now();
 
     while start.elapsed() < Duration::from_secs(30) && ws_volumes.len() < symbols.len() {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
             if let Ok(ServerMessage::PriceUpdate { data }) = serde_json::from_str(&text) {
                 ws_volumes.insert(data.symbol.clone(), data.volume_24h);
             }
@@ -343,7 +418,10 @@ async fn test_websocket_volume_matches_api() {
     }
 
     println!("\n=== API vs WebSocket Volume Comparison ===\n");
-    println!("{:<8} {:>18} {:>18} {:>10}", "Symbol", "API Volume", "WS Volume", "Deviation");
+    println!(
+        "{:<8} {:>18} {:>18} {:>10}",
+        "Symbol", "API Volume", "WS Volume", "Deviation"
+    );
     println!("{}", "-".repeat(60));
 
     let mut issues_found = 0;
@@ -352,11 +430,19 @@ async fn test_websocket_volume_matches_api() {
             match ws_vol_opt {
                 Some(ws_vol) => {
                     let deviation = calculate_deviation(*ws_vol, *api_volume);
-                    let status = if deviation <= VOLUME_DEVIATION_THRESHOLD { "✓" } else { "✗" };
+                    let status = if deviation <= VOLUME_DEVIATION_THRESHOLD {
+                        "✓"
+                    } else {
+                        "✗"
+                    };
 
                     println!(
                         "{} {:<6} {:>18.0} {:>18.0} {:>9.2}%",
-                        status, symbol.to_uppercase(), api_volume, ws_vol, deviation
+                        status,
+                        symbol.to_uppercase(),
+                        api_volume,
+                        ws_vol,
+                        deviation
                     );
 
                     if deviation > VOLUME_DEVIATION_THRESHOLD {
@@ -365,15 +451,25 @@ async fn test_websocket_volume_matches_api() {
                     }
                 }
                 None => {
-                    println!("⚠ {:<6} {:>18.0} {:>18} {:>10}",
-                        symbol.to_uppercase(), api_volume, "NULL", "N/A");
+                    println!(
+                        "⚠ {:<6} {:>18.0} {:>18} {:>10}",
+                        symbol.to_uppercase(),
+                        api_volume,
+                        "NULL",
+                        "N/A"
+                    );
                     println!("  ⚠ WebSocket update missing volume_24h field");
                     issues_found += 1;
                 }
             }
         } else {
-            println!("✗ {:<6} {:>18.0} {:>18} {:>10}",
-                symbol.to_uppercase(), api_volume, "N/A", "N/A");
+            println!(
+                "✗ {:<6} {:>18.0} {:>18} {:>10}",
+                symbol.to_uppercase(),
+                api_volume,
+                "N/A",
+                "N/A"
+            );
             issues_found += 1;
         }
     }
@@ -384,8 +480,12 @@ async fn test_websocket_volume_matches_api() {
 
     // This test documents the issue rather than failing hard
     // because volume in WebSocket updates may legitimately differ
-    assert!(issues_found <= symbols.len() / 2,
-        "Too many volume consistency issues: {}/{}", issues_found, symbols.len());
+    assert!(
+        issues_found <= symbols.len() / 2,
+        "Too many volume consistency issues: {}/{}",
+        issues_found,
+        symbols.len()
+    );
 }
 
 /// Compare WebSocket prices against CoinGecko reference
@@ -394,8 +494,8 @@ async fn test_websocket_volume_matches_api() {
 async fn test_websocket_price_vs_coingecko() {
     let http_client = create_http_client();
 
-    let symbols = vec!["btc", "eth", "sol"];
-    let cg_ids = vec!["bitcoin", "ethereum", "solana"];
+    let symbols = ["btc", "eth", "sol"];
+    let cg_ids = ["bitcoin", "ethereum", "solana"];
 
     // Fetch CoinGecko prices
     let ids_param = cg_ids.join(",");
@@ -421,9 +521,14 @@ async fn test_websocket_price_vs_coingecko() {
     let (mut write, mut read) = ws_stream.split();
 
     let subscribe_msg = ClientMessage::Subscribe {
-        assets: symbols.iter().map(|s| s.to_string()).collect()
+        assets: symbols.iter().map(|s| s.to_string()).collect(),
     };
-    write.send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap())).await.unwrap();
+    write
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
+        .await
+        .unwrap();
 
     let _ = timeout(Duration::from_secs(5), read.next()).await;
 
@@ -432,7 +537,9 @@ async fn test_websocket_price_vs_coingecko() {
     let start = std::time::Instant::now();
 
     while start.elapsed() < Duration::from_secs(30) && ws_prices.len() < symbols.len() {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
             if let Ok(ServerMessage::PriceUpdate { data }) = serde_json::from_str(&text) {
                 ws_prices.insert(data.symbol.clone(), data);
             }
@@ -440,7 +547,10 @@ async fn test_websocket_price_vs_coingecko() {
     }
 
     println!("\n=== WebSocket vs CoinGecko Comparison ===\n");
-    println!("{:<8} {:>14} {:>14} {:>10}", "Symbol", "WebSocket", "CoinGecko", "Deviation");
+    println!(
+        "{:<8} {:>14} {:>14} {:>10}",
+        "Symbol", "WebSocket", "CoinGecko", "Deviation"
+    );
     println!("{}", "-".repeat(50));
 
     let mut all_passed = true;
@@ -449,11 +559,19 @@ async fn test_websocket_price_vs_coingecko() {
 
         if let (Some(ws_data), Some(cg_price)) = (ws_prices.get(*symbol), cg_resp.get(cg_id)) {
             let deviation = calculate_deviation(ws_data.price, cg_price.usd);
-            let status = if deviation <= PRICE_DEVIATION_THRESHOLD { "✓" } else { "✗" };
+            let status = if deviation <= PRICE_DEVIATION_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
 
             println!(
                 "{} {:<6} {:>14.4} {:>14.4} {:>9.2}%",
-                status, symbol.to_uppercase(), ws_data.price, cg_price.usd, deviation
+                status,
+                symbol.to_uppercase(),
+                ws_data.price,
+                cg_price.usd,
+                deviation
             );
 
             if deviation > PRICE_DEVIATION_THRESHOLD {
@@ -462,7 +580,10 @@ async fn test_websocket_price_vs_coingecko() {
         }
     }
 
-    assert!(all_passed, "Some WebSocket prices deviate too much from CoinGecko");
+    assert!(
+        all_passed,
+        "Some WebSocket prices deviate too much from CoinGecko"
+    );
 }
 
 /// Test that WebSocket change_24h field is populated correctly
@@ -478,7 +599,12 @@ async fn test_websocket_change_24h_populated() {
     let subscribe_msg = ClientMessage::Subscribe {
         assets: vec!["btc".to_string(), "eth".to_string()],
     };
-    write.send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap())).await.unwrap();
+    write
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
+        .await
+        .unwrap();
 
     let _ = timeout(Duration::from_secs(5), read.next()).await;
 
@@ -487,11 +613,13 @@ async fn test_websocket_change_24h_populated() {
 
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(20) {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
             if let Ok(ServerMessage::PriceUpdate { data }) = serde_json::from_str(&text) {
-                if data.change_24h.is_some() {
+                if let Some(change) = data.change_24h {
                     updates_with_change += 1;
-                    println!("✓ {} change_24h: {:.2}%", data.symbol, data.change_24h.unwrap());
+                    println!("✓ {} change_24h: {:.2}%", data.symbol, change);
                 } else {
                     updates_without_change += 1;
                     println!("⚠ {} change_24h: NULL", data.symbol);
@@ -503,8 +631,10 @@ async fn test_websocket_change_24h_populated() {
     let total = updates_with_change + updates_without_change;
     if total > 0 {
         let percentage = (updates_with_change as f64 / total as f64) * 100.0;
-        println!("\nchange_24h populated: {}/{} ({:.1}%)",
-            updates_with_change, total, percentage);
+        println!(
+            "\nchange_24h populated: {}/{} ({:.1}%)",
+            updates_with_change, total, percentage
+        );
 
         if percentage < 50.0 {
             println!("⚠ Warning: Most WebSocket updates are missing change_24h field");
@@ -514,8 +644,10 @@ async fn test_websocket_change_24h_populated() {
     // Document the issue - this is expected based on current implementation
     // but flagging it for visibility
     if updates_without_change > 0 {
-        println!("\n⚠ Note: {} updates missing change_24h - this may need fixing in price_cache.rs",
-            updates_without_change);
+        println!(
+            "\n⚠ Note: {} updates missing change_24h - this may need fixing in price_cache.rs",
+            updates_without_change
+        );
     }
 }
 
@@ -534,7 +666,12 @@ async fn test_websocket_data_consistency_over_time() {
     let subscribe_msg = ClientMessage::Subscribe {
         assets: vec!["btc".to_string()],
     };
-    write.send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap())).await.unwrap();
+    write
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
+        .await
+        .unwrap();
 
     let _ = timeout(Duration::from_secs(5), read.next()).await;
 
@@ -551,7 +688,10 @@ async fn test_websocket_data_consistency_over_time() {
     let initial_price = initial_api.data[0].price;
     let initial_volume = initial_api.data[0].volume_24h;
 
-    println!("Initial API BTC: price=${:.2}, volume=${:.0}", initial_price, initial_volume);
+    println!(
+        "Initial API BTC: price=${:.2}, volume=${:.0}",
+        initial_price, initial_volume
+    );
 
     // Collect WebSocket updates for 30 seconds
     let mut price_samples: Vec<f64> = Vec::new();
@@ -559,7 +699,9 @@ async fn test_websocket_data_consistency_over_time() {
 
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(30) {
-        if let Ok(Some(Ok(Message::Text(text)))) = timeout(Duration::from_secs(10), read.next()).await {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            timeout(Duration::from_secs(10), read.next()).await
+        {
             if let Ok(ServerMessage::PriceUpdate { data }) = serde_json::from_str(&text) {
                 if data.symbol == "btc" {
                     price_samples.push(data.price);
@@ -578,9 +720,7 @@ async fn test_websocket_data_consistency_over_time() {
     let price_drift = calculate_deviation(avg_price, initial_price);
 
     // Analyze volume consistency
-    let valid_volumes: Vec<f64> = volume_samples.iter()
-        .filter_map(|v| *v)
-        .collect();
+    let valid_volumes: Vec<f64> = volume_samples.iter().filter_map(|v| *v).collect();
 
     println!("\n=== Data Consistency Analysis (30 seconds) ===");
     println!("Samples collected: {}", price_samples.len());
@@ -602,7 +742,10 @@ async fn test_websocket_data_consistency_over_time() {
         }
     }
 
-    assert!(price_drift <= 10.0, "Price drifted too much from initial API value");
+    assert!(
+        price_drift <= 10.0,
+        "Price drifted too much from initial API value"
+    );
 }
 
 // ============================================================================

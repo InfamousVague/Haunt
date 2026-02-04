@@ -127,7 +127,10 @@ impl AssetService {
         let offset = (page - 1) * limit;
         match self.coincap_client.get_listings(limit, offset).await {
             Ok(listings) => {
-                info!("CoinCap returned {} crypto listings (fallback)", listings.len());
+                info!(
+                    "CoinCap returned {} crypto listings (fallback)",
+                    listings.len()
+                );
                 // CoinCap doesn't give us total count, estimate based on crypto market
                 let total = 2000; // Reasonable estimate
                 return Ok((listings, total));
@@ -156,20 +159,20 @@ impl AssetService {
                 let symbol_lower = symbol.to_lowercase();
 
                 // Get current price from cache or chart store
-                let price = self.price_cache
-                    .get_price(&symbol_lower)
-                    .or_else(|| {
-                        // Try chart store for last known price
-                        self.chart_store.get_current_price(&symbol_lower)
-                    })?;
+                let price = self.price_cache.get_price(&symbol_lower).or_else(|| {
+                    // Try chart store for last known price
+                    self.chart_store.get_current_price(&symbol_lower)
+                })?;
 
                 // Get 24h change from chart store
-                let change_24h = self.chart_store
+                let change_24h = self
+                    .chart_store
                     .get_price_change(&symbol_lower, 24 * 60 * 60)
                     .unwrap_or(0.0);
 
                 // Get 7d change
-                let change_7d = self.chart_store
+                let change_7d = self
+                    .chart_store
                     .get_price_change(&symbol_lower, 7 * 24 * 60 * 60)
                     .unwrap_or(0.0);
 
@@ -177,7 +180,8 @@ impl AssetService {
                 let sparkline = self.chart_store.get_sparkline(&symbol_lower, 168);
 
                 // Get volume from chart store
-                let volume_24h = self.chart_store
+                let volume_24h = self
+                    .chart_store
                     .get_volume_24h(&symbol_lower)
                     .unwrap_or(0.0);
 
@@ -297,11 +301,13 @@ impl AssetService {
                 let symbol_lower = symbol.to_lowercase();
 
                 // Get price from cache or chart store
-                let price = self.price_cache
+                let price = self
+                    .price_cache
                     .get_price(&symbol_lower)
                     .or_else(|| self.chart_store.get_current_price(&symbol_lower))?;
 
-                let change_24h = self.chart_store
+                let change_24h = self
+                    .chart_store
                     .get_price_change(&symbol_lower, 24 * 60 * 60)
                     .unwrap_or(0.0);
 
@@ -394,10 +400,7 @@ impl AssetService {
 }
 
 /// Convert Finnhub stock data to AssetListing.
-fn stock_to_listing(
-    stock: crate::sources::finnhub::StockData,
-    rank: i32,
-) -> AssetListing {
+fn stock_to_listing(stock: crate::sources::finnhub::StockData, rank: i32) -> AssetListing {
     // Generate a stable ID from symbol hash
     let id = stock
         .symbol

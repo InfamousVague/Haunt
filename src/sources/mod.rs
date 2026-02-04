@@ -1,5 +1,5 @@
-pub mod alphavantage;
 pub mod alpaca_ws;
+pub mod alphavantage;
 pub mod binance;
 pub mod coinbase_ws;
 pub mod coincap;
@@ -15,8 +15,8 @@ pub mod okx;
 pub mod tiingo_ws;
 pub mod yahoo;
 
-pub use alphavantage::AlphaVantageClient;
 pub use alpaca_ws::AlpacaWs;
+pub use alphavantage::AlphaVantageClient;
 pub use binance::BinanceClient;
 pub use coinbase_ws::CoinbaseWs;
 pub use coincap::CoinCapClient;

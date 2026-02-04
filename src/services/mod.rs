@@ -1,16 +1,22 @@
 pub mod asset_service;
 pub mod auth;
+pub mod backtester;
 pub mod cache;
 pub mod chart_store;
 pub mod file_cache;
 pub mod historical;
+pub mod liquidation;
+pub mod liquidity_sim;
 pub mod multi_source;
+pub mod options;
 pub mod orderbook;
 pub mod peer_mesh;
 pub mod price_cache;
 pub mod redis_store;
 pub mod signals;
 pub mod sqlite_store;
+pub mod strategy_engine;
+pub mod trading;
 
 pub use asset_service::AssetService;
 pub use auth::{AuthError, AuthService};
@@ -22,8 +28,14 @@ pub use multi_source::MultiSourceCoordinator;
 pub use orderbook::OrderBookService;
 pub use peer_mesh::PeerMesh;
 // Re-export peer types from types module
-pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerInfo, PeerMessage, PeerStatus};
-pub use price_cache::{ExchangeStats, PriceCache, SymbolSourceStat};
+pub use crate::types::{PeerConfig, PeerConnectionStatus, PeerStatus};
+pub use price_cache::PriceCache;
+#[allow(unused_imports)]
 pub use redis_store::RedisStore;
+pub use liquidation::{LiquidationEngine, LiquidationError};
 pub use signals::{AccuracyStore, PredictionStore, SignalStore};
-pub use sqlite_store::{SqliteStore, AccuracyStats};
+pub use sqlite_store::SqliteStore;
+pub use strategy_engine::{IndicatorSnapshot, StrategyEngine, StrategyError};
+pub use backtester::{BacktestRunner, BacktestError};
+pub use liquidity_sim::{LiquiditySimulator, LiquiditySimConfig, MarketOrderSimulation, LimitOrderSimulation};
+pub use trading::{TradingError, TradingService};

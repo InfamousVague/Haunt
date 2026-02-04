@@ -133,3 +133,181 @@ impl Default for AggregationConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TradeDirection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_trade_direction_serialization() {
+        let up = TradeDirection::Up;
+        let down = TradeDirection::Down;
+
+        let up_json = serde_json::to_string(&up).unwrap();
+        let down_json = serde_json::to_string(&down).unwrap();
+
+        assert_eq!(up_json, "\"up\"");
+        assert_eq!(down_json, "\"down\"");
+
+        let parsed_up: TradeDirection = serde_json::from_str(&up_json).unwrap();
+        let parsed_down: TradeDirection = serde_json::from_str(&down_json).unwrap();
+
+        assert_eq!(parsed_up, TradeDirection::Up);
+        assert_eq!(parsed_down, TradeDirection::Down);
+    }
+
+    // =========================================================================
+    // PriceSource Tests
+    // =========================================================================
+
+    #[test]
+    fn test_price_source_weight_positive() {
+        let sources = [
+            PriceSource::Coinbase,
+            PriceSource::Binance,
+            PriceSource::Kraken,
+            PriceSource::CoinMarketCap,
+            PriceSource::CoinGecko,
+            PriceSource::CryptoCompare,
+            PriceSource::Okx,
+            PriceSource::KuCoin,
+            PriceSource::Huobi,
+            PriceSource::Hyperliquid,
+            PriceSource::Finnhub,
+            PriceSource::Alpaca,
+            PriceSource::Tiingo,
+            PriceSource::AlphaVantage,
+        ];
+
+        for source in sources {
+            assert!(
+                source.weight() > 0,
+                "{:?} should have positive weight",
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn test_price_source_weight_range() {
+        let sources = [
+            PriceSource::Coinbase,
+            PriceSource::Binance,
+            PriceSource::Kraken,
+            PriceSource::CoinMarketCap,
+            PriceSource::CoinGecko,
+        ];
+
+        for source in sources {
+            let weight = source.weight();
+            assert!(
+                (1..=10).contains(&weight),
+                "{:?} weight {} out of range",
+                source,
+                weight
+            );
+        }
+    }
+
+    #[test]
+    fn test_price_source_volume_authoritative() {
+        // Only aggregators should be authoritative for volume
+        assert!(PriceSource::CoinMarketCap.is_volume_authoritative());
+        assert!(PriceSource::CoinGecko.is_volume_authoritative());
+
+        // Exchanges should not be
+        assert!(!PriceSource::Coinbase.is_volume_authoritative());
+        assert!(!PriceSource::Binance.is_volume_authoritative());
+        assert!(!PriceSource::Kraken.is_volume_authoritative());
+    }
+
+    #[test]
+    fn test_price_source_display() {
+        assert_eq!(format!("{}", PriceSource::Coinbase), "coinbase");
+        assert_eq!(format!("{}", PriceSource::Binance), "binance");
+        assert_eq!(format!("{}", PriceSource::CoinMarketCap), "coinmarketcap");
+        assert_eq!(format!("{}", PriceSource::CoinGecko), "coingecko");
+        assert_eq!(format!("{}", PriceSource::Hyperliquid), "hyperliquid");
+    }
+
+    #[test]
+    fn test_price_source_serialization() {
+        let source = PriceSource::Coinbase;
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(json, "\"coinbase\"");
+
+        let parsed: PriceSource = serde_json::from_str("\"binance\"").unwrap();
+        assert_eq!(parsed, PriceSource::Binance);
+    }
+
+    // =========================================================================
+    // SourcePrice Tests
+    // =========================================================================
+
+    #[test]
+    fn test_source_price_creation() {
+        let price = SourcePrice {
+            source: PriceSource::Coinbase,
+            price: 50000.0,
+            timestamp: 1704067200000,
+            volume_24h: Some(1000000000.0),
+        };
+
+        assert_eq!(price.source, PriceSource::Coinbase);
+        assert_eq!(price.price, 50000.0);
+        assert_eq!(price.volume_24h, Some(1000000000.0));
+    }
+
+    #[test]
+    fn test_source_price_optional_volume() {
+        let price = SourcePrice {
+            source: PriceSource::Binance,
+            price: 50000.0,
+            timestamp: 1704067200000,
+            volume_24h: None,
+        };
+
+        assert!(price.volume_24h.is_none());
+    }
+
+    // =========================================================================
+    // AggregatedPrice Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregated_price_creation() {
+        let price = AggregatedPrice {
+            id: "btc".to_string(),
+            symbol: "BTC".to_string(),
+            price: 50000.0,
+            previous_price: Some(49000.0),
+            change_24h: Some(2.04),
+            volume_24h: Some(1000000000.0),
+            trade_direction: Some(TradeDirection::Up),
+            source: PriceSource::Coinbase,
+            sources: vec![PriceSource::Coinbase, PriceSource::Binance],
+            timestamp: 1704067200000,
+        };
+
+        assert_eq!(price.symbol, "BTC");
+        assert_eq!(price.price, 50000.0);
+        assert_eq!(price.sources.len(), 2);
+    }
+
+    // =========================================================================
+    // AggregationConfig Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregation_config_default() {
+        let config = AggregationConfig::default();
+
+        assert_eq!(config.change_threshold, 0.01);
+        assert_eq!(config.throttle_ms, 100);
+        assert_eq!(config.stale_threshold_ms, 120_000);
+    }
+}

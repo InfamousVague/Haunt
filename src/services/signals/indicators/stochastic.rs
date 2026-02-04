@@ -102,3 +102,83 @@ impl Signal for Stochastic {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_stochastic_id_and_name() {
+        let stoch = Stochastic::default();
+        assert_eq!(stoch.id(), "stochastic");
+        assert_eq!(stoch.name(), "Stochastic");
+    }
+
+    #[test]
+    fn test_stochastic_category() {
+        let stoch = Stochastic::default();
+        assert_eq!(stoch.category(), SignalCategory::Momentum);
+    }
+
+    #[test]
+    fn test_stochastic_min_periods() {
+        let stoch = Stochastic::default();
+        assert_eq!(stoch.min_periods(), 17); // k_period + d_period
+    }
+
+    #[test]
+    fn test_stochastic_insufficient_data() {
+        let stoch = Stochastic::default();
+        let candles = create_uptrend_candles(10);
+        let result = stoch.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stochastic_uptrend_high_k() {
+        let stoch = Stochastic::default();
+        let candles = create_uptrend_candles(30);
+        let result = stoch.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        // In uptrend, %K should be high
+        assert!(
+            output.value > 50.0,
+            "Stochastic %K in uptrend should be > 50, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_stochastic_value_range() {
+        let stoch = Stochastic::default();
+        let candles = create_uptrend_candles(30);
+        let result = stoch.calculate(&candles).unwrap();
+        // Stochastic should be 0-100
+        assert!(result.value >= 0.0 && result.value <= 100.0);
+    }
+
+    #[test]
+    fn test_stochastic_score_range() {
+        let stoch = Stochastic::default();
+        let candles = create_uptrend_candles(30);
+        let result = stoch.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
+    }
+}

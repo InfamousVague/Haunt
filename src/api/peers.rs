@@ -1,10 +1,6 @@
 //! Peer mesh API endpoints for server connectivity and ping status.
 
-use axum::{
-    extract::State,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, routing::get, Json, Router};
 use serde::Serialize;
 
 use crate::services::{PeerConnectionStatus, PeerStatus};
@@ -81,9 +77,15 @@ async fn get_peers(State(state): State<AppState>) -> Json<PeerMeshResponse> {
         .count();
 
     let (server_id, server_region) = if let Some(ref mesh) = state.peer_mesh {
-        (mesh.server_id().to_string(), mesh.server_region().to_string())
+        (
+            mesh.server_id().to_string(),
+            mesh.server_region().to_string(),
+        )
     } else {
-        (state.config.server_id.clone(), state.config.server_region.clone())
+        (
+            state.config.server_id.clone(),
+            state.config.server_region.clone(),
+        )
     };
 
     Json(PeerMeshResponse {
@@ -218,4 +220,240 @@ pub fn router() -> Router<AppState> {
 /// Create the mesh router (for /api/mesh endpoints).
 pub fn mesh_router() -> Router<AppState> {
     Router::new().route("/servers", get(get_mesh_servers))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // MeshServerInfo Tests
+    // =========================================================================
+
+    #[test]
+    fn test_mesh_server_info_serialization() {
+        let info = MeshServerInfo {
+            id: "us-east".to_string(),
+            region: "US East".to_string(),
+            api_url: "https://us.example.com".to_string(),
+            ws_url: "wss://us.example.com/ws".to_string(),
+            status: "online".to_string(),
+            latency_ms: Some(15.5),
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"id\":\"us-east\""));
+        assert!(json.contains("\"region\":\"US East\""));
+        assert!(json.contains("\"apiUrl\":\"https://us.example.com\""));
+        assert!(json.contains("\"wsUrl\":\"wss://us.example.com/ws\""));
+        assert!(json.contains("\"status\":\"online\""));
+        assert!(json.contains("\"latencyMs\":15.5"));
+    }
+
+    #[test]
+    fn test_mesh_server_info_without_latency() {
+        let info = MeshServerInfo {
+            id: "eu-west".to_string(),
+            region: "EU West".to_string(),
+            api_url: "https://eu.example.com".to_string(),
+            ws_url: "wss://eu.example.com/ws".to_string(),
+            status: "offline".to_string(),
+            latency_ms: None,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        // latencyMs should be skipped when None
+        assert!(!json.contains("latencyMs"));
+        assert!(json.contains("\"status\":\"offline\""));
+    }
+
+    #[test]
+    fn test_mesh_server_info_debug() {
+        let info = MeshServerInfo {
+            id: "test".to_string(),
+            region: "Test".to_string(),
+            api_url: "http://test".to_string(),
+            ws_url: "ws://test".to_string(),
+            status: "online".to_string(),
+            latency_ms: None,
+        };
+
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("MeshServerInfo"));
+        assert!(debug_str.contains("test"));
+    }
+
+    // =========================================================================
+    // PeerMeshResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_peer_mesh_response_serialization() {
+        let response = PeerMeshResponse {
+            server_id: "us-east".to_string(),
+            server_region: "US East".to_string(),
+            peers: vec![],
+            connected_count: 0,
+            total_peers: 0,
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"serverId\":\"us-east\""));
+        assert!(json.contains("\"serverRegion\":\"US East\""));
+        assert!(json.contains("\"connectedCount\":0"));
+        assert!(json.contains("\"totalPeers\":0"));
+        assert!(json.contains("\"timestamp\":1700000000000"));
+    }
+
+    #[test]
+    fn test_peer_mesh_response_with_peers() {
+        let response = PeerMeshResponse {
+            server_id: "us-east".to_string(),
+            server_region: "US East".to_string(),
+            peers: vec![
+                PeerStatus {
+                    id: "eu-west".to_string(),
+                    region: "EU West".to_string(),
+                    status: PeerConnectionStatus::Connected,
+                    latency_ms: Some(50.0),
+                    avg_latency_ms: Some(52.5),
+                    min_latency_ms: Some(45.0),
+                    max_latency_ms: Some(65.0),
+                    ping_count: 100,
+                    failed_pings: 2,
+                    uptime_percent: 98.0,
+                    last_ping_at: Some(1700000000000),
+                    last_attempt_at: Some(1700000000000),
+                },
+                PeerStatus {
+                    id: "asia".to_string(),
+                    region: "Asia Pacific".to_string(),
+                    status: PeerConnectionStatus::Disconnected,
+                    latency_ms: None,
+                    avg_latency_ms: None,
+                    min_latency_ms: None,
+                    max_latency_ms: None,
+                    ping_count: 50,
+                    failed_pings: 10,
+                    uptime_percent: 83.3,
+                    last_ping_at: None,
+                    last_attempt_at: Some(1700000000000),
+                },
+            ],
+            connected_count: 1,
+            total_peers: 2,
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"connectedCount\":1"));
+        assert!(json.contains("\"totalPeers\":2"));
+    }
+
+    #[test]
+    fn test_peer_mesh_response_debug() {
+        let response = PeerMeshResponse {
+            server_id: "test".to_string(),
+            server_region: "Test".to_string(),
+            peers: vec![],
+            connected_count: 0,
+            total_peers: 0,
+            timestamp: 0,
+        };
+
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("PeerMeshResponse"));
+    }
+
+    // =========================================================================
+    // MeshDiscoveryResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_mesh_discovery_response_serialization() {
+        let response = MeshDiscoveryResponse {
+            self_id: "us-east".to_string(),
+            self_region: "US East".to_string(),
+            self_api_url: "https://us.example.com".to_string(),
+            self_ws_url: "wss://us.example.com/ws".to_string(),
+            servers: vec![],
+            mesh_key_hash: "abcd1234".to_string(),
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"selfId\":\"us-east\""));
+        assert!(json.contains("\"selfRegion\":\"US East\""));
+        assert!(json.contains("\"selfApiUrl\":\"https://us.example.com\""));
+        assert!(json.contains("\"selfWsUrl\":\"wss://us.example.com/ws\""));
+        assert!(json.contains("\"meshKeyHash\":\"abcd1234\""));
+        assert!(json.contains("\"timestamp\":1700000000000"));
+    }
+
+    #[test]
+    fn test_mesh_discovery_response_with_servers() {
+        let response = MeshDiscoveryResponse {
+            self_id: "us-east".to_string(),
+            self_region: "US East".to_string(),
+            self_api_url: "https://us.example.com".to_string(),
+            self_ws_url: "wss://us.example.com/ws".to_string(),
+            servers: vec![
+                MeshServerInfo {
+                    id: "us-east".to_string(),
+                    region: "US East".to_string(),
+                    api_url: "https://us.example.com".to_string(),
+                    ws_url: "wss://us.example.com/ws".to_string(),
+                    status: "online".to_string(),
+                    latency_ms: Some(0.0),
+                },
+                MeshServerInfo {
+                    id: "eu-west".to_string(),
+                    region: "EU West".to_string(),
+                    api_url: "https://eu.example.com".to_string(),
+                    ws_url: "wss://eu.example.com/ws".to_string(),
+                    status: "online".to_string(),
+                    latency_ms: Some(85.0),
+                },
+            ],
+            mesh_key_hash: "none".to_string(),
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"servers\":["));
+        assert!(json.contains("\"id\":\"eu-west\""));
+    }
+
+    #[test]
+    fn test_mesh_discovery_response_debug() {
+        let response = MeshDiscoveryResponse {
+            self_id: "test".to_string(),
+            self_region: "Test".to_string(),
+            self_api_url: "http://test".to_string(),
+            self_ws_url: "ws://test".to_string(),
+            servers: vec![],
+            mesh_key_hash: "none".to_string(),
+            timestamp: 0,
+        };
+
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("MeshDiscoveryResponse"));
+    }
+
+    #[test]
+    fn test_mesh_discovery_response_no_key() {
+        let response = MeshDiscoveryResponse {
+            self_id: "solo".to_string(),
+            self_region: "Standalone".to_string(),
+            self_api_url: "http://localhost:3001".to_string(),
+            self_ws_url: "ws://localhost:3001/ws".to_string(),
+            servers: vec![],
+            mesh_key_hash: "none".to_string(),
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"meshKeyHash\":\"none\""));
+    }
 }

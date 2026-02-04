@@ -34,7 +34,8 @@ impl BollingerBands {
         if values.is_empty() {
             return 0.0;
         }
-        let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        let variance: f64 =
+            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
         variance.sqrt()
     }
 }
@@ -113,5 +114,108 @@ impl Signal for BollingerBands {
             percent_b * 100.0, // Return %B as percentage
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    fn create_sideways_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let variation = (i % 10) as f64 - 5.0;
+                let base = 100.0 + variation;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 2.0,
+                    close: base + (if i % 2 == 0 { 1.0 } else { -1.0 }),
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_bollinger_id_and_name() {
+        let bb = BollingerBands::default();
+        assert_eq!(bb.id(), "bollinger");
+        assert_eq!(bb.name(), "Bollinger Bands");
+    }
+
+    #[test]
+    fn test_bollinger_category() {
+        let bb = BollingerBands::default();
+        assert_eq!(bb.category(), SignalCategory::Volatility);
+    }
+
+    #[test]
+    fn test_bollinger_min_periods() {
+        let bb = BollingerBands::default();
+        assert_eq!(bb.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_bollinger_insufficient_data() {
+        let bb = BollingerBands::default();
+        let candles = create_uptrend_candles(15);
+        let result = bb.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_bollinger_sideways_produces_result() {
+        let bb = BollingerBands::default();
+        let candles = create_sideways_candles(30);
+        let result = bb.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        // Bollinger %B should be a valid percentage value (0-100 typically)
+        assert!(
+            output.value.is_finite(),
+            "Bollinger %B should be finite, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_bollinger_uptrend_upper_band() {
+        let bb = BollingerBands::default();
+        let candles = create_uptrend_candles(30);
+        let result = bb.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        // In uptrend, price tends toward upper band (%B > 50)
+        assert!(
+            output.value > 50.0,
+            "Bollinger %B in uptrend should be > 50, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_bollinger_score_range() {
+        let bb = BollingerBands::default();
+        let candles = create_uptrend_candles(30);
+        let result = bb.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
     }
 }

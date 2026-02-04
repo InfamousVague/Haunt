@@ -1,7 +1,6 @@
 //! Unit tests for WebSocket module
 
-use haunt::types::{ClientMessage, ServerMessage, PriceUpdateData, PriceSource};
-use serde_json;
+use haunt::types::{ClientMessage, PriceSource, PriceUpdateData, ServerMessage};
 
 #[test]
 fn test_client_message_subscribe_parsing() {
@@ -55,9 +54,11 @@ fn test_server_message_price_update() {
         previous_price: Some(49500.0),
         change_24h: Some(2.5),
         volume_24h: Some(1000000000.0),
+        trade_direction: None,
         source: PriceSource::Coinbase,
         sources: vec![PriceSource::Coinbase, PriceSource::CoinGecko],
         timestamp: 1704067200000,
+        asset_type: None,
     };
 
     let msg = ServerMessage::PriceUpdate { data };
@@ -111,9 +112,11 @@ fn test_price_update_optional_fields() {
         previous_price: None,
         change_24h: None,
         volume_24h: None,
+        trade_direction: None,
         source: PriceSource::CoinGecko,
         sources: vec![PriceSource::CoinGecko],
         timestamp: 1704067200000,
+        asset_type: None,
     };
 
     let msg = ServerMessage::PriceUpdate { data };
@@ -172,9 +175,11 @@ fn test_price_source_in_update() {
             previous_price: None,
             change_24h: None,
             volume_24h: None,
+            trade_direction: None,
             source,
             sources: vec![source],
             timestamp: 1704067200000,
+            asset_type: None,
         };
 
         let msg = ServerMessage::PriceUpdate { data };

@@ -14,6 +14,7 @@ const REDIS_SOURCE_COUNTS_KEY: &str = "haunt:stats:source_counts";
 
 /// Cached volume with source tracking.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CachedVolume {
     value: f64,
     source: PriceSource,
@@ -110,17 +111,15 @@ impl PriceCache {
     /// Connect to Redis for persistence.
     pub async fn connect_redis(&self, redis_url: &str) {
         match redis::Client::open(redis_url) {
-            Ok(client) => {
-                match ConnectionManager::new(client).await {
-                    Ok(conn) => {
-                        info!("PriceCache connected to Redis at {}", redis_url);
-                        *self.redis.write().await = Some(conn);
-                    }
-                    Err(e) => {
-                        warn!("Failed to connect PriceCache to Redis: {}", e);
-                    }
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(conn) => {
+                    info!("PriceCache connected to Redis at {}", redis_url);
+                    *self.redis.write().await = Some(conn);
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to connect PriceCache to Redis: {}", e);
+                }
+            },
             Err(e) => {
                 warn!("Invalid Redis URL for PriceCache: {}", e);
             }
@@ -137,10 +136,8 @@ impl PriceCache {
 
         for symbol in symbols {
             let key = format!("{}{}", REDIS_PRICE_PREFIX, symbol.to_lowercase());
-            let result: Result<Option<String>, _> = redis::cmd("GET")
-                .arg(&key)
-                .query_async(&mut conn)
-                .await;
+            let result: Result<Option<String>, _> =
+                redis::cmd("GET").arg(&key).query_async(&mut conn).await;
 
             if let Ok(Some(data)) = result {
                 if let Ok(price_data) = serde_json::from_str::<SymbolPriceData>(&data) {
@@ -165,7 +162,13 @@ impl PriceCache {
     }
 
     /// Update a price from a source.
-    pub fn update_price(&self, symbol: &str, source: PriceSource, price: f64, volume_24h: Option<f64>) {
+    pub fn update_price(
+        &self,
+        symbol: &str,
+        source: PriceSource,
+        price: f64,
+        volume_24h: Option<f64>,
+    ) {
         let now = Instant::now();
         let timestamp = chrono::Utc::now().timestamp_millis();
         let symbol_lower = symbol.to_lowercase();
@@ -177,7 +180,7 @@ impl PriceCache {
         let last_source_price = symbol_price.last_source_prices.get(&source).copied();
         let source_price_changed = match last_source_price {
             Some(last) => (price - last).abs() > 0.0001, // Any meaningful change
-            None => true, // New source
+            None => true,                                // New source
         };
 
         // Update source price tracking
@@ -207,7 +210,9 @@ impl PriceCache {
 
         // Remove stale sources
         let stale_threshold = timestamp - self.config.stale_threshold_ms as i64;
-        symbol_price.sources.retain(|s| s.timestamp > stale_threshold);
+        symbol_price
+            .sources
+            .retain(|s| s.timestamp > stale_threshold);
 
         // If this source's price didn't change, skip broadcasting
         if !source_price_changed {
@@ -215,7 +220,9 @@ impl PriceCache {
         }
 
         // Check throttle (per-symbol, not per-source)
-        let elapsed_ms = now.duration_since(symbol_price.last_update_time).as_millis() as u64;
+        let elapsed_ms = now
+            .duration_since(symbol_price.last_update_time)
+            .as_millis() as u64;
         if elapsed_ms < self.config.throttle_ms {
             return;
         }
@@ -299,14 +306,19 @@ impl PriceCache {
         self.mark_source_online(source, timestamp as u64);
 
         // Broadcast update
-        debug!("Broadcasting {} update from {:?}: ${:.2}", symbol_lower, source, aggregated);
+        debug!(
+            "Broadcasting {} update from {:?}: ${:.2}",
+            symbol_lower, source, aggregated
+        );
         let _ = self.tx.send(update);
 
         // Save to Redis in background
         let symbol_for_redis = symbol_lower;
         let self_clone = self.clone_for_redis();
         tokio::spawn(async move {
-            self_clone.save_to_redis(&symbol_for_redis, aggregated, &source_prices).await;
+            self_clone
+                .save_to_redis(&symbol_for_redis, aggregated, &source_prices)
+                .await;
         });
     }
 
@@ -349,7 +361,9 @@ impl PriceCache {
         self.prices
             .iter()
             .filter_map(|entry| {
-                entry.last_aggregated.map(|price| (entry.key().clone(), price))
+                entry
+                    .last_aggregated
+                    .map(|price| (entry.key().clone(), price))
             })
             .collect()
     }
@@ -412,7 +426,8 @@ impl PriceCache {
     pub fn get_exchange_stats(&self) -> Vec<ExchangeStats> {
         let total_updates = self.total_updates.load(Ordering::Relaxed);
 
-        let mut result: Vec<ExchangeStats> = self.source_updates
+        let mut result: Vec<ExchangeStats> = self
+            .source_updates
             .iter()
             .map(|entry| {
                 let source = *entry.key();
@@ -550,7 +565,8 @@ impl PriceCache {
         let total_updates: u64 = source_stats.iter().map(|s| s.update_count).sum();
 
         // Get price data
-        let (current_price, price_spread_percent, seconds_since_update) = self.prices
+        let (current_price, price_spread_percent, seconds_since_update) = self
+            .prices
             .get(&symbol_lower)
             .map(|entry| {
                 let prices: Vec<f64> = entry.sources.iter().map(|s| s.price).collect();
@@ -568,7 +584,11 @@ impl PriceCache {
                 };
 
                 let latest_timestamp = entry.sources.iter().map(|s| s.timestamp).max().unwrap_or(0);
-                let secs_since = if latest_timestamp > 0 { Some(now - latest_timestamp) } else { None };
+                let secs_since = if latest_timestamp > 0 {
+                    Some(now - latest_timestamp)
+                } else {
+                    None
+                };
 
                 (entry.last_aggregated, spread, secs_since)
             })
@@ -621,7 +641,8 @@ impl PriceCache {
             None => 0,
         };
 
-        let score = (source_diversity + update_frequency + data_recency + price_consistency).min(100);
+        let score =
+            (source_diversity + update_frequency + data_recency + price_consistency).min(100);
 
         SymbolConfidence {
             score,
@@ -667,7 +688,9 @@ impl PriceCache {
         if let Ok(Some(data)) = source_result {
             if let Ok(counts) = serde_json::from_str::<HashMap<String, u64>>(&data) {
                 for (source_str, count) in counts {
-                    if let Ok(source) = serde_json::from_str::<PriceSource>(&format!("\"{}\"", source_str)) {
+                    if let Ok(source) =
+                        serde_json::from_str::<PriceSource>(&format!("\"{}\"", source_str))
+                    {
                         self.source_updates
                             .entry(source)
                             .or_insert_with(|| AtomicU64::new(0))
@@ -695,9 +718,15 @@ impl PriceCache {
             .await;
 
         // Save source counts
-        let source_counts: HashMap<String, u64> = self.source_updates
+        let source_counts: HashMap<String, u64> = self
+            .source_updates
             .iter()
-            .map(|entry| (entry.key().to_string(), entry.value().load(Ordering::Relaxed)))
+            .map(|entry| {
+                (
+                    entry.key().to_string(),
+                    entry.value().load(Ordering::Relaxed),
+                )
+            })
             .collect();
 
         if let Ok(json) = serde_json::to_string(&source_counts) {

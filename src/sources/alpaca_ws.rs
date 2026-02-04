@@ -4,6 +4,9 @@
 //! Requires Alpaca API key and secret (free with paper trading account).
 //! Sign up at: https://alpaca.markets/
 
+// Some structs are used only for deserialization/tests
+#![allow(dead_code)]
+
 use crate::services::{ChartStore, PriceCache};
 use crate::types::PriceSource;
 use futures_util::{SinkExt, StreamExt};
@@ -201,7 +204,10 @@ impl AlpacaWs {
         let sub_json = serde_json::to_string(&subscribe_msg)?;
         write.send(Message::Text(sub_json)).await?;
 
-        info!("Subscribed to {} stocks via Alpaca WebSocket", STOCK_SYMBOLS.len());
+        info!(
+            "Subscribed to {} stocks via Alpaca WebSocket",
+            STOCK_SYMBOLS.len()
+        );
 
         // Store subscribed symbols
         {
@@ -267,10 +273,20 @@ impl AlpacaWs {
                         debug!("Alpaca trade: {} = ${:.2} (size: {})", symbol, price, size);
 
                         // Update price cache (use Finnhub source since we don't have Alpaca variant)
-                        self.price_cache.update_price(&symbol_lower, PriceSource::Alpaca, price, None);
+                        self.price_cache.update_price(
+                            &symbol_lower,
+                            PriceSource::Alpaca,
+                            price,
+                            None,
+                        );
 
                         // Add to chart store
-                        self.chart_store.add_price(&symbol_lower, price, Some(size as f64), timestamp);
+                        self.chart_store.add_price(
+                            &symbol_lower,
+                            price,
+                            Some(size as f64),
+                            timestamp,
+                        );
                     }
                 }
                 "q" => {
@@ -284,12 +300,20 @@ impl AlpacaWs {
                         let symbol_lower = symbol.to_lowercase();
                         let timestamp = chrono::Utc::now().timestamp_millis();
 
-                        debug!("Alpaca quote: {} bid=${:.2} ask=${:.2} mid=${:.2}",
-                               symbol, bid, ask, mid_price);
+                        debug!(
+                            "Alpaca quote: {} bid=${:.2} ask=${:.2} mid=${:.2}",
+                            symbol, bid, ask, mid_price
+                        );
 
                         // Update with mid price from quotes
-                        self.price_cache.update_price(&symbol_lower, PriceSource::Alpaca, mid_price, None);
-                        self.chart_store.add_price(&symbol_lower, mid_price, None, timestamp);
+                        self.price_cache.update_price(
+                            &symbol_lower,
+                            PriceSource::Alpaca,
+                            mid_price,
+                            None,
+                        );
+                        self.chart_store
+                            .add_price(&symbol_lower, mid_price, None, timestamp);
                     }
                 }
                 "success" | "subscription" => {
@@ -301,5 +325,198 @@ impl AlpacaWs {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // STOCK_SYMBOLS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stock_symbols_contains_major_stocks() {
+        assert!(STOCK_SYMBOLS.contains(&"AAPL"));
+        assert!(STOCK_SYMBOLS.contains(&"MSFT"));
+        assert!(STOCK_SYMBOLS.contains(&"GOOGL"));
+        assert!(STOCK_SYMBOLS.contains(&"NVDA"));
+    }
+
+    #[test]
+    fn test_stock_symbols_contains_etfs() {
+        assert!(STOCK_SYMBOLS.contains(&"SPY"));
+        assert!(STOCK_SYMBOLS.contains(&"QQQ"));
+    }
+
+    #[test]
+    fn test_stock_symbols_count() {
+        assert!(STOCK_SYMBOLS.len() >= 9);
+    }
+
+    // =========================================================================
+    // AuthMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_auth_message_serialization() {
+        let msg = AuthMessage {
+            action: "auth".to_string(),
+            key: "test_key".to_string(),
+            secret: "test_secret".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"action\":\"auth\""));
+        assert!(json.contains("\"key\":\"test_key\""));
+        assert!(json.contains("\"secret\":\"test_secret\""));
+    }
+
+    // =========================================================================
+    // SubscribeMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_subscribe_message_serialization() {
+        let msg = SubscribeMessage {
+            action: "subscribe".to_string(),
+            trades: vec!["AAPL".to_string(), "MSFT".to_string()],
+            quotes: vec!["AAPL".to_string()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"action\":\"subscribe\""));
+        assert!(json.contains("AAPL"));
+        assert!(json.contains("MSFT"));
+    }
+
+    // =========================================================================
+    // AlpacaTrade Tests
+    // =========================================================================
+
+    #[test]
+    fn test_alpaca_trade_deserialization() {
+        let json = r#"{
+            "S": "AAPL",
+            "p": 153.25,
+            "s": 100,
+            "t": "2024-01-15T10:30:00Z"
+        }"#;
+        let trade: AlpacaTrade = serde_json::from_str(json).unwrap();
+        assert_eq!(trade.symbol, "AAPL");
+        assert_eq!(trade.p, 153.25);
+        assert_eq!(trade.s, 100);
+    }
+
+    #[test]
+    fn test_alpaca_trade_with_optional_fields() {
+        let json = r#"{
+            "S": "MSFT",
+            "p": 380.50,
+            "s": 50,
+            "t": "2024-01-15T10:30:00Z",
+            "i": 12345,
+            "x": "V"
+        }"#;
+        let trade: AlpacaTrade = serde_json::from_str(json).unwrap();
+        assert_eq!(trade.i, Some(12345));
+        assert_eq!(trade.x, Some("V".to_string()));
+    }
+
+    // =========================================================================
+    // AlpacaQuote Tests
+    // =========================================================================
+
+    #[test]
+    fn test_alpaca_quote_deserialization() {
+        let json = r#"{
+            "S": "AAPL",
+            "bp": 153.00,
+            "ap": 153.50,
+            "bs": 100,
+            "as": 200,
+            "t": "2024-01-15T10:30:00Z"
+        }"#;
+        let quote: AlpacaQuote = serde_json::from_str(json).unwrap();
+        assert_eq!(quote.symbol, "AAPL");
+        assert_eq!(quote.bp, 153.00);
+        assert_eq!(quote.ap, 153.50);
+        assert_eq!(quote.bs, 100);
+        assert_eq!(quote.ask_size, 200);
+    }
+
+    #[test]
+    fn test_alpaca_quote_mid_price() {
+        let json = r#"{
+            "S": "TSLA",
+            "bp": 200.00,
+            "ap": 200.50,
+            "bs": 100,
+            "as": 150,
+            "t": "2024-01-15T10:30:00Z"
+        }"#;
+        let quote: AlpacaQuote = serde_json::from_str(json).unwrap();
+        let mid_price = (quote.bp + quote.ap) / 2.0;
+        assert_eq!(mid_price, 200.25);
+    }
+
+    // =========================================================================
+    // TradeMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_trade_message_deserialization() {
+        let json = r#"{
+            "T": "t",
+            "S": "NVDA",
+            "p": 500.00,
+            "s": 25,
+            "t": "2024-01-15T10:30:00Z"
+        }"#;
+        let msg: TradeMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "t");
+        assert_eq!(msg.symbol, "NVDA");
+        assert_eq!(msg.p, 500.00);
+    }
+
+    // =========================================================================
+    // QuoteMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_quote_message_deserialization() {
+        let json = r#"{
+            "T": "q",
+            "S": "META",
+            "bp": 350.00,
+            "ap": 350.50,
+            "bs": 100,
+            "as": 100,
+            "t": "2024-01-15T10:30:00Z"
+        }"#;
+        let msg: QuoteMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "q");
+        assert_eq!(msg.symbol, "META");
+    }
+
+    // =========================================================================
+    // ControlMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_control_message_deserialization() {
+        let json = r#"{"T": "success", "msg": "authenticated"}"#;
+        let msg: ControlMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "success");
+        assert_eq!(msg.msg, Some("authenticated".to_string()));
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_alpaca_ws_url() {
+        assert!(ALPACA_WS_URL.starts_with("wss://"));
+        assert!(ALPACA_WS_URL.contains("alpaca"));
     }
 }

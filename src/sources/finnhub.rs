@@ -8,21 +8,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 const FINNHUB_URL: &str = "https://finnhub.io/api/v1";
 const POLL_INTERVAL_SECS: u64 = 30;
 
 /// Top stocks to track by market cap.
 pub const STOCK_SYMBOLS: &[&str] = &[
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B", "JPM", "V",
-    "JNJ", "UNH", "HD", "PG", "MA", "DIS", "ADBE", "CRM", "NFLX", "PYPL",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B", "JPM", "V", "JNJ", "UNH",
+    "HD", "PG", "MA", "DIS", "ADBE", "CRM", "NFLX", "PYPL",
 ];
 
 /// Top ETFs to track.
 pub const ETF_SYMBOLS: &[&str] = &[
-    "SPY", "QQQ", "VOO", "IWM", "DIA", "VTI", "ARKK", "XLF", "XLE", "GLD",
-    "VGT", "SCHD", "VYM", "JEPI", "BND",
+    "SPY", "QQQ", "VOO", "IWM", "DIA", "VTI", "ARKK", "XLF", "XLE", "GLD", "VGT", "SCHD", "VYM",
+    "JEPI", "BND",
 ];
 
 /// Finnhub quote response.
@@ -75,6 +75,7 @@ pub struct FinnhubProfile {
 
 /// Finnhub search result.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct FinnhubSearchResult {
     pub count: i32,
     pub result: Vec<FinnhubSymbol>,
@@ -178,10 +179,7 @@ impl FinnhubClient {
 
     /// Search for symbols.
     pub async fn search(&self, query: &str) -> Result<Vec<FinnhubSymbol>, String> {
-        let url = format!(
-            "{}/search?q={}&token={}",
-            FINNHUB_URL, query, self.api_key
-        );
+        let url = format!("{}/search?q={}&token={}", FINNHUB_URL, query, self.api_key);
 
         let response = self
             .client
@@ -203,11 +201,7 @@ impl FinnhubClient {
     }
 
     /// Fetch and cache data for a single symbol.
-    async fn fetch_symbol_data(
-        &self,
-        symbol: &str,
-        asset_type: &str,
-    ) -> Result<StockData, String> {
+    async fn fetch_symbol_data(&self, symbol: &str, asset_type: &str) -> Result<StockData, String> {
         let quote = self.get_quote(symbol).await?;
         let profile = self.get_profile(symbol).await.ok();
 
@@ -285,7 +279,11 @@ impl FinnhubClient {
     pub async fn get_stock_listings(&self) -> Vec<StockData> {
         let cache = self.stock_cache.read().await;
         let mut listings: Vec<_> = cache.values().cloned().collect();
-        listings.sort_by(|a, b| b.market_cap.partial_cmp(&a.market_cap).unwrap_or(std::cmp::Ordering::Equal));
+        listings.sort_by(|a, b| {
+            b.market_cap
+                .partial_cmp(&a.market_cap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         listings
     }
 
@@ -293,7 +291,11 @@ impl FinnhubClient {
     pub async fn get_etf_listings(&self) -> Vec<StockData> {
         let cache = self.etf_cache.read().await;
         let mut listings: Vec<_> = cache.values().cloned().collect();
-        listings.sort_by(|a, b| b.market_cap.partial_cmp(&a.market_cap).unwrap_or(std::cmp::Ordering::Equal));
+        listings.sort_by(|a, b| {
+            b.market_cap
+                .partial_cmp(&a.market_cap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         listings
     }
 
@@ -303,7 +305,11 @@ impl FinnhubClient {
         let etfs = self.get_etf_listings().await;
 
         let mut all: Vec<_> = stocks.into_iter().chain(etfs).collect();
-        all.sort_by(|a, b| b.market_cap.partial_cmp(&a.market_cap).unwrap_or(std::cmp::Ordering::Equal));
+        all.sort_by(|a, b| {
+            b.market_cap
+                .partial_cmp(&a.market_cap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         all
     }
 
@@ -322,5 +328,227 @@ impl FinnhubClient {
     /// Get poll interval.
     pub fn poll_interval_secs() -> u64 {
         POLL_INTERVAL_SECS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // STOCK_SYMBOLS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stock_symbols_contains_major_stocks() {
+        assert!(STOCK_SYMBOLS.contains(&"AAPL"));
+        assert!(STOCK_SYMBOLS.contains(&"MSFT"));
+        assert!(STOCK_SYMBOLS.contains(&"GOOGL"));
+        assert!(STOCK_SYMBOLS.contains(&"AMZN"));
+        assert!(STOCK_SYMBOLS.contains(&"TSLA"));
+    }
+
+    #[test]
+    fn test_stock_symbols_count() {
+        assert!(STOCK_SYMBOLS.len() >= 20);
+    }
+
+    // =========================================================================
+    // ETF_SYMBOLS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_etf_symbols_contains_major_etfs() {
+        assert!(ETF_SYMBOLS.contains(&"SPY"));
+        assert!(ETF_SYMBOLS.contains(&"QQQ"));
+        assert!(ETF_SYMBOLS.contains(&"VOO"));
+    }
+
+    #[test]
+    fn test_etf_symbols_count() {
+        assert!(ETF_SYMBOLS.len() >= 15);
+    }
+
+    // =========================================================================
+    // FinnhubQuote Tests
+    // =========================================================================
+
+    #[test]
+    fn test_finnhub_quote_deserialization() {
+        let json = r#"{
+            "c": 175.50,
+            "d": 2.5,
+            "dp": 1.45,
+            "h": 176.00,
+            "l": 172.00,
+            "o": 173.00,
+            "pc": 173.00,
+            "t": 1700000000
+        }"#;
+
+        let quote: FinnhubQuote = serde_json::from_str(json).unwrap();
+        assert_eq!(quote.current, 175.50);
+        assert_eq!(quote.change, Some(2.5));
+        assert_eq!(quote.change_percent, Some(1.45));
+        assert_eq!(quote.high, 176.00);
+        assert_eq!(quote.low, 172.00);
+        assert_eq!(quote.open, 173.00);
+        assert_eq!(quote.previous_close, 173.00);
+        assert_eq!(quote.timestamp, 1700000000);
+    }
+
+    #[test]
+    fn test_finnhub_quote_optional_fields() {
+        let json = r#"{
+            "c": 100.0,
+            "h": 105.0,
+            "l": 95.0,
+            "o": 98.0,
+            "pc": 99.0,
+            "t": 1700000000
+        }"#;
+
+        let quote: FinnhubQuote = serde_json::from_str(json).unwrap();
+        assert!(quote.change.is_none());
+        assert!(quote.change_percent.is_none());
+    }
+
+    // =========================================================================
+    // FinnhubProfile Tests
+    // =========================================================================
+
+    #[test]
+    fn test_finnhub_profile_deserialization() {
+        let json = r#"{
+            "country": "US",
+            "currency": "USD",
+            "exchange": "NASDAQ",
+            "finnhubIndustry": "Technology",
+            "ipo": "1980-12-12",
+            "logo": "https://example.com/logo.png",
+            "marketCapitalization": 2900000,
+            "name": "Apple Inc",
+            "phone": "+1234567890",
+            "shareOutstanding": 15000000,
+            "ticker": "AAPL",
+            "weburl": "https://apple.com"
+        }"#;
+
+        let profile: FinnhubProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.country, Some("US".to_string()));
+        assert_eq!(profile.name, Some("Apple Inc".to_string()));
+        assert_eq!(profile.industry, Some("Technology".to_string()));
+        assert_eq!(profile.market_capitalization, Some(2900000.0));
+    }
+
+    #[test]
+    fn test_finnhub_profile_minimal() {
+        let json = r#"{}"#;
+        let profile: FinnhubProfile = serde_json::from_str(json).unwrap();
+        assert!(profile.name.is_none());
+        assert!(profile.market_capitalization.is_none());
+    }
+
+    // =========================================================================
+    // FinnhubSymbol Tests
+    // =========================================================================
+
+    #[test]
+    fn test_finnhub_symbol_deserialization() {
+        let json = r#"{
+            "description": "Apple Inc",
+            "displaySymbol": "AAPL",
+            "symbol": "AAPL",
+            "type": "Common Stock"
+        }"#;
+
+        let symbol: FinnhubSymbol = serde_json::from_str(json).unwrap();
+        assert_eq!(symbol.description, "Apple Inc");
+        assert_eq!(symbol.display_symbol, "AAPL");
+        assert_eq!(symbol.symbol, "AAPL");
+        assert_eq!(symbol.symbol_type, "Common Stock");
+    }
+
+    // =========================================================================
+    // FinnhubSearchResult Tests
+    // =========================================================================
+
+    #[test]
+    fn test_finnhub_search_result_deserialization() {
+        let json = r#"{
+            "count": 2,
+            "result": [
+                {"description": "Apple Inc", "displaySymbol": "AAPL", "symbol": "AAPL", "type": "Common Stock"},
+                {"description": "Apple Hospitality", "displaySymbol": "APLE", "symbol": "APLE", "type": "Common Stock"}
+            ]
+        }"#;
+
+        let result: FinnhubSearchResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.result.len(), 2);
+    }
+
+    // =========================================================================
+    // StockData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stock_data_serialization() {
+        let data = StockData {
+            symbol: "AAPL".to_string(),
+            name: "Apple Inc".to_string(),
+            price: 175.50,
+            change_24h: 1.45,
+            market_cap: 2900000000000.0,
+            volume_24h: 50000000.0,
+            exchange: Some("NASDAQ".to_string()),
+            sector: Some("Technology".to_string()),
+            logo: Some("https://example.com/logo.png".to_string()),
+            asset_type: "stock".to_string(),
+            timestamp: 1700000000000,
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"symbol\":\"AAPL\""));
+        assert!(json.contains("\"price\":175.5"));
+        assert!(json.contains("\"asset_type\":\"stock\""));
+    }
+
+    #[test]
+    fn test_stock_data_deserialization() {
+        let json = r#"{
+            "symbol": "MSFT",
+            "name": "Microsoft Corporation",
+            "price": 380.25,
+            "change_24h": 0.75,
+            "market_cap": 2800000000000,
+            "volume_24h": 25000000,
+            "exchange": "NASDAQ",
+            "sector": "Technology",
+            "logo": null,
+            "asset_type": "stock",
+            "timestamp": 1700000000000
+        }"#;
+
+        let data: StockData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.symbol, "MSFT");
+        assert_eq!(data.price, 380.25);
+        assert!(data.logo.is_none());
+    }
+
+    // =========================================================================
+    // FinnhubClient Tests
+    // =========================================================================
+
+    #[test]
+    fn test_finnhub_client_new() {
+        let _client = FinnhubClient::new("test_api_key".to_string());
+        // Test passes if no panic occurs
+    }
+
+    #[test]
+    fn test_finnhub_poll_interval() {
+        let interval = FinnhubClient::poll_interval_secs();
+        assert!(interval > 0);
     }
 }

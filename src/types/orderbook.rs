@@ -197,3 +197,374 @@ impl AggregatedOrderBook {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // OrderBookLevel Tests
+    // =========================================================================
+
+    #[test]
+    fn test_order_book_level_creation() {
+        let level = OrderBookLevel {
+            price: 50000.0,
+            quantity: 1.5,
+        };
+
+        assert_eq!(level.price, 50000.0);
+        assert_eq!(level.quantity, 1.5);
+    }
+
+    #[test]
+    fn test_order_book_level_serialization() {
+        let level = OrderBookLevel {
+            price: 50000.0,
+            quantity: 1.5,
+        };
+
+        let json = serde_json::to_string(&level).unwrap();
+        assert!(json.contains("\"price\":50000"));
+        assert!(json.contains("\"quantity\":1.5"));
+
+        let parsed: OrderBookLevel = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.price, level.price);
+        assert_eq!(parsed.quantity, level.quantity);
+    }
+
+    // =========================================================================
+    // ExchangeOrderBook Tests
+    // =========================================================================
+
+    #[test]
+    fn test_exchange_order_book_creation() {
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![
+                OrderBookLevel {
+                    price: 50000.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 49999.0,
+                    quantity: 2.0,
+                },
+            ],
+            asks: vec![
+                OrderBookLevel {
+                    price: 50001.0,
+                    quantity: 1.5,
+                },
+                OrderBookLevel {
+                    price: 50002.0,
+                    quantity: 2.5,
+                },
+            ],
+            timestamp: 1704067200000,
+        };
+
+        assert_eq!(book.exchange, PriceSource::Coinbase);
+        assert_eq!(book.symbol, "BTC");
+        assert_eq!(book.bids.len(), 2);
+        assert_eq!(book.asks.len(), 2);
+    }
+
+    // =========================================================================
+    // AggregatedLevel Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregated_level_creation() {
+        let mut exchanges = HashMap::new();
+        exchanges.insert("coinbase".to_string(), 1.0);
+        exchanges.insert("binance".to_string(), 0.5);
+
+        let level = AggregatedLevel {
+            price: 50000.0,
+            total_quantity: 1.5,
+            exchanges,
+        };
+
+        assert_eq!(level.price, 50000.0);
+        assert_eq!(level.total_quantity, 1.5);
+        assert_eq!(level.exchanges.len(), 2);
+    }
+
+    #[test]
+    fn test_aggregated_level_serialization() {
+        let mut exchanges = HashMap::new();
+        exchanges.insert("coinbase".to_string(), 1.0);
+
+        let level = AggregatedLevel {
+            price: 50000.0,
+            total_quantity: 1.0,
+            exchanges,
+        };
+
+        let json = serde_json::to_string(&level).unwrap();
+        assert!(json.contains("\"price\":50000"));
+        assert!(json.contains("\"totalQuantity\":1"));
+    }
+
+    // =========================================================================
+    // AggregatedOrderBook Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregated_order_book_empty() {
+        let book = AggregatedOrderBook::empty("BTC");
+
+        assert_eq!(book.symbol, "BTC");
+        assert!(book.bids.is_empty());
+        assert!(book.asks.is_empty());
+        assert_eq!(book.bid_total, 0.0);
+        assert_eq!(book.ask_total, 0.0);
+        assert_eq!(book.imbalance, 0.0);
+        assert_eq!(book.exchange_count, 0);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_from_single_exchange() {
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![
+                OrderBookLevel {
+                    price: 50000.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 49999.0,
+                    quantity: 2.0,
+                },
+            ],
+            asks: vec![
+                OrderBookLevel {
+                    price: 50001.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 50002.0,
+                    quantity: 2.0,
+                },
+            ],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book], 10);
+
+        assert_eq!(aggregated.symbol, "BTC");
+        assert_eq!(aggregated.exchange_count, 1);
+        assert_eq!(aggregated.exchanges, vec!["coinbase"]);
+        assert_eq!(aggregated.bid_total, 3.0);
+        assert_eq!(aggregated.ask_total, 3.0);
+        assert_eq!(aggregated.best_bid, 50000.0);
+        assert_eq!(aggregated.best_ask, 50001.0);
+        assert_eq!(aggregated.spread, 1.0);
+        assert_eq!(aggregated.mid_price, 50000.5);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_from_multiple_exchanges() {
+        let book1 = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![OrderBookLevel {
+                price: 50000.0,
+                quantity: 1.0,
+            }],
+            asks: vec![OrderBookLevel {
+                price: 50001.0,
+                quantity: 1.0,
+            }],
+            timestamp: 1704067200000,
+        };
+
+        let book2 = ExchangeOrderBook {
+            exchange: PriceSource::Binance,
+            symbol: "BTC".to_string(),
+            bids: vec![
+                OrderBookLevel {
+                    price: 50000.0,
+                    quantity: 2.0,
+                }, // Same price level
+            ],
+            asks: vec![
+                OrderBookLevel {
+                    price: 50001.0,
+                    quantity: 2.0,
+                }, // Same price level
+            ],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book1, book2], 10);
+
+        assert_eq!(aggregated.exchange_count, 2);
+        assert_eq!(aggregated.bid_total, 3.0); // 1.0 + 2.0 aggregated
+        assert_eq!(aggregated.ask_total, 3.0);
+
+        // Check exchange breakdown in aggregated level
+        let bid_level = &aggregated.bids[0];
+        assert_eq!(bid_level.total_quantity, 3.0);
+        assert_eq!(bid_level.exchanges.get("coinbase"), Some(&1.0));
+        assert_eq!(bid_level.exchanges.get("binance"), Some(&2.0));
+    }
+
+    #[test]
+    fn test_aggregated_order_book_imbalance_calculation() {
+        // Create bid-heavy book
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![OrderBookLevel {
+                price: 50000.0,
+                quantity: 10.0,
+            }],
+            asks: vec![OrderBookLevel {
+                price: 50001.0,
+                quantity: 2.0,
+            }],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book], 10);
+
+        // Imbalance = (10 - 2) / (10 + 2) = 8/12 = 0.666...
+        assert!((aggregated.imbalance - 0.6666).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_max_levels() {
+        let bids: Vec<OrderBookLevel> = (0..20)
+            .map(|i| OrderBookLevel {
+                price: 50000.0 - i as f64,
+                quantity: 1.0,
+            })
+            .collect();
+
+        let asks: Vec<OrderBookLevel> = (0..20)
+            .map(|i| OrderBookLevel {
+                price: 50001.0 + i as f64,
+                quantity: 1.0,
+            })
+            .collect();
+
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids,
+            asks,
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book], 10);
+
+        assert_eq!(aggregated.bids.len(), 10);
+        assert_eq!(aggregated.asks.len(), 10);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_spread_percentage() {
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![OrderBookLevel {
+                price: 100.0,
+                quantity: 1.0,
+            }],
+            asks: vec![OrderBookLevel {
+                price: 101.0,
+                quantity: 1.0,
+            }],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("TEST", vec![book], 10);
+
+        // Spread = 1.0, mid_price = 100.5, spread_pct = (1.0 / 100.5) * 100 ≈ 0.995%
+        assert!((aggregated.spread_pct - 0.995).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_bids_sorted_descending() {
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![
+                OrderBookLevel {
+                    price: 49998.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 50000.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 49999.0,
+                    quantity: 1.0,
+                },
+            ],
+            asks: vec![],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book], 10);
+
+        assert_eq!(aggregated.bids[0].price, 50000.0); // Highest first
+        assert_eq!(aggregated.bids[1].price, 49999.0);
+        assert_eq!(aggregated.bids[2].price, 49998.0);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_asks_sorted_ascending() {
+        let book = ExchangeOrderBook {
+            exchange: PriceSource::Coinbase,
+            symbol: "BTC".to_string(),
+            bids: vec![],
+            asks: vec![
+                OrderBookLevel {
+                    price: 50003.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 50001.0,
+                    quantity: 1.0,
+                },
+                OrderBookLevel {
+                    price: 50002.0,
+                    quantity: 1.0,
+                },
+            ],
+            timestamp: 1704067200000,
+        };
+
+        let aggregated = AggregatedOrderBook::from_exchange_books("BTC", vec![book], 10);
+
+        assert_eq!(aggregated.asks[0].price, 50001.0); // Lowest first
+        assert_eq!(aggregated.asks[1].price, 50002.0);
+        assert_eq!(aggregated.asks[2].price, 50003.0);
+    }
+
+    #[test]
+    fn test_aggregated_order_book_serialization() {
+        let book = AggregatedOrderBook::empty("ETH");
+
+        let json = serde_json::to_string(&book).unwrap();
+        assert!(json.contains("\"symbol\":\"ETH\""));
+        assert!(json.contains("\"bidTotal\":0"));
+        assert!(json.contains("\"askTotal\":0"));
+        assert!(json.contains("\"imbalance\":0"));
+    }
+
+    #[test]
+    fn test_price_to_key() {
+        // Test that price_to_key preserves 4 decimal places
+        assert_eq!(AggregatedOrderBook::price_to_key(1.0), 10000);
+        assert_eq!(AggregatedOrderBook::price_to_key(1.5), 15000);
+        assert_eq!(AggregatedOrderBook::price_to_key(1.2345), 12345);
+        assert_eq!(AggregatedOrderBook::price_to_key(50000.0), 500000000);
+    }
+}

@@ -18,7 +18,7 @@ pub enum TradingTimeframe {
 
 impl TradingTimeframe {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "scalping" | "scalp" => Some(Self::Scalping),
             "day_trading" | "day" | "intraday" => Some(Self::DayTrading),
@@ -532,5 +532,192 @@ impl Recommendation {
             description,
             timestamp: chrono::Utc::now().timestamp_millis(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TradingTimeframe Tests
+    // =========================================================================
+
+    #[test]
+    fn test_trading_timeframe_from_str() {
+        assert_eq!(
+            TradingTimeframe::parse("scalping"),
+            Some(TradingTimeframe::Scalping)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("scalp"),
+            Some(TradingTimeframe::Scalping)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("day_trading"),
+            Some(TradingTimeframe::DayTrading)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("day"),
+            Some(TradingTimeframe::DayTrading)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("swing_trading"),
+            Some(TradingTimeframe::SwingTrading)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("swing"),
+            Some(TradingTimeframe::SwingTrading)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("position_trading"),
+            Some(TradingTimeframe::PositionTrading)
+        );
+        assert_eq!(
+            TradingTimeframe::parse("position"),
+            Some(TradingTimeframe::PositionTrading)
+        );
+        assert_eq!(TradingTimeframe::parse("invalid"), None);
+    }
+
+    #[test]
+    fn test_trading_timeframe_name() {
+        assert_eq!(TradingTimeframe::Scalping.name(), "Scalping");
+        assert_eq!(TradingTimeframe::DayTrading.name(), "Day Trading");
+        assert_eq!(TradingTimeframe::SwingTrading.name(), "Swing Trading");
+        assert_eq!(TradingTimeframe::PositionTrading.name(), "Position Trading");
+    }
+
+    #[test]
+    fn test_trading_timeframe_category_weights_sum_to_one() {
+        let timeframes = [
+            TradingTimeframe::Scalping,
+            TradingTimeframe::DayTrading,
+            TradingTimeframe::SwingTrading,
+            TradingTimeframe::PositionTrading,
+        ];
+
+        for tf in timeframes {
+            let (t, m, vol, v) = tf.category_weights();
+            let sum = t + m + vol + v;
+            assert!(
+                (sum - 1.0).abs() < 0.001,
+                "Weights for {:?} sum to {}, not 1.0",
+                tf,
+                sum
+            );
+        }
+    }
+
+    #[test]
+    fn test_trading_timeframe_default() {
+        assert_eq!(TradingTimeframe::default(), TradingTimeframe::DayTrading);
+    }
+
+    // =========================================================================
+    // SignalDirection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_signal_direction_from_score() {
+        assert_eq!(SignalDirection::from_score(100), SignalDirection::StrongBuy);
+        assert_eq!(SignalDirection::from_score(60), SignalDirection::StrongBuy);
+        assert_eq!(SignalDirection::from_score(59), SignalDirection::Buy);
+        assert_eq!(SignalDirection::from_score(20), SignalDirection::Buy);
+        assert_eq!(SignalDirection::from_score(19), SignalDirection::Neutral);
+        assert_eq!(SignalDirection::from_score(0), SignalDirection::Neutral);
+        assert_eq!(SignalDirection::from_score(-19), SignalDirection::Neutral);
+        assert_eq!(SignalDirection::from_score(-20), SignalDirection::Sell);
+        assert_eq!(SignalDirection::from_score(-59), SignalDirection::Sell);
+        assert_eq!(
+            SignalDirection::from_score(-60),
+            SignalDirection::StrongSell
+        );
+        assert_eq!(
+            SignalDirection::from_score(-100),
+            SignalDirection::StrongSell
+        );
+    }
+
+    #[test]
+    fn test_signal_direction_label() {
+        assert_eq!(SignalDirection::StrongBuy.label(), "Strong Buy");
+        assert_eq!(SignalDirection::Buy.label(), "Buy");
+        assert_eq!(SignalDirection::Neutral.label(), "Neutral");
+        assert_eq!(SignalDirection::Sell.label(), "Sell");
+        assert_eq!(SignalDirection::StrongSell.label(), "Strong Sell");
+    }
+
+    // =========================================================================
+    // SignalCategory Tests
+    // =========================================================================
+
+    #[test]
+    fn test_signal_category_name() {
+        assert_eq!(SignalCategory::Trend.name(), "Trend");
+        assert_eq!(SignalCategory::Momentum.name(), "Momentum");
+        assert_eq!(SignalCategory::Volatility.name(), "Volatility");
+        assert_eq!(SignalCategory::Volume.name(), "Volume");
+    }
+
+    // =========================================================================
+    // RecommendationAction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_recommendation_action_label() {
+        assert_eq!(RecommendationAction::Buy.label(), "Buy");
+        assert_eq!(RecommendationAction::Sell.label(), "Sell");
+        assert_eq!(RecommendationAction::Hold.label(), "Hold");
+    }
+
+    // =========================================================================
+    // Recommendation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_recommendation_strong_buy() {
+        let rec = Recommendation::from_score("BTC".to_string(), 50.0, 5, 10, 70.0);
+        assert_eq!(rec.symbol, "BTC");
+        assert_eq!(rec.action, RecommendationAction::Buy);
+        assert!(rec.weighted_score >= 30.0);
+    }
+
+    #[test]
+    fn test_recommendation_moderate_buy() {
+        let rec = Recommendation::from_score("ETH".to_string(), 15.0, 3, 10, 60.0);
+        assert_eq!(rec.action, RecommendationAction::Buy);
+        assert!(rec.weighted_score >= 10.0 && rec.weighted_score < 30.0);
+    }
+
+    #[test]
+    fn test_recommendation_hold() {
+        let rec = Recommendation::from_score("SOL".to_string(), 5.0, 2, 10, 50.0);
+        assert_eq!(rec.action, RecommendationAction::Hold);
+    }
+
+    #[test]
+    fn test_recommendation_moderate_sell() {
+        let rec = Recommendation::from_score("DOGE".to_string(), -15.0, 3, 10, 60.0);
+        assert_eq!(rec.action, RecommendationAction::Sell);
+    }
+
+    #[test]
+    fn test_recommendation_strong_sell() {
+        let rec = Recommendation::from_score("XRP".to_string(), -50.0, 5, 10, 70.0);
+        assert_eq!(rec.action, RecommendationAction::Sell);
+    }
+
+    #[test]
+    fn test_recommendation_has_timestamp() {
+        let rec = Recommendation::from_score("BTC".to_string(), 0.0, 0, 10, 50.0);
+        assert!(rec.timestamp > 0);
+    }
+
+    #[test]
+    fn test_recommendation_confidence_bounded() {
+        let rec = Recommendation::from_score("BTC".to_string(), 100.0, 10, 10, 100.0);
+        assert!(rec.confidence <= 100.0);
+        assert!(rec.confidence >= 0.0);
     }
 }

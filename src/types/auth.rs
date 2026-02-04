@@ -1,9 +1,7 @@
-/**
- * Authentication Types
- *
- * Types for signature-based authentication.
- * Uses HMAC-SHA256 for signature verification (matching frontend Web Crypto API).
- */
+//! Authentication Types
+//!
+//! Types for signature-based authentication.
+//! Uses HMAC-SHA256 for signature verification (matching frontend Web Crypto API).
 
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +108,7 @@ pub struct Session {
 
 /// Authenticated user extracted from request.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AuthenticatedUser {
     /// The user's public key
     pub public_key: String,
@@ -131,11 +130,17 @@ impl Profile {
     }
 }
 
+impl Default for AuthChallenge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuthChallenge {
     /// Create a new challenge with 5-minute expiry.
     pub fn new() -> Self {
         use rand::Rng;
-        let now = chrono::Utc::now().timestamp_millis();
+        let timestamp = chrono::Utc::now().timestamp_millis();
         let mut rng = rand::thread_rng();
         let challenge: String = (0..32)
             .map(|_| format!("{:02x}", rng.gen::<u8>()))
@@ -143,8 +148,8 @@ impl AuthChallenge {
 
         Self {
             challenge,
-            timestamp: now,
-            expires_at: now + 5 * 60 * 1000, // 5 minutes
+            timestamp,
+            expires_at: timestamp + 5 * 60 * 1000, // 5 minutes
         }
     }
 
@@ -178,6 +183,10 @@ impl Session {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // AuthChallenge Tests
+    // =========================================================================
+
     #[test]
     fn test_challenge_creation() {
         let challenge = AuthChallenge::new();
@@ -185,6 +194,66 @@ mod tests {
         assert!(!challenge.is_expired());
         assert!(challenge.expires_at > challenge.timestamp);
     }
+
+    #[test]
+    fn test_challenge_expiry_window() {
+        let challenge = AuthChallenge::new();
+        // Expiry should be 5 minutes (300,000 ms) from timestamp
+        let expected_expiry = challenge.timestamp + 5 * 60 * 1000;
+        assert_eq!(challenge.expires_at, expected_expiry);
+    }
+
+    #[test]
+    fn test_challenge_serialization() {
+        let challenge = AuthChallenge {
+            challenge: "abc123".to_string(),
+            timestamp: 1704067200000,
+            expires_at: 1704067500000,
+        };
+
+        let json = serde_json::to_string(&challenge).unwrap();
+        assert!(json.contains("\"challenge\":\"abc123\""));
+        assert!(json.contains("\"expiresAt\":1704067500000"));
+
+        let parsed: AuthChallenge = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.challenge, "abc123");
+    }
+
+    // =========================================================================
+    // AuthRequest Tests
+    // =========================================================================
+
+    #[test]
+    fn test_auth_request_creation() {
+        let request = AuthRequest {
+            public_key: "pubkey123".to_string(),
+            challenge: "challenge456".to_string(),
+            signature: "sig789".to_string(),
+            timestamp: 1704067200000,
+        };
+
+        assert_eq!(request.public_key, "pubkey123");
+        assert_eq!(request.challenge, "challenge456");
+        assert_eq!(request.signature, "sig789");
+    }
+
+    #[test]
+    fn test_auth_request_serialization() {
+        let request = AuthRequest {
+            public_key: "pk".to_string(),
+            challenge: "ch".to_string(),
+            signature: "sig".to_string(),
+            timestamp: 1704067200000,
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"publicKey\":\"pk\""));
+        assert!(json.contains("\"signature\":\"sig\""));
+    }
+
+    // =========================================================================
+    // Session Tests
+    // =========================================================================
 
     #[test]
     fn test_session_creation() {
@@ -195,10 +264,171 @@ mod tests {
     }
 
     #[test]
+    fn test_session_expiry_window() {
+        let session = Session::new("test".to_string());
+        // Session should expire in 24 hours (86,400,000 ms)
+        let expected_duration = 24 * 60 * 60 * 1000;
+        let actual_duration = session.expires_at - session.created_at;
+        assert_eq!(actual_duration, expected_duration);
+    }
+
+    #[test]
+    fn test_session_token_is_uuid() {
+        let session = Session::new("test".to_string());
+        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        assert_eq!(session.token.len(), 36);
+        assert!(session.token.contains('-'));
+    }
+
+    #[test]
+    fn test_session_serialization() {
+        let session = Session {
+            token: "token123".to_string(),
+            public_key: "pk".to_string(),
+            created_at: 1704067200000,
+            expires_at: 1704153600000,
+        };
+
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"token\":\"token123\""));
+        assert!(json.contains("\"publicKey\":\"pk\""));
+    }
+
+    // =========================================================================
+    // Profile Tests
+    // =========================================================================
+
+    #[test]
     fn test_profile_creation() {
         let profile = Profile::new("pubkey123".to_string());
         assert_eq!(profile.public_key, "pubkey123");
         assert_eq!(profile.settings.default_timeframe, "day_trading");
         assert!(!profile.id.is_empty());
+    }
+
+    #[test]
+    fn test_profile_id_is_uuid() {
+        let profile = Profile::new("test".to_string());
+        assert_eq!(profile.id.len(), 36);
+        assert!(profile.id.contains('-'));
+    }
+
+    #[test]
+    fn test_profile_timestamps() {
+        let before = chrono::Utc::now().timestamp_millis();
+        let profile = Profile::new("test".to_string());
+        let after = chrono::Utc::now().timestamp_millis();
+
+        assert!(profile.created_at >= before);
+        assert!(profile.created_at <= after);
+        assert_eq!(profile.created_at, profile.last_seen);
+    }
+
+    #[test]
+    fn test_profile_serialization() {
+        let profile = Profile {
+            id: "id123".to_string(),
+            public_key: "pk".to_string(),
+            created_at: 1704067200000,
+            last_seen: 1704067200000,
+            settings: ProfileSettings::default(),
+        };
+
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains("\"publicKey\":\"pk\""));
+        assert!(json.contains("\"createdAt\":1704067200000"));
+    }
+
+    // =========================================================================
+    // ProfileSettings Tests
+    // =========================================================================
+
+    #[test]
+    fn test_profile_settings_default() {
+        let settings = ProfileSettings::default();
+        assert_eq!(settings.default_timeframe, "day_trading");
+        assert!(settings.preferred_indicators.is_empty());
+        assert!(!settings.notifications_enabled);
+    }
+
+    #[test]
+    fn test_profile_settings_custom() {
+        let settings = ProfileSettings {
+            default_timeframe: "swing_trading".to_string(),
+            preferred_indicators: vec!["RSI".to_string(), "MACD".to_string()],
+            notifications_enabled: true,
+        };
+
+        assert_eq!(settings.default_timeframe, "swing_trading");
+        assert_eq!(settings.preferred_indicators.len(), 2);
+        assert!(settings.notifications_enabled);
+    }
+
+    #[test]
+    fn test_profile_settings_serialization() {
+        let settings = ProfileSettings {
+            default_timeframe: "scalping".to_string(),
+            preferred_indicators: vec!["RSI".to_string()],
+            notifications_enabled: true,
+        };
+
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"defaultTimeframe\":\"scalping\""));
+        assert!(json.contains("\"preferredIndicators\":[\"RSI\"]"));
+        assert!(json.contains("\"notificationsEnabled\":true"));
+    }
+
+    // =========================================================================
+    // AuthResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_auth_response_creation() {
+        let response = AuthResponse {
+            authenticated: true,
+            public_key: "pk".to_string(),
+            session_token: "token".to_string(),
+            expires_at: 1704153600000,
+            profile: Profile::new("pk".to_string()),
+        };
+
+        assert!(response.authenticated);
+        assert_eq!(response.session_token, "token");
+    }
+
+    #[test]
+    fn test_auth_response_serialization() {
+        let response = AuthResponse {
+            authenticated: true,
+            public_key: "pk".to_string(),
+            session_token: "token123".to_string(),
+            expires_at: 1704153600000,
+            profile: Profile {
+                id: "id".to_string(),
+                public_key: "pk".to_string(),
+                created_at: 1704067200000,
+                last_seen: 1704067200000,
+                settings: ProfileSettings::default(),
+            },
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"authenticated\":true"));
+        assert!(json.contains("\"sessionToken\":\"token123\""));
+    }
+
+    // =========================================================================
+    // AuthenticatedUser Tests
+    // =========================================================================
+
+    #[test]
+    fn test_authenticated_user_creation() {
+        let user = AuthenticatedUser {
+            public_key: "user_pk".to_string(),
+            profile: Profile::new("user_pk".to_string()),
+        };
+
+        assert_eq!(user.public_key, "user_pk");
+        assert_eq!(user.profile.public_key, "user_pk");
     }
 }

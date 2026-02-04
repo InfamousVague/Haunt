@@ -57,7 +57,12 @@ impl Signal for Obv {
         }
 
         // Calculate OBV trend (slope)
-        let recent_obv: Vec<f64> = obv_values.iter().rev().take(self.lookback).copied().collect();
+        let recent_obv: Vec<f64> = obv_values
+            .iter()
+            .rev()
+            .take(self.lookback)
+            .copied()
+            .collect();
         let obv_change = if recent_obv.len() >= 2 {
             recent_obv[0] - recent_obv[recent_obv.len() - 1]
         } else {
@@ -120,5 +125,105 @@ impl Signal for Obv {
             obv,
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0 + (i % 5) as f64 * 100.0),
+                }
+            })
+            .collect()
+    }
+
+    fn create_downtrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 200.0 - i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 1.0,
+                    low: base - 2.0,
+                    close: base - 1.0,
+                    volume: Some(1000.0 + (i % 5) as f64 * 100.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_obv_id_and_name() {
+        let obv = Obv::default();
+        assert_eq!(obv.id(), "obv");
+        assert_eq!(obv.name(), "OBV");
+    }
+
+    #[test]
+    fn test_obv_category() {
+        let obv = Obv::default();
+        assert_eq!(obv.category(), SignalCategory::Volume);
+    }
+
+    #[test]
+    fn test_obv_min_periods() {
+        let obv = Obv::default();
+        assert_eq!(obv.min_periods(), 15); // lookback + 1
+    }
+
+    #[test]
+    fn test_obv_insufficient_data() {
+        let obv = Obv::default();
+        let candles = create_uptrend_candles(10);
+        let result = obv.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_obv_uptrend_positive_score() {
+        let obv = Obv::default();
+        let candles = create_uptrend_candles(30);
+        let result = obv.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.score > 0,
+            "OBV score in uptrend should be positive, got {}",
+            output.score
+        );
+    }
+
+    #[test]
+    fn test_obv_downtrend_negative_score() {
+        let obv = Obv::default();
+        let candles = create_downtrend_candles(30);
+        let result = obv.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.score < 0,
+            "OBV score in downtrend should be negative, got {}",
+            output.score
+        );
+    }
+
+    #[test]
+    fn test_obv_score_range() {
+        let obv = Obv::default();
+        let candles = create_uptrend_candles(30);
+        let result = obv.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
     }
 }

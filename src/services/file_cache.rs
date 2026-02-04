@@ -3,6 +3,8 @@
 //! Provides disk persistence for API data so the service can continue
 //! operating even if external APIs go down.
 
+#![allow(dead_code)]
+
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -104,10 +106,7 @@ impl FileCache {
             .unwrap_or_default()
             .as_secs();
 
-        let entry = CacheEntry {
-            data,
-            timestamp,
-        };
+        let entry = CacheEntry { data, timestamp };
 
         match serde_json::to_string(&entry) {
             Ok(content) => {
@@ -155,5 +154,152 @@ impl FileCache {
 impl Default for FileCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    fn create_test_cache(name: &str) -> FileCache {
+        let cache_dir = PathBuf::from(format!(".test_cache_{}", name));
+        if cache_dir.exists() {
+            let _ = fs::remove_dir_all(&cache_dir);
+        }
+        let _ = fs::create_dir_all(&cache_dir);
+        FileCache { cache_dir }
+    }
+
+    fn cleanup_test_cache(cache: &FileCache) {
+        let _ = fs::remove_dir_all(&cache.cache_dir);
+    }
+
+    #[test]
+    fn test_file_cache_set_and_get() {
+        let cache = create_test_cache("set_get");
+
+        cache.set("test_key", &"test_value".to_string());
+        let result: Option<String> = cache.get("test_key", Duration::from_secs(60));
+
+        assert_eq!(result, Some("test_value".to_string()));
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_get_nonexistent() {
+        let cache = create_test_cache("nonexistent");
+
+        let result: Option<String> = cache.get("nonexistent_key", Duration::from_secs(60));
+
+        assert!(result.is_none());
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_expired_entry() {
+        let cache = create_test_cache("expired");
+
+        cache.set("test_key", &"test_value".to_string());
+        // Sleep for 2 seconds to ensure expiry (file cache uses second granularity)
+        thread::sleep(Duration::from_secs(2));
+        // Use 1 second max_age - entry should be expired
+        let result: Option<String> = cache.get("test_key", Duration::from_secs(1));
+
+        assert!(result.is_none(), "Expected entry to be expired");
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_get_stale() {
+        let cache = create_test_cache("stale");
+
+        cache.set("test_key", &"test_value".to_string());
+        // Sleep for 2 seconds to ensure expiry (file cache uses second granularity)
+        thread::sleep(Duration::from_secs(2));
+
+        // get() with 1 second max_age should fail due to expiry
+        let fresh: Option<String> = cache.get("test_key", Duration::from_secs(1));
+        assert!(
+            fresh.is_none(),
+            "Expected fresh check to fail due to expiry"
+        );
+
+        // get_stale() should still work regardless of age
+        let stale: Option<String> = cache.get_stale("test_key");
+        assert_eq!(stale, Some("test_value".to_string()));
+
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_remove() {
+        let cache = create_test_cache("remove");
+
+        cache.set("test_key", &"test_value".to_string());
+        cache.remove("test_key");
+        let result: Option<String> = cache.get_stale("test_key");
+
+        assert!(result.is_none());
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_struct_data() {
+        let cache = create_test_cache("struct");
+
+        #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+        struct TestData {
+            name: String,
+            value: i32,
+        }
+
+        let data = TestData {
+            name: "test".to_string(),
+            value: 42,
+        };
+
+        cache.set("struct_key", &data);
+        let result: Option<TestData> = cache.get("struct_key", Duration::from_secs(60));
+
+        assert_eq!(result, Some(data));
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_key_sanitization() {
+        let cache = create_test_cache("sanitize");
+
+        // Keys with special characters should be sanitized
+        cache.set("test/key:with*special?chars", &"value".to_string());
+        let result: Option<String> =
+            cache.get("test/key:with*special?chars", Duration::from_secs(60));
+
+        assert_eq!(result, Some("value".to_string()));
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_overwrite() {
+        let cache = create_test_cache("overwrite");
+
+        cache.set("key", &"value1".to_string());
+        cache.set("key", &"value2".to_string());
+        let result: Option<String> = cache.get("key", Duration::from_secs(60));
+
+        assert_eq!(result, Some("value2".to_string()));
+        cleanup_test_cache(&cache);
+    }
+
+    #[test]
+    fn test_file_cache_vec_data() {
+        let cache = create_test_cache("vec");
+
+        let data = vec![1, 2, 3, 4, 5];
+        cache.set("vec_key", &data);
+        let result: Option<Vec<i32>> = cache.get("vec_key", Duration::from_secs(60));
+
+        assert_eq!(result, Some(data));
+        cleanup_test_cache(&cache);
     }
 }

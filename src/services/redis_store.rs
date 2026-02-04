@@ -1,3 +1,7 @@
+// Note: RedisStore is not currently used in favor of ChartStore with direct Redis commands.
+// Keeping this module for potential future use.
+#![allow(dead_code)]
+
 use redis::{aio::ConnectionManager, AsyncCommands, RedisResult};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -25,7 +29,10 @@ impl RedisStore {
                 Some(c)
             }
             Err(e) => {
-                warn!("Failed to connect to Redis: {}. Running without persistence.", e);
+                warn!(
+                    "Failed to connect to Redis: {}. Running without persistence.",
+                    e
+                );
                 None
             }
         };
@@ -105,9 +112,7 @@ impl RedisStore {
         match values {
             Ok(vals) => vals
                 .iter()
-                .filter_map(|v| {
-                    v.split(':').nth(1).and_then(|p| p.parse::<f64>().ok())
-                })
+                .filter_map(|v| v.split(':').nth(1).and_then(|p| p.parse::<f64>().ok()))
                 .collect(),
             Err(e) => {
                 debug!("Failed to get sparkline for {}: {}", symbol, e);
@@ -117,7 +122,13 @@ impl RedisStore {
     }
 
     /// Store the current price for a symbol.
-    pub async fn set_price(&self, symbol: &str, price: f64, volume: Option<f64>, change_24h: Option<f64>) {
+    pub async fn set_price(
+        &self,
+        symbol: &str,
+        price: f64,
+        volume: Option<f64>,
+        change_24h: Option<f64>,
+    ) {
         let conn_guard = self.conn.read().await;
         let Some(ref conn) = *conn_guard else {
             return;
@@ -140,9 +151,7 @@ impl RedisStore {
     /// Get the current price for a symbol.
     pub async fn get_price(&self, symbol: &str) -> Option<(f64, Option<f64>, Option<f64>)> {
         let conn_guard = self.conn.read().await;
-        let Some(ref conn) = *conn_guard else {
-            return None;
-        };
+        let conn = conn_guard.as_ref()?;
 
         let key = format!("{}{}", PRICE_PREFIX, symbol.to_lowercase());
         let mut conn = conn.clone();

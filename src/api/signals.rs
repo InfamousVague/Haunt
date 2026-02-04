@@ -7,7 +7,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AccuracyResponse, PredictionsResponse, Recommendation, SignalAccuracy, SymbolSignals, TradingTimeframe};
+use crate::types::{
+    AccuracyResponse, PredictionsResponse, Recommendation, SignalAccuracy, SymbolSignals,
+    TradingTimeframe,
+};
 use crate::AppState;
 
 /// API response wrapper.
@@ -68,7 +71,7 @@ async fn get_signals(
     let timeframe = query
         .timeframe
         .as_deref()
-        .and_then(TradingTimeframe::from_str)
+        .and_then(TradingTimeframe::parse)
         .unwrap_or_default();
 
     let signals = state
@@ -94,7 +97,7 @@ async fn generate_predictions(
     let timeframe = query
         .timeframe
         .as_deref()
-        .and_then(TradingTimeframe::from_str)
+        .and_then(TradingTimeframe::parse)
         .unwrap_or_default();
 
     // Invalidate cache to force fresh computation
@@ -139,9 +142,7 @@ async fn get_symbol_predictions(
     let status = query.status.as_deref();
 
     // First try to get from SQLite for complete historical data
-    let mut predictions = state
-        .sqlite_store
-        .get_predictions(&symbol, status, limit);
+    let mut predictions = state.sqlite_store.get_predictions(&symbol, status, limit);
 
     // If SQLite returned nothing, fall back to in-memory store
     if predictions.is_empty() {
@@ -156,16 +157,20 @@ async fn get_symbol_predictions(
                 .into_iter()
                 .filter(|p| {
                     // Validated = has ANY outcome (5m, 1h, 4h, or 24h)
-                    p.outcome_5m.is_some() || p.outcome_1h.is_some() ||
-                    p.outcome_4h.is_some() || p.outcome_24h.is_some()
+                    p.outcome_5m.is_some()
+                        || p.outcome_1h.is_some()
+                        || p.outcome_4h.is_some()
+                        || p.outcome_24h.is_some()
                 })
                 .collect(),
             Some("pending") => predictions
                 .into_iter()
                 .filter(|p| {
                     // Pending = no outcomes yet
-                    p.outcome_5m.is_none() && p.outcome_1h.is_none() &&
-                    p.outcome_4h.is_none() && p.outcome_24h.is_none()
+                    p.outcome_5m.is_none()
+                        && p.outcome_1h.is_none()
+                        && p.outcome_4h.is_none()
+                        && p.outcome_24h.is_none()
                 })
                 .collect(),
             _ => predictions,
@@ -205,7 +210,7 @@ async fn get_recommendation(
     let timeframe = query
         .timeframe
         .as_deref()
-        .and_then(TradingTimeframe::from_str)
+        .and_then(TradingTimeframe::parse)
         .unwrap_or_default();
 
     let recommendation = state
@@ -218,4 +223,141 @@ async fn get_recommendation(
         ))?;
 
     Ok(Json(ApiResponse::new(recommendation)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // ApiMeta Tests
+    // =========================================================================
+
+    #[test]
+    fn test_api_meta_serialization() {
+        let meta = ApiMeta { cached: false };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert_eq!(json, "{\"cached\":false}");
+
+        let meta_cached = ApiMeta { cached: true };
+        let json_cached = serde_json::to_string(&meta_cached).unwrap();
+        assert_eq!(json_cached, "{\"cached\":true}");
+    }
+
+    // =========================================================================
+    // ApiResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_api_response_new() {
+        let response = ApiResponse::new("test data");
+        assert_eq!(response.data, "test data");
+        assert!(!response.meta.cached);
+    }
+
+    #[test]
+    fn test_api_response_serialization() {
+        let response = ApiResponse::new(42);
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"data\":42"));
+        assert!(json.contains("\"meta\":{\"cached\":false}"));
+    }
+
+    #[test]
+    fn test_api_response_with_struct() {
+        #[derive(Serialize)]
+        struct TestData {
+            value: String,
+        }
+
+        let response = ApiResponse::new(TestData {
+            value: "hello".to_string(),
+        });
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"value\":\"hello\""));
+    }
+
+    // =========================================================================
+    // SignalsQuery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_signals_query_default() {
+        let query = SignalsQuery { timeframe: None };
+        assert!(query.timeframe.is_none());
+    }
+
+    #[test]
+    fn test_signals_query_with_timeframe() {
+        let query = SignalsQuery {
+            timeframe: Some("day_trading".to_string()),
+        };
+        assert_eq!(query.timeframe, Some("day_trading".to_string()));
+    }
+
+    #[test]
+    fn test_signals_query_deserialization() {
+        let json = r#"{"timeframe": "scalping"}"#;
+        let query: SignalsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.timeframe, Some("scalping".to_string()));
+    }
+
+    #[test]
+    fn test_signals_query_deserialization_empty() {
+        let json = r#"{}"#;
+        let query: SignalsQuery = serde_json::from_str(json).unwrap();
+        assert!(query.timeframe.is_none());
+    }
+
+    // =========================================================================
+    // PredictionsQuery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_predictions_query_default() {
+        let query = PredictionsQuery {
+            status: None,
+            limit: None,
+        };
+        assert!(query.status.is_none());
+        assert!(query.limit.is_none());
+    }
+
+    #[test]
+    fn test_predictions_query_with_status() {
+        let query = PredictionsQuery {
+            status: Some("validated".to_string()),
+            limit: None,
+        };
+        assert_eq!(query.status, Some("validated".to_string()));
+    }
+
+    #[test]
+    fn test_predictions_query_with_limit() {
+        let query = PredictionsQuery {
+            status: None,
+            limit: Some(25),
+        };
+        assert_eq!(query.limit, Some(25));
+    }
+
+    #[test]
+    fn test_predictions_query_deserialization() {
+        let json = r#"{"status": "pending", "limit": 50}"#;
+        let query: PredictionsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.status, Some("pending".to_string()));
+        assert_eq!(query.limit, Some(50));
+    }
+
+    #[test]
+    fn test_predictions_query_debug() {
+        let query = PredictionsQuery {
+            status: Some("all".to_string()),
+            limit: Some(100),
+        };
+        let debug_str = format!("{:?}", query);
+        assert!(debug_str.contains("PredictionsQuery"));
+        assert!(debug_str.contains("all"));
+        assert!(debug_str.contains("100"));
+    }
 }

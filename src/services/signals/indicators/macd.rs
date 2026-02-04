@@ -43,8 +43,8 @@ impl Macd {
         ema.push(sma);
 
         // Calculate subsequent EMAs
-        for i in period..values.len() {
-            let new_ema = (values[i] - ema.last().unwrap()) * multiplier + ema.last().unwrap();
+        for value in values.iter().skip(period) {
+            let new_ema = (value - ema.last().unwrap()) * multiplier + ema.last().unwrap();
             ema.push(new_ema);
         }
 
@@ -120,7 +120,11 @@ impl Signal for Macd {
         // Score based on histogram and its direction
         // Positive histogram = bullish, negative = bearish
         // Increasing histogram = strengthening signal
-        let histogram_direction = if histogram > prev_histogram { 1.0 } else { -1.0 };
+        let histogram_direction = if histogram > prev_histogram {
+            1.0
+        } else {
+            -1.0
+        };
 
         // Normalize histogram relative to price (as percentage)
         let current_price = candles.last()?.close;
@@ -134,5 +138,99 @@ impl Signal for Macd {
             histogram,
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    fn create_downtrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 200.0 - i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 1.0,
+                    low: base - 2.0,
+                    close: base - 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_macd_id_and_name() {
+        let macd = Macd::default();
+        assert_eq!(macd.id(), "macd");
+        assert_eq!(macd.name(), "MACD");
+    }
+
+    #[test]
+    fn test_macd_category() {
+        let macd = Macd::default();
+        assert_eq!(macd.category(), SignalCategory::Trend);
+    }
+
+    #[test]
+    fn test_macd_min_periods() {
+        let macd = Macd::default();
+        assert_eq!(macd.min_periods(), 35); // 26 + 9
+    }
+
+    #[test]
+    fn test_macd_insufficient_data() {
+        let macd = Macd::default();
+        let candles = create_uptrend_candles(30);
+        let result = macd.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_macd_uptrend_produces_result() {
+        let macd = Macd::default();
+        let candles = create_uptrend_candles(50);
+        let result = macd.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        // MACD produces a valid histogram value
+        assert!(output.value.is_finite(), "MACD histogram should be finite");
+    }
+
+    #[test]
+    fn test_macd_downtrend_produces_result() {
+        let macd = Macd::default();
+        let candles = create_downtrend_candles(50);
+        let result = macd.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        // MACD produces a valid histogram value
+        assert!(output.value.is_finite(), "MACD histogram should be finite");
+    }
+
+    #[test]
+    fn test_macd_score_range() {
+        let macd = Macd::default();
+        let candles = create_uptrend_candles(50);
+        let result = macd.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
     }
 }

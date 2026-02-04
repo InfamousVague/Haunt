@@ -255,11 +255,11 @@ fn test_chart_range_validation() {
     let invalid_ranges = vec!["2h", "3d", "2w", "1y", "invalid"];
 
     for range in valid_ranges {
-        assert!(haunt::types::ChartRange::from_str(range).is_some());
+        assert!(haunt::types::ChartRange::parse(range).is_some());
     }
 
     for range in invalid_ranges {
-        assert!(haunt::types::ChartRange::from_str(range).is_none());
+        assert!(haunt::types::ChartRange::parse(range).is_none());
     }
 }
 
@@ -339,7 +339,7 @@ fn test_movers_query_params() {
 
 #[test]
 fn test_movers_gainers_sorted_descending() {
-    let gainers = vec![
+    let gainers = [
         serde_json::json!({"symbol": "A", "changePercent": 10.0}),
         serde_json::json!({"symbol": "B", "changePercent": 5.0}),
         serde_json::json!({"symbol": "C", "changePercent": 2.0}),
@@ -349,13 +349,16 @@ fn test_movers_gainers_sorted_descending() {
     for i in 0..gainers.len() - 1 {
         let current = gainers[i]["changePercent"].as_f64().unwrap();
         let next = gainers[i + 1]["changePercent"].as_f64().unwrap();
-        assert!(current >= next, "Gainers should be sorted descending by changePercent");
+        assert!(
+            current >= next,
+            "Gainers should be sorted descending by changePercent"
+        );
     }
 }
 
 #[test]
 fn test_movers_losers_sorted_ascending() {
-    let losers = vec![
+    let losers = [
         serde_json::json!({"symbol": "X", "changePercent": -10.0}),
         serde_json::json!({"symbol": "Y", "changePercent": -5.0}),
         serde_json::json!({"symbol": "Z", "changePercent": -2.0}),
@@ -365,7 +368,10 @@ fn test_movers_losers_sorted_ascending() {
     for i in 0..losers.len() - 1 {
         let current = losers[i]["changePercent"].as_f64().unwrap();
         let next = losers[i + 1]["changePercent"].as_f64().unwrap();
-        assert!(current <= next, "Losers should be sorted ascending by changePercent");
+        assert!(
+            current <= next,
+            "Losers should be sorted ascending by changePercent"
+        );
     }
 }
 
@@ -421,7 +427,7 @@ fn test_symbol_source_stats_response_structure() {
 
 #[test]
 fn test_symbol_source_stats_total_matches_sum() {
-    let sources = vec![
+    let sources = [
         serde_json::json!({"updateCount": 1500}),
         serde_json::json!({"updateCount": 1200}),
         serde_json::json!({"updateCount": 600}),
@@ -438,7 +444,7 @@ fn test_symbol_source_stats_total_matches_sum() {
 #[test]
 fn test_symbol_source_stats_percent_sum() {
     // Percentages should approximately sum to 100
-    let percentages = vec![45.5, 36.4, 18.1];
+    let percentages = [45.5, 36.4, 18.1];
     let sum: f64 = percentages.iter().sum();
 
     // Allow for rounding errors
@@ -497,5 +503,8 @@ fn test_stats_online_sources_constraint() {
     let online_sources = 7;
     let total_sources = 9;
 
-    assert!(online_sources <= total_sources, "Online sources cannot exceed total sources");
+    assert!(
+        online_sources <= total_sources,
+        "Online sources cannot exceed total sources"
+    );
 }

@@ -101,3 +101,73 @@ impl Signal for Mfi {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0 + (i % 5) as f64 * 100.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_mfi_id_and_name() {
+        let mfi = Mfi::default();
+        assert_eq!(mfi.id(), "mfi");
+        assert_eq!(mfi.name(), "MFI (14)");
+    }
+
+    #[test]
+    fn test_mfi_category() {
+        let mfi = Mfi::default();
+        assert_eq!(mfi.category(), SignalCategory::Momentum);
+    }
+
+    #[test]
+    fn test_mfi_min_periods() {
+        let mfi = Mfi::default();
+        assert_eq!(mfi.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_mfi_insufficient_data() {
+        let mfi = Mfi::default();
+        let candles = create_uptrend_candles(10);
+        let result = mfi.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_mfi_value_range() {
+        let mfi = Mfi::default();
+        let candles = create_uptrend_candles(30);
+        let result = mfi.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value >= 0.0 && output.value <= 100.0,
+            "MFI should be 0-100, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_mfi_score_range() {
+        let mfi = Mfi::default();
+        let candles = create_uptrend_candles(30);
+        let result = mfi.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
+    }
+}

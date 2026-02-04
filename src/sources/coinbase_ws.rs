@@ -79,11 +79,13 @@ impl CoinbaseWs {
             match self.run_connection().await {
                 Ok(_) => {
                     warn!("Coinbase WebSocket disconnected, reconnecting...");
-                    self.price_cache.report_source_error(PriceSource::Coinbase, "WebSocket disconnected");
+                    self.price_cache
+                        .report_source_error(PriceSource::Coinbase, "WebSocket disconnected");
                 }
                 Err(e) => {
                     error!("Coinbase WebSocket error: {}, reconnecting...", e);
-                    self.price_cache.report_source_error(PriceSource::Coinbase, &e.to_string());
+                    self.price_cache
+                        .report_source_error(PriceSource::Coinbase, &e.to_string());
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -98,9 +100,21 @@ impl CoinbaseWs {
 
         // Subscribe to initial symbols
         let initial_symbols = vec![
-            "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD",
-            "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD", "MATIC-USD",
-            "LTC-USD", "ATOM-USD", "UNI-USD", "XLM-USD", "BCH-USD",
+            "BTC-USD",
+            "ETH-USD",
+            "SOL-USD",
+            "XRP-USD",
+            "DOGE-USD",
+            "ADA-USD",
+            "AVAX-USD",
+            "DOT-USD",
+            "LINK-USD",
+            "MATIC-USD",
+            "LTC-USD",
+            "ATOM-USD",
+            "UNI-USD",
+            "XLM-USD",
+            "BCH-USD",
         ];
 
         let subscribe_msg = SubscribeMessage {
@@ -211,13 +225,130 @@ impl CoinbaseWs {
         let volume_24h: Option<f64> = msg.volume_24h.and_then(|v| v.parse().ok());
 
         // Extract symbol from product_id (e.g., "BTC-USD" -> "btc")
-        let symbol = product_id.split('-').next().unwrap_or(&product_id).to_lowercase();
+        let symbol = product_id
+            .split('-')
+            .next()
+            .unwrap_or(&product_id)
+            .to_lowercase();
 
         debug!("Coinbase price update: {} = ${}", symbol, price);
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        self.price_cache.update_price(&symbol, PriceSource::Coinbase, price, volume_24h);
-        self.chart_store.add_price(&symbol, price, volume_24h, timestamp);
+        self.price_cache
+            .update_price(&symbol, PriceSource::Coinbase, price, volume_24h);
+        self.chart_store
+            .add_price(&symbol, price, volume_24h, timestamp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // SubscribeMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_subscribe_message_serialization() {
+        let msg = SubscribeMessage {
+            msg_type: "subscribe".to_string(),
+            product_ids: vec!["BTC-USD".to_string(), "ETH-USD".to_string()],
+            channels: vec!["ticker".to_string()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"subscribe\""));
+        assert!(json.contains("BTC-USD"));
+        assert!(json.contains("ticker"));
+    }
+
+    #[test]
+    fn test_subscribe_message_unsubscribe() {
+        let msg = SubscribeMessage {
+            msg_type: "unsubscribe".to_string(),
+            product_ids: vec!["SOL-USD".to_string()],
+            channels: vec!["ticker".to_string()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"unsubscribe\""));
+    }
+
+    // =========================================================================
+    // TickerMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ticker_message_deserialization() {
+        let json = r#"{
+            "type": "ticker",
+            "product_id": "BTC-USD",
+            "price": "43500.50",
+            "volume_24h": "15000.5"
+        }"#;
+        let ticker: TickerMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(ticker.msg_type, "ticker");
+        assert_eq!(ticker.product_id, Some("BTC-USD".to_string()));
+        assert_eq!(ticker.price, Some("43500.50".to_string()));
+        assert_eq!(ticker.volume_24h, Some("15000.5".to_string()));
+    }
+
+    #[test]
+    fn test_ticker_message_minimal() {
+        let json = r#"{"type": "subscriptions"}"#;
+        let ticker: TickerMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(ticker.msg_type, "subscriptions");
+        assert!(ticker.product_id.is_none());
+        assert!(ticker.price.is_none());
+    }
+
+    #[test]
+    fn test_ticker_message_price_parsing() {
+        let json = r#"{
+            "type": "ticker",
+            "product_id": "ETH-USD",
+            "price": "2500.00"
+        }"#;
+        let ticker: TickerMessage = serde_json::from_str(json).unwrap();
+        let price: f64 = ticker.price.unwrap().parse().unwrap();
+        assert_eq!(price, 2500.0);
+    }
+
+    // =========================================================================
+    // Symbol Extraction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_symbol_extraction_from_product_id() {
+        let product_id = "BTC-USD";
+        let symbol = product_id
+            .split('-')
+            .next()
+            .unwrap_or(product_id)
+            .to_lowercase();
+        assert_eq!(symbol, "btc");
+    }
+
+    #[test]
+    fn test_symbol_extraction_various() {
+        let test_cases = vec![("ETH-USD", "eth"), ("SOL-USD", "sol"), ("DOGE-USD", "doge")];
+        for (product_id, expected) in test_cases {
+            let symbol = product_id
+                .split('-')
+                .next()
+                .unwrap_or(product_id)
+                .to_lowercase();
+            assert_eq!(symbol, expected);
+        }
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_coinbase_ws_url() {
+        assert!(COINBASE_WS_URL.starts_with("wss://"));
+        assert!(COINBASE_WS_URL.contains("coinbase"));
     }
 }

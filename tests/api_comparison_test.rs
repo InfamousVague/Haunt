@@ -39,18 +39,21 @@ const CRYPTOCOMPARE_API_URL: &str = "https://min-api.cryptocompare.com/data";
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HauntApiResponse<T> {
     data: T,
     meta: HauntApiMeta,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HauntApiMeta {
     cached: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct HauntListing {
     id: i64,
     rank: i32,
@@ -65,6 +68,7 @@ struct HauntListing {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CoinGeckoPrice {
     usd: f64,
     #[serde(default)]
@@ -76,6 +80,7 @@ struct CoinGeckoPrice {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CryptoCompareMultiPrice {
     #[serde(rename = "USD")]
     usd: f64,
@@ -83,12 +88,14 @@ struct CryptoCompareMultiPrice {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[allow(dead_code)]
 struct CryptoComparePriceFull {
     usd: CryptoCompareFullData,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[allow(dead_code)]
 struct CryptoCompareFullData {
     price: f64,
     #[serde(rename = "VOLUME24HOURTO")]
@@ -217,16 +224,25 @@ impl ComparisonReport {
         println!("Comparison Report: {}", self.source);
         println!("========================================");
         println!("Total tests: {}", self.total_tests);
-        println!("Passed: {} ({:.1}%)", self.passed_tests,
-            if self.total_tests > 0 { (self.passed_tests as f64 / self.total_tests as f64) * 100.0 } else { 0.0 });
+        println!(
+            "Passed: {} ({:.1}%)",
+            self.passed_tests,
+            if self.total_tests > 0 {
+                (self.passed_tests as f64 / self.total_tests as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
         println!("Failed: {}", self.failed_tests);
 
         if !self.price_comparisons.is_empty() {
             println!("\n--- Price Comparisons ---");
             for cmp in &self.price_comparisons {
                 let status = if cmp.passed { "✓" } else { "✗" };
-                println!("{} {}: ${:.4} vs ${:.4} (deviation: {:.2}%)",
-                    status, cmp.symbol, cmp.our_price, cmp.reference_price, cmp.deviation_percent);
+                println!(
+                    "{} {}: ${:.4} vs ${:.4} (deviation: {:.2}%)",
+                    status, cmp.symbol, cmp.our_price, cmp.reference_price, cmp.deviation_percent
+                );
             }
         }
 
@@ -234,8 +250,10 @@ impl ComparisonReport {
             println!("\n--- Volume Comparisons ---");
             for cmp in &self.volume_comparisons {
                 let status = if cmp.passed { "✓" } else { "✗" };
-                println!("{} {}: ${:.0} vs ${:.0} (deviation: {:.2}%)",
-                    status, cmp.symbol, cmp.our_volume, cmp.reference_volume, cmp.deviation_percent);
+                println!(
+                    "{} {}: ${:.0} vs ${:.0} (deviation: {:.2}%)",
+                    status, cmp.symbol, cmp.our_volume, cmp.reference_volume, cmp.deviation_percent
+                );
             }
         }
 
@@ -243,8 +261,10 @@ impl ComparisonReport {
             println!("\n--- 24h Change Comparisons ---");
             for cmp in &self.percent_change_comparisons {
                 let status = if cmp.passed { "✓" } else { "✗" };
-                println!("{} {}: {:.2}% vs {:.2}% (deviation: {:.2} pp)",
-                    status, cmp.symbol, cmp.our_change, cmp.reference_change, cmp.deviation);
+                println!(
+                    "{} {}: {:.2}% vs {:.2}% (deviation: {:.2} pp)",
+                    status, cmp.symbol, cmp.our_change, cmp.reference_change, cmp.deviation
+                );
             }
         }
 
@@ -262,10 +282,7 @@ impl ComparisonReport {
 async fn test_haunt_api_health() {
     let client = create_client();
 
-    let resp = client
-        .get(format!("{}/health", HAUNT_API_URL))
-        .send()
-        .await;
+    let resp = client.get(format!("{}/health", HAUNT_API_URL)).send().await;
 
     match resp {
         Ok(r) => {
@@ -283,8 +300,8 @@ async fn test_haunt_api_health() {
 #[ignore]
 async fn test_price_comparison_coingecko() {
     let client = create_client();
-    let symbols = vec!["btc", "eth", "bnb", "xrp", "sol"];
-    let coingecko_ids = vec!["bitcoin", "ethereum", "binancecoin", "ripple", "solana"];
+    let symbols = ["btc", "eth", "bnb", "xrp", "sol"];
+    let coingecko_ids = ["bitcoin", "ethereum", "binancecoin", "ripple", "solana"];
 
     let mut report = ComparisonReport::new("CoinGecko");
 
@@ -299,7 +316,8 @@ async fn test_price_comparison_coingecko() {
         .expect("Failed to parse Haunt response");
 
     // Create a map of our prices by symbol
-    let our_prices: HashMap<String, &HauntListing> = our_resp.data
+    let our_prices: HashMap<String, &HauntListing> = our_resp
+        .data
         .iter()
         .map(|l| (l.symbol.to_lowercase(), l))
         .collect();
@@ -349,7 +367,8 @@ async fn test_price_comparison_coingecko() {
 
             // 24h change comparison (if available)
             if let Some(cg_change) = cg_price.usd_24h_change {
-                let change_deviation = calculate_percent_deviation(our_listing.change_24h, cg_change);
+                let change_deviation =
+                    calculate_percent_deviation(our_listing.change_24h, cg_change);
                 report.add_percent_change_comparison(PercentChangeComparison {
                     symbol: symbol.to_uppercase(),
                     our_change: our_listing.change_24h,
@@ -382,7 +401,7 @@ async fn test_price_comparison_coingecko() {
 #[ignore]
 async fn test_price_comparison_cryptocompare() {
     let client = create_client();
-    let symbols = vec!["BTC", "ETH", "BNB", "XRP", "SOL"];
+    let symbols = ["BTC", "ETH", "BNB", "XRP", "SOL"];
 
     let mut report = ComparisonReport::new("CryptoCompare");
 
@@ -397,7 +416,8 @@ async fn test_price_comparison_cryptocompare() {
         .expect("Failed to parse Haunt response");
 
     // Create a map of our prices by symbol
-    let our_prices: HashMap<String, &HauntListing> = our_resp.data
+    let our_prices: HashMap<String, &HauntListing> = our_resp
+        .data
         .iter()
         .map(|l| (l.symbol.to_lowercase(), l))
         .collect();
@@ -428,7 +448,9 @@ async fn test_price_comparison_cryptocompare() {
         for symbol in &symbols {
             let symbol_lower = symbol.to_lowercase();
 
-            if let (Some(our_listing), Some(cc_data)) = (our_prices.get(&symbol_lower), raw.get(*symbol)) {
+            if let (Some(our_listing), Some(cc_data)) =
+                (our_prices.get(&symbol_lower), raw.get(*symbol))
+            {
                 // Price comparison
                 let price_deviation = calculate_deviation(our_listing.price, cc_data.usd.price);
                 report.add_price_comparison(PriceComparison {
@@ -440,7 +462,8 @@ async fn test_price_comparison_cryptocompare() {
                 });
 
                 // Volume comparison
-                let volume_deviation = calculate_deviation(our_listing.volume_24h, cc_data.usd.volume_24h_to);
+                let volume_deviation =
+                    calculate_deviation(our_listing.volume_24h, cc_data.usd.volume_24h_to);
                 report.add_volume_comparison(VolumeComparison {
                     symbol: symbol.to_string(),
                     our_volume: our_listing.volume_24h,
@@ -450,7 +473,8 @@ async fn test_price_comparison_cryptocompare() {
                 });
 
                 // 24h change comparison
-                let change_deviation = calculate_percent_deviation(our_listing.change_24h, cc_data.usd.change_pct_24h);
+                let change_deviation =
+                    calculate_percent_deviation(our_listing.change_24h, cc_data.usd.change_pct_24h);
                 report.add_percent_change_comparison(PercentChangeComparison {
                     symbol: symbol.to_string(),
                     our_change: our_listing.change_24h,
@@ -509,7 +533,9 @@ async fn test_individual_asset_price_accuracy() {
         .await
         .expect("Failed to parse CoinGecko response");
 
-    let cg_btc = cg_resp.get("bitcoin").expect("Bitcoin not found in CoinGecko response");
+    let cg_btc = cg_resp
+        .get("bitcoin")
+        .expect("Bitcoin not found in CoinGecko response");
 
     let price_deviation = calculate_deviation(our_resp.data.price, cg_btc.usd);
 
@@ -521,7 +547,8 @@ async fn test_individual_asset_price_accuracy() {
     assert!(
         price_deviation <= PRICE_DEVIATION_THRESHOLD,
         "Bitcoin price deviation ({:.2}%) exceeds threshold ({:.2}%)",
-        price_deviation, PRICE_DEVIATION_THRESHOLD
+        price_deviation,
+        PRICE_DEVIATION_THRESHOLD
     );
 
     // Also check market cap
@@ -534,7 +561,8 @@ async fn test_individual_asset_price_accuracy() {
         assert!(
             market_cap_deviation <= MARKET_CAP_DEVIATION_THRESHOLD,
             "Bitcoin market cap deviation ({:.2}%) exceeds threshold ({:.2}%)",
-            market_cap_deviation, MARKET_CAP_DEVIATION_THRESHOLD
+            market_cap_deviation,
+            MARKET_CAP_DEVIATION_THRESHOLD
         );
     }
 }
@@ -556,7 +584,7 @@ async fn test_ranking_consistency() {
         .expect("Failed to parse Haunt response");
 
     // These symbols should typically be in the top 10
-    let expected_top_10 = vec!["BTC", "ETH"];
+    let expected_top_10 = ["BTC", "ETH"];
 
     let our_symbols: Vec<&str> = our_resp.data.iter().map(|l| l.symbol.as_str()).collect();
 
@@ -566,7 +594,8 @@ async fn test_ranking_consistency() {
         assert!(
             our_symbols.contains(expected),
             "{} should be in top 10, but found: {:?}",
-            expected, our_symbols
+            expected,
+            our_symbols
         );
     }
 
@@ -576,12 +605,13 @@ async fn test_ranking_consistency() {
         "Bitcoin should be ranked #1"
     );
 
-    // Check that ranks are sequential
-    for (i, listing) in our_resp.data.iter().enumerate() {
+    // Check that ranks are positive
+    for listing in &our_resp.data {
         assert!(
             listing.rank > 0,
             "Rank should be positive, got {} for {}",
-            listing.rank, listing.symbol
+            listing.rank,
+            listing.symbol
         );
     }
 }
@@ -615,15 +645,26 @@ async fn test_price_freshness() {
         .expect("Failed to parse second response");
 
     // Create maps for comparison
-    let prices1: HashMap<&str, f64> = resp1.data.iter().map(|l| (l.symbol.as_str(), l.price)).collect();
-    let prices2: HashMap<&str, f64> = resp2.data.iter().map(|l| (l.symbol.as_str(), l.price)).collect();
+    let prices1: HashMap<&str, f64> = resp1
+        .data
+        .iter()
+        .map(|l| (l.symbol.as_str(), l.price))
+        .collect();
+    let prices2: HashMap<&str, f64> = resp2
+        .data
+        .iter()
+        .map(|l| (l.symbol.as_str(), l.price))
+        .collect();
 
     println!("Price changes over 5 seconds:");
     let mut any_changed = false;
     for (symbol, price1) in &prices1 {
         if let Some(price2) = prices2.get(symbol) {
             let change = (price2 - price1) / price1 * 100.0;
-            println!("  {}: ${:.4} -> ${:.4} ({:+.4}%)", symbol, price1, price2, change);
+            println!(
+                "  {}: ${:.4} -> ${:.4} ({:+.4}%)",
+                symbol, price1, price2, change
+            );
             if (price2 - price1).abs() > 0.0001 {
                 any_changed = true;
             }
@@ -632,7 +673,9 @@ async fn test_price_freshness() {
 
     // Note: This is a soft check - prices might not change in 5 seconds during quiet markets
     if !any_changed {
-        println!("  Note: No price changes detected in 5 seconds (may be normal during quiet periods)");
+        println!(
+            "  Note: No price changes detected in 5 seconds (may be normal during quiet periods)"
+        );
     }
 }
 
@@ -674,10 +717,14 @@ async fn test_comprehensive_price_report() {
         ("ETC", "ethereum-classic"),
         ("BCH", "bitcoin-cash"),
         ("FIL", "filecoin"),
-    ].into_iter().collect();
+    ]
+    .into_iter()
+    .collect();
 
     // Get CoinGecko IDs for symbols we have
-    let cg_ids: Vec<&str> = our_resp.data.iter()
+    let cg_ids: Vec<&str> = our_resp
+        .data
+        .iter()
         .filter_map(|l| symbol_to_cg.get(l.symbol.as_str()).copied())
         .collect();
 
@@ -702,7 +749,10 @@ async fn test_comprehensive_price_report() {
         .expect("Failed to parse CoinGecko response");
 
     println!("\n=== Comprehensive Price Deviation Report ===\n");
-    println!("{:<8} {:>14} {:>14} {:>10}", "Symbol", "Our Price", "CoinGecko", "Deviation");
+    println!(
+        "{:<8} {:>14} {:>14} {:>10}",
+        "Symbol", "Our Price", "CoinGecko", "Deviation"
+    );
     println!("{}", "-".repeat(50));
 
     let mut total_deviation = 0.0;
@@ -712,7 +762,11 @@ async fn test_comprehensive_price_report() {
         if let Some(cg_id) = symbol_to_cg.get(listing.symbol.as_str()) {
             if let Some(cg_price) = cg_resp.get(*cg_id) {
                 let deviation = calculate_deviation(listing.price, cg_price.usd);
-                let status = if deviation <= PRICE_DEVIATION_THRESHOLD { "✓" } else { "✗" };
+                let status = if deviation <= PRICE_DEVIATION_THRESHOLD {
+                    "✓"
+                } else {
+                    "✗"
+                };
                 println!(
                     "{} {:<6} {:>14.4} {:>14.4} {:>9.2}%",
                     status, listing.symbol, listing.price, cg_price.usd, deviation
@@ -764,15 +818,31 @@ fn test_percent_deviation_calculation() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_thresholds_are_reasonable() {
     // Price deviation should be relatively tight
-    assert!(PRICE_DEVIATION_THRESHOLD <= 10.0, "Price deviation threshold too loose");
-    assert!(PRICE_DEVIATION_THRESHOLD >= 1.0, "Price deviation threshold too tight");
+    assert!(
+        PRICE_DEVIATION_THRESHOLD <= 10.0,
+        "Price deviation threshold too loose"
+    );
+    assert!(
+        PRICE_DEVIATION_THRESHOLD >= 1.0,
+        "Price deviation threshold too tight"
+    );
 
     // Volume can vary more across sources
-    assert!(VOLUME_DEVIATION_THRESHOLD <= 50.0, "Volume deviation threshold too loose");
-    assert!(VOLUME_DEVIATION_THRESHOLD >= 10.0, "Volume deviation threshold too tight");
+    assert!(
+        VOLUME_DEVIATION_THRESHOLD <= 50.0,
+        "Volume deviation threshold too loose"
+    );
+    assert!(
+        VOLUME_DEVIATION_THRESHOLD >= 10.0,
+        "Volume deviation threshold too tight"
+    );
 
     // Percent change should be within a few percentage points
-    assert!(PERCENT_CHANGE_DEVIATION_THRESHOLD <= 5.0, "Percent change deviation threshold too loose");
+    assert!(
+        PERCENT_CHANGE_DEVIATION_THRESHOLD <= 5.0,
+        "Percent change deviation threshold too loose"
+    );
 }

@@ -1,7 +1,6 @@
 //! Unit tests for types module
 
 use haunt::types::*;
-use serde_json;
 use std::str::FromStr;
 
 #[test]
@@ -33,13 +32,13 @@ fn test_price_source_serialization() {
 }
 
 #[test]
-fn test_chart_range_from_str() {
-    assert_eq!(ChartRange::from_str("1h"), Some(ChartRange::OneHour));
-    assert_eq!(ChartRange::from_str("4h"), Some(ChartRange::FourHours));
-    assert_eq!(ChartRange::from_str("1d"), Some(ChartRange::OneDay));
-    assert_eq!(ChartRange::from_str("1w"), Some(ChartRange::OneWeek));
-    assert_eq!(ChartRange::from_str("1m"), Some(ChartRange::OneMonth));
-    assert_eq!(ChartRange::from_str("invalid"), None);
+fn test_chart_range_parse() {
+    assert_eq!(ChartRange::parse("1h"), Some(ChartRange::OneHour));
+    assert_eq!(ChartRange::parse("4h"), Some(ChartRange::FourHours));
+    assert_eq!(ChartRange::parse("1d"), Some(ChartRange::OneDay));
+    assert_eq!(ChartRange::parse("1w"), Some(ChartRange::OneWeek));
+    assert_eq!(ChartRange::parse("1m"), Some(ChartRange::OneMonth));
+    assert_eq!(ChartRange::parse("invalid"), None);
 }
 
 #[test]
@@ -69,9 +68,9 @@ fn test_chart_resolution_seconds() {
 
 #[test]
 fn test_chart_resolution_retention() {
-    assert_eq!(ChartResolution::OneMinute.retention_seconds(), 3600);
-    assert_eq!(ChartResolution::FiveMinute.retention_seconds(), 86400);
-    assert_eq!(ChartResolution::OneHour.retention_seconds(), 2592000);
+    assert_eq!(ChartResolution::OneMinute.retention_seconds(), 14400); // 4 hours
+    assert_eq!(ChartResolution::FiveMinute.retention_seconds(), 604800); // 7 days
+    assert_eq!(ChartResolution::OneHour.retention_seconds(), 7776000); // 90 days
 }
 
 #[test]
@@ -103,6 +102,7 @@ fn test_asset_serialization() {
         name: "Bitcoin".to_string(),
         symbol: "BTC".to_string(),
         slug: "bitcoin".to_string(),
+        rank: Some(1),
         logo: Some("https://example.com/btc.png".to_string()),
         description: None,
         category: None,
@@ -203,6 +203,7 @@ fn test_price_update_data_from_aggregated_price() {
         previous_price: Some(49000.0),
         change_24h: Some(2.04),
         volume_24h: Some(1000000000.0),
+        trade_direction: None,
         source: PriceSource::Coinbase,
         sources: vec![PriceSource::Coinbase, PriceSource::CoinGecko],
         timestamp: 1704067200000,
@@ -241,20 +242,50 @@ fn test_paginated_response() {
 
 #[test]
 fn test_mover_timeframe_from_str() {
-    assert_eq!(MoverTimeframe::from_str("1m").unwrap(), MoverTimeframe::OneMinute);
-    assert_eq!(MoverTimeframe::from_str("5m").unwrap(), MoverTimeframe::FiveMinutes);
-    assert_eq!(MoverTimeframe::from_str("15m").unwrap(), MoverTimeframe::FifteenMinutes);
-    assert_eq!(MoverTimeframe::from_str("1h").unwrap(), MoverTimeframe::OneHour);
-    assert_eq!(MoverTimeframe::from_str("4h").unwrap(), MoverTimeframe::FourHours);
-    assert_eq!(MoverTimeframe::from_str("24h").unwrap(), MoverTimeframe::TwentyFourHours);
+    assert_eq!(
+        MoverTimeframe::from_str("1m").unwrap(),
+        MoverTimeframe::OneMinute
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("5m").unwrap(),
+        MoverTimeframe::FiveMinutes
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("15m").unwrap(),
+        MoverTimeframe::FifteenMinutes
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("1h").unwrap(),
+        MoverTimeframe::OneHour
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("4h").unwrap(),
+        MoverTimeframe::FourHours
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("24h").unwrap(),
+        MoverTimeframe::TwentyFourHours
+    );
 }
 
 #[test]
 fn test_mover_timeframe_from_str_case_insensitive() {
-    assert_eq!(MoverTimeframe::from_str("1M").unwrap(), MoverTimeframe::OneMinute);
-    assert_eq!(MoverTimeframe::from_str("1H").unwrap(), MoverTimeframe::OneHour);
-    assert_eq!(MoverTimeframe::from_str("4H").unwrap(), MoverTimeframe::FourHours);
-    assert_eq!(MoverTimeframe::from_str("24H").unwrap(), MoverTimeframe::TwentyFourHours);
+    assert_eq!(
+        MoverTimeframe::from_str("1M").unwrap(),
+        MoverTimeframe::OneMinute
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("1H").unwrap(),
+        MoverTimeframe::OneHour
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("4H").unwrap(),
+        MoverTimeframe::FourHours
+    );
+    assert_eq!(
+        MoverTimeframe::from_str("24H").unwrap(),
+        MoverTimeframe::TwentyFourHours
+    );
 }
 
 #[test]
@@ -337,22 +368,18 @@ fn test_mover_without_volume() {
 fn test_movers_response_serialization() {
     let response = MoversResponse {
         timeframe: "1h".to_string(),
-        gainers: vec![
-            Mover {
-                symbol: "BTC".to_string(),
-                price: 50000.0,
-                change_percent: 5.0,
-                volume_24h: None,
-            },
-        ],
-        losers: vec![
-            Mover {
-                symbol: "ETH".to_string(),
-                price: 3000.0,
-                change_percent: -3.0,
-                volume_24h: None,
-            },
-        ],
+        gainers: vec![Mover {
+            symbol: "BTC".to_string(),
+            price: 50000.0,
+            change_percent: 5.0,
+            volume_24h: None,
+        }],
+        losers: vec![Mover {
+            symbol: "ETH".to_string(),
+            price: 3000.0,
+            change_percent: -3.0,
+            volume_24h: None,
+        }],
         timestamp: 1704067200,
     };
 

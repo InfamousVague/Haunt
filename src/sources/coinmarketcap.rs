@@ -1,5 +1,10 @@
+// Some structs/constants are kept for API completeness
+#![allow(dead_code)]
+
 use crate::services::{Cache, ChartStore, FileCache, PriceCache};
-use crate::types::{Asset, AssetListing, FearGreedData, GlobalMetrics, PaginatedResponse, PriceSource, Quote, SearchResult};
+use crate::types::{
+    Asset, AssetListing, FearGreedData, GlobalMetrics, PaginatedResponse, PriceSource, Quote,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -112,14 +117,19 @@ impl CoinMarketCapClient {
         loop {
             if let Err(e) = self.fetch_listings().await {
                 error!("CoinMarketCap fetch error: {}", e);
-                self.price_cache.report_source_error(PriceSource::CoinMarketCap, &e.to_string());
+                self.price_cache
+                    .report_source_error(PriceSource::CoinMarketCap, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
     }
 
     /// Fetch paginated listings.
-    pub async fn get_listings(&self, page: i32, limit: i32) -> anyhow::Result<PaginatedResponse<AssetListing>> {
+    pub async fn get_listings(
+        &self,
+        page: i32,
+        limit: i32,
+    ) -> anyhow::Result<PaginatedResponse<AssetListing>> {
         let cache_key = format!("listings_{}_{}", page, limit);
         let file_cache_key = format!("cmc_listings_{}_{}", page, limit);
 
@@ -146,7 +156,8 @@ impl CoinMarketCapClient {
 
         // Try to fetch from API
         let api_result = async {
-            let response: CmcResponse<Vec<CmcListingData>> = self.client
+            let response: CmcResponse<Vec<CmcListingData>> = self
+                .client
                 .get(&url)
                 .header("X-CMC_PRO_API_KEY", &self.api_key)
                 .send()
@@ -154,13 +165,15 @@ impl CoinMarketCapClient {
                 .json()
                 .await?;
 
-            let listings: Vec<AssetListing> = response.data
+            let listings: Vec<AssetListing> = response
+                .data
                 .into_iter()
                 .map(|d| self.convert_listing(d))
                 .collect();
 
             Ok::<Vec<AssetListing>, anyhow::Error>(listings)
-        }.await;
+        }
+        .await;
 
         match api_result {
             Ok(mut listings) => {
@@ -185,7 +198,8 @@ impl CoinMarketCapClient {
                 warn!("CMC API failed, trying file cache fallback: {}", e);
 
                 // Try file cache (fresh first, then stale)
-                let file_cached: Option<Vec<AssetListing>> = self.file_cache
+                let file_cached: Option<Vec<AssetListing>> = self
+                    .file_cache
                     .get(&file_cache_key, FILE_CACHE_TTL)
                     .or_else(|| {
                         warn!("Using stale file cache for listings");
@@ -226,7 +240,8 @@ impl CoinMarketCapClient {
             CMC_API_URL, id
         );
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("X-CMC_PRO_API_KEY", &self.api_key)
             .send()
@@ -236,7 +251,12 @@ impl CoinMarketCapClient {
         let text = resp.text().await?;
 
         if !status.is_success() {
-            tracing::warn!("CMC API error for asset {}: {} - {}", id, status, &text[..text.len().min(200)]);
+            tracing::warn!(
+                "CMC API error for asset {}: {} - {}",
+                id,
+                status,
+                &text[..text.len().min(200)]
+            );
             return Ok(None);
         }
 
@@ -249,7 +269,11 @@ impl CoinMarketCapClient {
             }
         };
 
-        debug!("CMC get_asset {} response keys: {:?}", id, parsed.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+        debug!(
+            "CMC get_asset {} response keys: {:?}",
+            id,
+            parsed.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
 
         let data_obj = parsed.get("data");
         if data_obj.is_none() {
@@ -257,24 +281,26 @@ impl CoinMarketCapClient {
             return Ok(None);
         }
 
-        let asset_data = data_obj.and_then(|d| d.get(&id.to_string()));
+        let asset_data = data_obj.and_then(|d| d.get(id.to_string()));
         if asset_data.is_none() {
-            tracing::warn!("Asset {} not found in CMC data. Available keys: {:?}",
+            tracing::warn!(
+                "Asset {} not found in CMC data. Available keys: {:?}",
                 id,
-                data_obj.and_then(|d| d.as_object().map(|o| o.keys().collect::<Vec<_>>())));
+                data_obj.and_then(|d| d.as_object().map(|o| o.keys().collect::<Vec<_>>()))
+            );
             return Ok(None);
         }
 
         let asset = asset_data
-            .and_then(|v| {
-                match serde_json::from_value::<CmcListingData>(v.clone()) {
+            .and_then(
+                |v| match serde_json::from_value::<CmcListingData>(v.clone()) {
                     Ok(data) => Some(data),
                     Err(e) => {
                         tracing::warn!("Failed to parse asset data for {}: {}", id, e);
                         None
                     }
-                }
-            })
+                },
+            )
             .map(|d| self.convert_to_asset(d));
 
         if let Some(ref a) = asset {
@@ -290,11 +316,12 @@ impl CoinMarketCapClient {
         let listings = self.get_listings(1, 100).await?;
 
         let query_lower = query.to_lowercase();
-        let results: Vec<AssetListing> = listings.data
+        let results: Vec<AssetListing> = listings
+            .data
             .into_iter()
             .filter(|l| {
-                l.name.to_lowercase().contains(&query_lower) ||
-                l.symbol.to_lowercase().contains(&query_lower)
+                l.name.to_lowercase().contains(&query_lower)
+                    || l.symbol.to_lowercase().contains(&query_lower)
             })
             .take(limit as usize)
             .collect();
@@ -310,7 +337,8 @@ impl CoinMarketCapClient {
 
         let url = format!("{}/global-metrics/quotes/latest", CMC_API_URL);
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("X-CMC_PRO_API_KEY", &self.api_key)
             .send()
@@ -333,10 +361,24 @@ impl CoinMarketCapClient {
                 .and_then(|q| q.get("total_volume_24h"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0),
-            btc_dominance: data.get("btc_dominance").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            eth_dominance: data.get("eth_dominance").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            active_cryptocurrencies: data.get("active_cryptocurrencies").and_then(|v| v.as_i64()).map(|v| v as i32).unwrap_or(0),
-            active_exchanges: data.get("active_exchanges").and_then(|v| v.as_i64()).map(|v| v as i32).unwrap_or(0),
+            btc_dominance: data
+                .get("btc_dominance")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            eth_dominance: data
+                .get("eth_dominance")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            active_cryptocurrencies: data
+                .get("active_cryptocurrencies")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .unwrap_or(0),
+            active_exchanges: data
+                .get("active_exchanges")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .unwrap_or(0),
             market_cap_change_24h: quote
                 .and_then(|q| q.get("total_market_cap_yesterday_percentage_change"))
                 .and_then(|v| v.as_f64())
@@ -349,7 +391,11 @@ impl CoinMarketCapClient {
             defi_market_cap: data.get("defi_market_cap").and_then(|v| v.as_f64()),
             stablecoin_volume_24h: data.get("stablecoin_volume_24h").and_then(|v| v.as_f64()),
             stablecoin_market_cap: data.get("stablecoin_market_cap").and_then(|v| v.as_f64()),
-            last_updated: data.get("last_updated").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            last_updated: data
+                .get("last_updated")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
 
         self.global_cache.set("global".to_string(), metrics.clone());
@@ -366,10 +412,7 @@ impl CoinMarketCapClient {
         // Use alternative.me Fear & Greed API (free, no API key required)
         let url = "https://api.alternative.me/fng/?limit=1";
 
-        let resp = self.client
-            .get(url)
-            .send()
-            .await?;
+        let resp = self.client.get(url).send().await?;
 
         let text = resp.text().await?;
         let parsed: serde_json::Value = serde_json::from_str(&text)?;
@@ -380,15 +423,18 @@ impl CoinMarketCapClient {
         let data = if let Some(arr) = data_arr {
             if let Some(item) = arr.first() {
                 FearGreedData {
-                    value: item.get("value")
+                    value: item
+                        .get("value")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<i32>().ok())
                         .unwrap_or(50),
-                    classification: item.get("value_classification")
+                    classification: item
+                        .get("value_classification")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Neutral")
                         .to_string(),
-                    timestamp: item.get("timestamp")
+                    timestamp: item
+                        .get("timestamp")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
@@ -403,7 +449,8 @@ impl CoinMarketCapClient {
             FearGreedData::default()
         };
 
-        self.fear_greed_cache.set("fear_greed".to_string(), data.clone());
+        self.fear_greed_cache
+            .set("fear_greed".to_string(), data.clone());
 
         Ok(data)
     }
@@ -414,7 +461,8 @@ impl CoinMarketCapClient {
             CMC_API_URL
         );
 
-        let response: CmcResponse<Vec<CmcListingData>> = self.client
+        let response: CmcResponse<Vec<CmcListingData>> = self
+            .client
             .get(&url)
             .header("X-CMC_PRO_API_KEY", &self.api_key)
             .send()
@@ -435,7 +483,8 @@ impl CoinMarketCapClient {
                         price,
                         quote.volume_24h,
                     );
-                    self.chart_store.add_price(&symbol, price, quote.volume_24h, timestamp);
+                    self.chart_store
+                        .add_price(&symbol, price, quote.volume_24h, timestamp);
                 }
             }
         }
@@ -459,7 +508,10 @@ impl CoinMarketCapClient {
             rank: data.cmc_rank.unwrap_or(0),
             name: data.name,
             symbol: data.symbol,
-            image: format!("https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png", data.id),
+            image: format!(
+                "https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png",
+                data.id
+            ),
             price: safe_f64(quote.as_ref().and_then(|q| q.price)),
             change_1h: safe_f64(quote.as_ref().and_then(|q| q.percent_change_1h)),
             change_24h: safe_f64(quote.as_ref().and_then(|q| q.percent_change_24h)),
@@ -477,22 +529,25 @@ impl CoinMarketCapClient {
     }
 
     fn convert_to_asset(&self, data: CmcListingData) -> Asset {
-        let quote = data.quote.and_then(|m| m.get("USD").cloned()).map(|q| Quote {
-            price: q.price.unwrap_or(0.0),
-            volume_24h: q.volume_24h,
-            volume_change_24h: q.volume_change_24h,
-            market_cap: q.market_cap,
-            market_cap_dominance: q.market_cap_dominance,
-            percent_change_1h: q.percent_change_1h,
-            percent_change_24h: q.percent_change_24h,
-            percent_change_7d: q.percent_change_7d,
-            percent_change_30d: q.percent_change_30d,
-            fully_diluted_market_cap: q.fully_diluted_market_cap,
-            circulating_supply: None,
-            total_supply: None,
-            max_supply: None,
-            last_updated: None,
-        });
+        let quote = data
+            .quote
+            .and_then(|m| m.get("USD").cloned())
+            .map(|q| Quote {
+                price: q.price.unwrap_or(0.0),
+                volume_24h: q.volume_24h,
+                volume_change_24h: q.volume_change_24h,
+                market_cap: q.market_cap,
+                market_cap_dominance: q.market_cap_dominance,
+                percent_change_1h: q.percent_change_1h,
+                percent_change_24h: q.percent_change_24h,
+                percent_change_7d: q.percent_change_7d,
+                percent_change_30d: q.percent_change_30d,
+                fully_diluted_market_cap: q.fully_diluted_market_cap,
+                circulating_supply: None,
+                total_supply: None,
+                max_supply: None,
+                last_updated: None,
+            });
 
         Asset {
             id: data.id,
@@ -500,7 +555,10 @@ impl CoinMarketCapClient {
             symbol: data.symbol,
             slug: data.slug,
             rank: data.cmc_rank,
-            logo: Some(format!("https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png", data.id)),
+            logo: Some(format!(
+                "https://s2.coinmarketcap.com/static/img/coins/64x64/{}.png",
+                data.id
+            )),
             description: None,
             category: None,
             date_added: None,
@@ -508,5 +566,229 @@ impl CoinMarketCapClient {
             urls: None,
             quote,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // CmcResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_response_deserialization() {
+        let json = r#"{
+            "data": [
+                {
+                    "id": 1,
+                    "name": "Bitcoin",
+                    "symbol": "BTC",
+                    "slug": "bitcoin",
+                    "cmc_rank": 1
+                }
+            ]
+        }"#;
+        let response: CmcResponse<Vec<CmcListingData>> = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].symbol, "BTC");
+    }
+
+    // =========================================================================
+    // CmcListingData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_listing_data_deserialization() {
+        let json = r#"{
+            "id": 1,
+            "name": "Bitcoin",
+            "symbol": "BTC",
+            "slug": "bitcoin",
+            "cmc_rank": 1,
+            "quote": {
+                "USD": {
+                    "price": 43500.50,
+                    "volume_24h": 25000000000.0,
+                    "percent_change_24h": 2.5,
+                    "market_cap": 850000000000.0
+                }
+            }
+        }"#;
+        let listing: CmcListingData = serde_json::from_str(json).unwrap();
+        assert_eq!(listing.id, 1);
+        assert_eq!(listing.name, "Bitcoin");
+        assert_eq!(listing.symbol, "BTC");
+        assert_eq!(listing.cmc_rank, Some(1));
+        assert!(listing.quote.is_some());
+    }
+
+    #[test]
+    fn test_cmc_listing_data_minimal() {
+        let json = r#"{
+            "id": 1027,
+            "name": "Ethereum",
+            "symbol": "ETH",
+            "slug": "ethereum"
+        }"#;
+        let listing: CmcListingData = serde_json::from_str(json).unwrap();
+        assert_eq!(listing.id, 1027);
+        assert!(listing.cmc_rank.is_none());
+        assert!(listing.quote.is_none());
+    }
+
+    // =========================================================================
+    // CmcQuote Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_quote_deserialization() {
+        let json = r#"{
+            "price": 43500.50,
+            "volume_24h": 25000000000.0,
+            "volume_change_24h": 5.2,
+            "percent_change_1h": 0.5,
+            "percent_change_24h": 2.5,
+            "percent_change_7d": -1.2,
+            "percent_change_30d": 15.0,
+            "market_cap": 850000000000.0,
+            "market_cap_dominance": 52.5,
+            "fully_diluted_market_cap": 900000000000.0
+        }"#;
+        let quote: CmcQuote = serde_json::from_str(json).unwrap();
+        assert_eq!(quote.price, Some(43500.50));
+        assert_eq!(quote.volume_24h, Some(25000000000.0));
+        assert_eq!(quote.percent_change_24h, Some(2.5));
+        assert_eq!(quote.market_cap_dominance, Some(52.5));
+    }
+
+    #[test]
+    fn test_cmc_quote_null_values() {
+        let json = r#"{
+            "price": 100.0,
+            "volume_24h": null,
+            "percent_change_24h": null
+        }"#;
+        let quote: CmcQuote = serde_json::from_str(json).unwrap();
+        assert_eq!(quote.price, Some(100.0));
+        assert!(quote.volume_24h.is_none());
+    }
+
+    #[test]
+    fn test_cmc_quote_clone() {
+        let quote = CmcQuote {
+            price: Some(100.0),
+            volume_24h: Some(1000000.0),
+            volume_change_24h: None,
+            percent_change_1h: None,
+            percent_change_24h: Some(2.5),
+            percent_change_7d: None,
+            percent_change_30d: None,
+            market_cap: Some(1000000000.0),
+            market_cap_dominance: None,
+            fully_diluted_market_cap: None,
+        };
+        let cloned = quote.clone();
+        assert_eq!(cloned.price, quote.price);
+    }
+
+    // =========================================================================
+    // CmcGlobalData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_global_data_deserialization() {
+        let json = r#"{
+            "btc_dominance": 52.5,
+            "eth_dominance": 18.0,
+            "active_cryptocurrencies": 10000,
+            "active_exchanges": 500
+        }"#;
+        let data: CmcGlobalData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.btc_dominance, Some(52.5));
+        assert_eq!(data.eth_dominance, Some(18.0));
+        assert_eq!(data.active_cryptocurrencies, Some(10000));
+    }
+
+    // =========================================================================
+    // CmcFearGreedData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_fear_greed_data_deserialization() {
+        let json = r#"{
+            "value": 25,
+            "value_classification": "Extreme Fear",
+            "update_time": "2024-01-15T00:00:00Z"
+        }"#;
+        let data: CmcFearGreedData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.value, 25);
+        assert_eq!(data.value_classification, "Extreme Fear");
+    }
+
+    #[test]
+    fn test_cmc_fear_greed_classifications() {
+        let classifications = vec![
+            (10, "Extreme Fear"),
+            (30, "Fear"),
+            (50, "Neutral"),
+            (70, "Greed"),
+            (90, "Extreme Greed"),
+        ];
+        for (value, classification) in classifications {
+            let json = format!(
+                r#"{{"value": {}, "value_classification": "{}", "update_time": "2024-01-15"}}"#,
+                value, classification
+            );
+            let data: CmcFearGreedData = serde_json::from_str(&json).unwrap();
+            assert_eq!(data.value, value);
+            assert_eq!(data.value_classification, classification);
+        }
+    }
+
+    // =========================================================================
+    // CmcFearGreedResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_fear_greed_response_deserialization() {
+        let json = r#"{
+            "data": {
+                "value": 45,
+                "value_classification": "Fear",
+                "update_time": "2024-01-15T12:00:00Z"
+            }
+        }"#;
+        let response: CmcFearGreedResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.value, 45);
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmc_api_url() {
+        assert!(CMC_API_URL.contains("coinmarketcap.com"));
+        assert!(CMC_API_URL.contains("/v1"));
+    }
+
+    #[test]
+    fn test_cmc_api_v2_url() {
+        assert!(CMC_API_V2_URL.contains("coinmarketcap.com"));
+        assert!(CMC_API_V2_URL.contains("/v2"));
+    }
+
+    #[test]
+    fn test_poll_interval() {
+        // Verify poll interval is at least 1 minute (60 seconds)
+        let expected_min = 60_u64;
+        assert!(POLL_INTERVAL_SECS >= expected_min);
+    }
+
+    #[test]
+    fn test_file_cache_ttl() {
+        assert_eq!(FILE_CACHE_TTL, Duration::from_secs(24 * 60 * 60));
     }
 }

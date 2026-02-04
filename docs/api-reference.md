@@ -17,6 +17,7 @@
 - [Trading Signals](#trading-signals)
 - [Order Book](#order-book)
 - [Peer Mesh](#peer-mesh)
+- [Paper Trading](#paper-trading)
 - [Error Handling](#error-handling)
 
 ---
@@ -1055,6 +1056,37 @@ Get all mesh servers for frontend discovery.
   }
 }
 ```
+
+---
+
+## Paper Trading
+
+The Paper Trading API provides a complete simulated trading environment. Due to its comprehensive nature, it has its own dedicated documentation.
+
+**See:** [Trading API Reference](./trading-api.md)
+
+### Quick Overview
+
+The trading system includes:
+
+- **Portfolios**: Create and manage paper trading portfolios ($5M starting balance)
+- **Orders**: Market, limit, stop-loss, trailing stop, OCO, bracket orders
+- **Positions**: Long/short positions with stop loss and take profit
+- **Margin Trading**: Up to 100x leverage for perpetual futures
+- **Options**: Black-Scholes pricing, Greeks, multi-leg strategies
+- **Auto-Trading**: Rule-based strategies with 13 technical indicators
+- **Backtesting**: Historical testing with Monte Carlo simulation
+
+### Base Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/trading/portfolios` | List portfolios |
+| `POST /api/trading/portfolios` | Create portfolio |
+| `GET /api/trading/orders` | List orders |
+| `POST /api/trading/orders` | Place order |
+| `GET /api/trading/positions` | List positions |
+| `GET /api/trading/trades` | Trade history |
 
 ---
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
@@ -99,5 +101,108 @@ mod tests {
         cache.set("key1".to_string(), "value1".to_string());
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(cache.get("key1"), None);
+    }
+
+    #[test]
+    fn test_cache_custom_ttl() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.set_with_ttl(
+            "short".to_string(),
+            "value".to_string(),
+            Duration::from_millis(10),
+        );
+        cache.set_with_ttl(
+            "long".to_string(),
+            "value".to_string(),
+            Duration::from_secs(60),
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+
+        assert_eq!(cache.get("short"), None);
+        assert_eq!(cache.get("long"), Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_cache_contains() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.set("key".to_string(), "value".to_string());
+
+        assert!(cache.contains("key"));
+        assert!(!cache.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_cache_remove() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.set("key".to_string(), "value".to_string());
+
+        let removed = cache.remove("key");
+        assert_eq!(removed, Some("value".to_string()));
+        assert_eq!(cache.get("key"), None);
+
+        // Remove nonexistent key
+        let removed = cache.remove("nonexistent");
+        assert_eq!(removed, None);
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.set("key1".to_string(), "value1".to_string());
+        cache.set("key2".to_string(), "value2".to_string());
+
+        assert_eq!(cache.len(), 2);
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_cleanup() {
+        let cache = Cache::new(Duration::from_millis(10));
+        cache.set("key1".to_string(), "value1".to_string());
+        cache.set_with_ttl(
+            "key2".to_string(),
+            "value2".to_string(),
+            Duration::from_secs(60),
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+        cache.cleanup();
+
+        // key1 should be removed (expired), key2 should remain
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("key2"), Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_cache_len_and_is_empty() {
+        let cache: Cache<String> = Cache::new(Duration::from_secs(60));
+
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.set("key".to_string(), "value".to_string());
+        assert!(!cache.is_empty());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_overwrite() {
+        let cache = Cache::new(Duration::from_secs(60));
+        cache.set("key".to_string(), "value1".to_string());
+        cache.set("key".to_string(), "value2".to_string());
+
+        assert_eq!(cache.get("key"), Some("value2".to_string()));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_numeric_values() {
+        let cache: Cache<i32> = Cache::new(Duration::from_secs(60));
+        cache.set("count".to_string(), 42);
+
+        assert_eq!(cache.get("count"), Some(42));
     }
 }

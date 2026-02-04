@@ -40,8 +40,8 @@ impl Adx {
         let initial: f64 = values.iter().take(period).sum::<f64>() / period as f64;
         result.push(initial);
 
-        for i in period..values.len() {
-            let smoothed = (result.last().unwrap() * (period - 1) as f64 + values[i]) / period as f64;
+        for value in values.iter().skip(period) {
+            let smoothed = (result.last().unwrap() * (period - 1) as f64 + value) / period as f64;
             result.push(smoothed);
         }
 
@@ -168,5 +168,75 @@ impl Signal for Adx {
             adx,
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_adx_id_and_name() {
+        let adx = Adx::default();
+        assert_eq!(adx.id(), "adx");
+        assert_eq!(adx.name(), "ADX (14)");
+    }
+
+    #[test]
+    fn test_adx_category() {
+        let adx = Adx::default();
+        assert_eq!(adx.category(), SignalCategory::Trend);
+    }
+
+    #[test]
+    fn test_adx_min_periods() {
+        let adx = Adx::default();
+        assert_eq!(adx.min_periods(), 29); // period * 2 + 1
+    }
+
+    #[test]
+    fn test_adx_insufficient_data() {
+        let adx = Adx::default();
+        let candles = create_uptrend_candles(20);
+        let result = adx.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_adx_positive_value() {
+        let adx = Adx::default();
+        let candles = create_uptrend_candles(50);
+        let result = adx.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value >= 0.0,
+            "ADX should be positive, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_adx_score_range() {
+        let adx = Adx::default();
+        let candles = create_uptrend_candles(50);
+        let result = adx.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
     }
 }

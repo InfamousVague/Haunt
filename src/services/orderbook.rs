@@ -23,6 +23,7 @@ const MAX_DEPTH: usize = 100;
 // Exchange symbol mappings
 // ============================================================================
 
+#[allow(dead_code)]
 fn get_binance_pair(symbol: &str) -> Option<&'static str> {
     match symbol {
         "btc" => Some("BTCUSDT"),
@@ -72,8 +73,8 @@ fn get_kraken_pair(symbol: &str) -> Option<&'static str> {
 
 fn get_kucoin_pair(symbol: &str) -> Option<String> {
     match symbol {
-        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" |
-        "matic" | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
+        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" | "matic"
+        | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
             Some(format!("{}-USDT", symbol.to_uppercase()))
         }
         _ => None,
@@ -82,8 +83,8 @@ fn get_kucoin_pair(symbol: &str) -> Option<String> {
 
 fn get_okx_pair(symbol: &str) -> Option<String> {
     match symbol {
-        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" |
-        "matic" | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
+        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" | "matic"
+        | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
             Some(format!("{}-USDT", symbol.to_uppercase()))
         }
         _ => None,
@@ -92,8 +93,8 @@ fn get_okx_pair(symbol: &str) -> Option<String> {
 
 fn get_huobi_pair(symbol: &str) -> Option<String> {
     match symbol {
-        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" |
-        "matic" | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
+        "btc" | "eth" | "sol" | "xrp" | "doge" | "ada" | "avax" | "dot" | "link" | "matic"
+        | "shib" | "ltc" | "trx" | "atom" | "uni" | "xlm" | "bch" | "near" | "apt" => {
             Some(format!("{}usdt", symbol.to_lowercase()))
         }
         _ => None,
@@ -163,11 +164,12 @@ fn get_coinbase_pair(symbol: &str) -> Option<&'static str> {
 }
 
 // ============================================================================
-// Exchange response types
+// Exchange response types (some fields are kept for API completeness)
 // ============================================================================
 
 /// Binance depth response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct BinanceDepth {
     #[serde(rename = "lastUpdateId")]
     last_update_id: u64,
@@ -196,6 +198,7 @@ struct KuCoinDepthResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct KuCoinDepth {
     sequence: String,
     bids: Vec<Vec<String>>,
@@ -210,6 +213,7 @@ struct OkxDepthResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OkxDepth {
     asks: Vec<Vec<String>>,
     bids: Vec<Vec<String>>,
@@ -243,10 +247,11 @@ struct HyperliquidL2Response {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HyperliquidLevel {
-    px: String,  // price
-    sz: String,  // size
-    n: u32,      // number of orders
+    px: String, // price
+    sz: String, // size
+    n: u32,     // number of orders
 }
 
 // ============================================================================
@@ -333,12 +338,24 @@ impl OrderBookService {
         let has_hyperliquid = hyperliquid.is_some();
 
         let mut books = Vec::new();
-        if let Some(b) = coinbase { books.push(b); }
-        if let Some(b) = kraken { books.push(b); }
-        if let Some(b) = kucoin { books.push(b); }
-        if let Some(b) = okx { books.push(b); }
-        if let Some(b) = huobi { books.push(b); }
-        if let Some(b) = hyperliquid { books.push(b); }
+        if let Some(b) = coinbase {
+            books.push(b);
+        }
+        if let Some(b) = kraken {
+            books.push(b);
+        }
+        if let Some(b) = kucoin {
+            books.push(b);
+        }
+        if let Some(b) = okx {
+            books.push(b);
+        }
+        if let Some(b) = huobi {
+            books.push(b);
+        }
+        if let Some(b) = hyperliquid {
+            books.push(b);
+        }
 
         debug!(
             "Fetched order books for {}: {} exchanges (Coinbase: {}, Kraken: {}, KuCoin: {}, OKX: {}, Huobi: {}, Hyperliquid: {})",
@@ -364,34 +381,42 @@ impl OrderBookService {
         );
 
         match self.client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<CoinbaseDepth>().await {
-                    Ok(data) => {
-                        let bids: Vec<OrderBookLevel> = data.bids.iter().filter_map(|l| {
-                            let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
+            Ok(resp) if resp.status().is_success() => match resp.json::<CoinbaseDepth>().await {
+                Ok(data) => {
+                    let bids: Vec<OrderBookLevel> = data
+                        .bids
+                        .iter()
+                        .filter_map(|l| {
+                            let price: f64 = l.first()?.as_str()?.parse().ok()?;
                             let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
                             Some(OrderBookLevel { price, quantity })
-                        }).take(depth).collect();
-                        let asks: Vec<OrderBookLevel> = data.asks.iter().filter_map(|l| {
-                            let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
-                            let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
-                            Some(OrderBookLevel { price, quantity })
-                        }).take(depth).collect();
-
-                        Some(ExchangeOrderBook {
-                            exchange: PriceSource::Coinbase,
-                            symbol: symbol.to_string(),
-                            bids,
-                            asks,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
                         })
-                    }
-                    Err(e) => {
-                        warn!("Coinbase depth parse error: {}", e);
-                        None
-                    }
+                        .take(depth)
+                        .collect();
+                    let asks: Vec<OrderBookLevel> = data
+                        .asks
+                        .iter()
+                        .filter_map(|l| {
+                            let price: f64 = l.first()?.as_str()?.parse().ok()?;
+                            let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
+                            Some(OrderBookLevel { price, quantity })
+                        })
+                        .take(depth)
+                        .collect();
+
+                    Some(ExchangeOrderBook {
+                        exchange: PriceSource::Coinbase,
+                        symbol: symbol.to_string(),
+                        bids,
+                        asks,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    })
                 }
-            }
+                Err(e) => {
+                    warn!("Coinbase depth parse error: {}", e);
+                    None
+                }
+            },
             Ok(resp) => {
                 warn!("Coinbase depth error: {}", resp.status());
                 None
@@ -419,16 +444,24 @@ impl OrderBookService {
                         if let Some(result) = data.result {
                             // Kraken returns with weird pair names, get first result
                             if let Some((_, depth_data)) = result.into_iter().next() {
-                                let bids = depth_data.bids.iter().filter_map(|l| {
-                                    let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
-                                    let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
-                                    Some(OrderBookLevel { price, quantity })
-                                }).collect();
-                                let asks = depth_data.asks.iter().filter_map(|l| {
-                                    let price: f64 = l.get(0)?.as_str()?.parse().ok()?;
-                                    let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
-                                    Some(OrderBookLevel { price, quantity })
-                                }).collect();
+                                let bids = depth_data
+                                    .bids
+                                    .iter()
+                                    .filter_map(|l| {
+                                        let price: f64 = l.first()?.as_str()?.parse().ok()?;
+                                        let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
+                                        Some(OrderBookLevel { price, quantity })
+                                    })
+                                    .collect();
+                                let asks = depth_data
+                                    .asks
+                                    .iter()
+                                    .filter_map(|l| {
+                                        let price: f64 = l.first()?.as_str()?.parse().ok()?;
+                                        let quantity: f64 = l.get(1)?.as_str()?.parse().ok()?;
+                                        Some(OrderBookLevel { price, quantity })
+                                    })
+                                    .collect();
 
                                 return Some(ExchangeOrderBook {
                                     exchange: PriceSource::Kraken,
@@ -477,18 +510,28 @@ impl OrderBookService {
                 match resp.json::<KuCoinDepthResponse>().await {
                     Ok(data) if data.code == "200000" => {
                         if let Some(depth_data) = data.data {
-                            let bids = depth_data.bids.iter().filter_map(|l| {
-                                Some(OrderBookLevel {
-                                    price: l.get(0)?.parse().ok()?,
-                                    quantity: l.get(1)?.parse().ok()?,
+                            let bids = depth_data
+                                .bids
+                                .iter()
+                                .filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: l.first()?.parse().ok()?,
+                                        quantity: l.get(1)?.parse().ok()?,
+                                    })
                                 })
-                            }).take(depth).collect();
-                            let asks = depth_data.asks.iter().filter_map(|l| {
-                                Some(OrderBookLevel {
-                                    price: l.get(0)?.parse().ok()?,
-                                    quantity: l.get(1)?.parse().ok()?,
+                                .take(depth)
+                                .collect();
+                            let asks = depth_data
+                                .asks
+                                .iter()
+                                .filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: l.first()?.parse().ok()?,
+                                        quantity: l.get(1)?.parse().ok()?,
+                                    })
                                 })
-                            }).take(depth).collect();
+                                .take(depth)
+                                .collect();
 
                             return Some(ExchangeOrderBook {
                                 exchange: PriceSource::KuCoin,
@@ -531,45 +574,51 @@ impl OrderBookService {
         );
 
         match self.client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<OkxDepthResponse>().await {
-                    Ok(data) if data.code == "0" => {
-                        if let Some(books) = data.data {
-                            if let Some(depth_data) = books.into_iter().next() {
-                                let bids = depth_data.bids.iter().filter_map(|l| {
+            Ok(resp) if resp.status().is_success() => match resp.json::<OkxDepthResponse>().await {
+                Ok(data) if data.code == "0" => {
+                    if let Some(books) = data.data {
+                        if let Some(depth_data) = books.into_iter().next() {
+                            let bids = depth_data
+                                .bids
+                                .iter()
+                                .filter_map(|l| {
                                     Some(OrderBookLevel {
-                                        price: l.get(0)?.parse().ok()?,
+                                        price: l.first()?.parse().ok()?,
                                         quantity: l.get(1)?.parse().ok()?,
                                     })
-                                }).collect();
-                                let asks = depth_data.asks.iter().filter_map(|l| {
+                                })
+                                .collect();
+                            let asks = depth_data
+                                .asks
+                                .iter()
+                                .filter_map(|l| {
                                     Some(OrderBookLevel {
-                                        price: l.get(0)?.parse().ok()?,
+                                        price: l.first()?.parse().ok()?,
                                         quantity: l.get(1)?.parse().ok()?,
                                     })
-                                }).collect();
+                                })
+                                .collect();
 
-                                return Some(ExchangeOrderBook {
-                                    exchange: PriceSource::Okx,
-                                    symbol: symbol.to_string(),
-                                    bids,
-                                    asks,
-                                    timestamp: chrono::Utc::now().timestamp_millis(),
-                                });
-                            }
+                            return Some(ExchangeOrderBook {
+                                exchange: PriceSource::Okx,
+                                symbol: symbol.to_string(),
+                                bids,
+                                asks,
+                                timestamp: chrono::Utc::now().timestamp_millis(),
+                            });
                         }
-                        None
                     }
-                    Ok(data) => {
-                        warn!("OKX depth error: {}", data.code);
-                        None
-                    }
-                    Err(e) => {
-                        warn!("OKX depth parse error: {}", e);
-                        None
-                    }
+                    None
                 }
-            }
+                Ok(data) => {
+                    warn!("OKX depth error: {}", data.code);
+                    None
+                }
+                Err(e) => {
+                    warn!("OKX depth parse error: {}", e);
+                    None
+                }
+            },
             Ok(resp) => {
                 warn!("OKX depth error: {}", resp.status());
                 None
@@ -588,7 +637,8 @@ impl OrderBookService {
         // step0 gives most granular data
         let url = format!(
             "https://api.huobi.pro/market/depth?symbol={}&type=step0&depth={}",
-            pair, depth.min(20)
+            pair,
+            depth.min(20)
         );
 
         match self.client.get(&url).send().await {
@@ -596,18 +646,28 @@ impl OrderBookService {
                 match resp.json::<HuobiDepthResponse>().await {
                     Ok(data) if data.status == "ok" => {
                         if let Some(tick) = data.tick {
-                            let bids = tick.bids.iter().filter_map(|l| {
-                                Some(OrderBookLevel {
-                                    price: *l.get(0)?,
-                                    quantity: *l.get(1)?,
+                            let bids = tick
+                                .bids
+                                .iter()
+                                .filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: *l.first()?,
+                                        quantity: *l.get(1)?,
+                                    })
                                 })
-                            }).take(depth).collect();
-                            let asks = tick.asks.iter().filter_map(|l| {
-                                Some(OrderBookLevel {
-                                    price: *l.get(0)?,
-                                    quantity: *l.get(1)?,
+                                .take(depth)
+                                .collect();
+                            let asks = tick
+                                .asks
+                                .iter()
+                                .filter_map(|l| {
+                                    Some(OrderBookLevel {
+                                        price: *l.first()?,
+                                        quantity: *l.get(1)?,
+                                    })
                                 })
-                            }).take(depth).collect();
+                                .take(depth)
+                                .collect();
 
                             return Some(ExchangeOrderBook {
                                 exchange: PriceSource::Huobi,
@@ -656,27 +716,37 @@ impl OrderBookService {
                 match resp.json::<HyperliquidL2Response>().await {
                     Ok(data) => {
                         // Hyperliquid returns levels[0] = bids, levels[1] = asks
-                        let bids: Vec<OrderBookLevel> = data.levels
-                            .get(0)
+                        let bids: Vec<OrderBookLevel> = data
+                            .levels
+                            .first()
                             .map(|levels| {
-                                levels.iter().filter_map(|l| {
-                                    Some(OrderBookLevel {
-                                        price: l.px.parse().ok()?,
-                                        quantity: l.sz.parse().ok()?,
+                                levels
+                                    .iter()
+                                    .filter_map(|l| {
+                                        Some(OrderBookLevel {
+                                            price: l.px.parse().ok()?,
+                                            quantity: l.sz.parse().ok()?,
+                                        })
                                     })
-                                }).take(depth).collect()
+                                    .take(depth)
+                                    .collect()
                             })
                             .unwrap_or_default();
 
-                        let asks: Vec<OrderBookLevel> = data.levels
+                        let asks: Vec<OrderBookLevel> = data
+                            .levels
                             .get(1)
                             .map(|levels| {
-                                levels.iter().filter_map(|l| {
-                                    Some(OrderBookLevel {
-                                        price: l.px.parse().ok()?,
-                                        quantity: l.sz.parse().ok()?,
+                                levels
+                                    .iter()
+                                    .filter_map(|l| {
+                                        Some(OrderBookLevel {
+                                            price: l.px.parse().ok()?,
+                                            quantity: l.sz.parse().ok()?,
+                                        })
                                     })
-                                }).take(depth).collect()
+                                    .take(depth)
+                                    .collect()
                             })
                             .unwrap_or_default();
 

@@ -3,6 +3,9 @@
 //! Provides real-time IEX exchange data via WebSocket.
 //! Free tier available at: https://www.tiingo.com/
 
+// Some structs/constants are kept for API completeness
+#![allow(dead_code)]
+
 use crate::services::{ChartStore, PriceCache};
 use crate::types::PriceSource;
 use futures_util::{SinkExt, StreamExt};
@@ -17,9 +20,8 @@ const TIINGO_WS_URL: &str = "wss://api.tiingo.com/iex";
 
 /// Stocks to subscribe to.
 pub const STOCK_SYMBOLS: &[&str] = &[
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "V",
-    "JNJ", "UNH", "HD", "PG", "MA", "DIS", "ADBE", "CRM", "NFLX", "PYPL",
-    "SPY", "QQQ", "VOO", "IWM", "DIA",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "V", "JNJ", "UNH", "HD", "PG",
+    "MA", "DIS", "ADBE", "CRM", "NFLX", "PYPL", "SPY", "QQQ", "VOO", "IWM", "DIA",
 ];
 
 /// Tiingo subscribe message.
@@ -61,18 +63,18 @@ struct TiingoResponse {
 /// Format: [messageType, date, timestamp, ticker, bidSize, bidPrice, midPrice, askPrice, askSize, lastPrice, lastSize, halted]
 #[derive(Debug, Deserialize)]
 struct TiingoIexData(
-    String,           // 0: messageType ("T" for trade, "Q" for quote)
-    String,           // 1: date
-    String,           // 2: timestamp
-    String,           // 3: ticker
-    Option<f64>,      // 4: bidSize
-    Option<f64>,      // 5: bidPrice
-    Option<f64>,      // 6: midPrice
-    Option<f64>,      // 7: askPrice
-    Option<f64>,      // 8: askSize
-    Option<f64>,      // 9: lastPrice (trade price)
-    Option<f64>,      // 10: lastSize (trade size)
-    Option<i32>,      // 11: halted
+    String,      // 0: messageType ("T" for trade, "Q" for quote)
+    String,      // 1: date
+    String,      // 2: timestamp
+    String,      // 3: ticker
+    Option<f64>, // 4: bidSize
+    Option<f64>, // 5: bidPrice
+    Option<f64>, // 6: midPrice
+    Option<f64>, // 7: askPrice
+    Option<f64>, // 8: askSize
+    Option<f64>, // 9: lastPrice (trade price)
+    Option<f64>, // 10: lastSize (trade size)
+    Option<i32>, // 11: halted
 );
 
 /// Tiingo WebSocket client for real-time stock data.
@@ -86,7 +88,11 @@ pub struct TiingoWs {
 
 impl TiingoWs {
     /// Create a new Tiingo WebSocket client.
-    pub fn new(api_key: String, price_cache: Arc<PriceCache>, chart_store: Arc<ChartStore>) -> Self {
+    pub fn new(
+        api_key: String,
+        price_cache: Arc<PriceCache>,
+        chart_store: Arc<ChartStore>,
+    ) -> Self {
         Self {
             api_key,
             price_cache,
@@ -132,7 +138,10 @@ impl TiingoWs {
         let sub_json = serde_json::to_string(&subscribe_msg)?;
         write.send(Message::Text(sub_json)).await?;
 
-        info!("Subscribed to {} stocks via Tiingo WebSocket", STOCK_SYMBOLS.len());
+        info!(
+            "Subscribed to {} stocks via Tiingo WebSocket",
+            STOCK_SYMBOLS.len()
+        );
 
         // Store subscribed symbols
         {
@@ -234,7 +243,8 @@ impl TiingoWs {
 
                     debug!("Tiingo trade: {} = ${:.2}", ticker, price);
 
-                    self.price_cache.update_price(&symbol, PriceSource::Tiingo, price, None);
+                    self.price_cache
+                        .update_price(&symbol, PriceSource::Tiingo, price, None);
                     self.chart_store.add_price(&symbol, price, size, timestamp);
                 }
             }
@@ -244,11 +254,165 @@ impl TiingoWs {
                 if let Some(mid_price) = arr[6].as_f64() {
                     debug!("Tiingo quote: {} mid=${:.2}", ticker, mid_price);
 
-                    self.price_cache.update_price(&symbol, PriceSource::Tiingo, mid_price, None);
-                    self.chart_store.add_price(&symbol, mid_price, None, timestamp);
+                    self.price_cache
+                        .update_price(&symbol, PriceSource::Tiingo, mid_price, None);
+                    self.chart_store
+                        .add_price(&symbol, mid_price, None, timestamp);
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // STOCK_SYMBOLS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stock_symbols_contains_major_stocks() {
+        assert!(STOCK_SYMBOLS.contains(&"AAPL"));
+        assert!(STOCK_SYMBOLS.contains(&"MSFT"));
+        assert!(STOCK_SYMBOLS.contains(&"GOOGL"));
+        assert!(STOCK_SYMBOLS.contains(&"TSLA"));
+    }
+
+    #[test]
+    fn test_stock_symbols_contains_etfs() {
+        assert!(STOCK_SYMBOLS.contains(&"SPY"));
+        assert!(STOCK_SYMBOLS.contains(&"QQQ"));
+        assert!(STOCK_SYMBOLS.contains(&"VOO"));
+    }
+
+    #[test]
+    fn test_stock_symbols_count() {
+        assert!(STOCK_SYMBOLS.len() >= 24);
+    }
+
+    // =========================================================================
+    // EventData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_event_data_serialization() {
+        let data = EventData {
+            threshold_level: 5,
+            tickers: vec!["AAPL".to_string(), "MSFT".to_string()],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"thresholdLevel\":5"));
+        assert!(json.contains("AAPL"));
+    }
+
+    // =========================================================================
+    // SubscribeMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_subscribe_message_serialization() {
+        let msg = SubscribeMessage {
+            event_name: "subscribe".to_string(),
+            authorization: "test_token".to_string(),
+            event_data: EventData {
+                threshold_level: 5,
+                tickers: vec!["AAPL".to_string()],
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"eventName\":\"subscribe\""));
+        assert!(json.contains("\"authorization\":\"test_token\""));
+        assert!(json.contains("\"thresholdLevel\":5"));
+    }
+
+    // =========================================================================
+    // TiingoResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tiingo_response_deserialization() {
+        let json = r#"{"code": 200, "message": "OK"}"#;
+        let response: TiingoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, Some(200));
+        assert_eq!(response.message, Some("OK".to_string()));
+    }
+
+    #[test]
+    fn test_tiingo_response_error() {
+        let json = r#"{"code": 401, "message": "Unauthorized"}"#;
+        let response: TiingoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, Some(401));
+    }
+
+    // =========================================================================
+    // TiingoMessage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tiingo_message_info() {
+        let json = r#"{"messageType": "I"}"#;
+        let msg: TiingoMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.message_type, "I");
+    }
+
+    #[test]
+    fn test_tiingo_message_heartbeat() {
+        let json = r#"{"messageType": "H"}"#;
+        let msg: TiingoMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.message_type, "H");
+    }
+
+    #[test]
+    fn test_tiingo_message_error() {
+        let json = r#"{"messageType": "E", "response": {"code": 400, "message": "Bad Request"}}"#;
+        let msg: TiingoMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.message_type, "E");
+        assert!(msg.response.is_some());
+    }
+
+    #[test]
+    fn test_tiingo_message_array_data() {
+        let json = r#"{"messageType": "A", "data": ["T", "2024-01-15", "10:30:00", "AAPL", 100, 153.0, 153.25, 153.5, 200, 153.25, 50, 0]}"#;
+        let msg: TiingoMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.message_type, "A");
+        assert!(msg.data.is_some());
+    }
+
+    // =========================================================================
+    // TiingoIexData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tiingo_iex_data_deserialization() {
+        let json = r#"["T", "2024-01-15", "10:30:00", "AAPL", 100.0, 153.0, 153.25, 153.5, 200.0, 153.25, 50.0, 0]"#;
+        let data: TiingoIexData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.0, "T"); // messageType
+        assert_eq!(data.3, "AAPL"); // ticker
+        assert_eq!(data.6, Some(153.25)); // midPrice
+        assert_eq!(data.9, Some(153.25)); // lastPrice
+    }
+
+    #[test]
+    fn test_tiingo_iex_data_quote() {
+        let json = r#"["Q", "2024-01-15", "10:30:00", "MSFT", 100.0, 380.0, 380.25, 380.5, 150.0, null, null, 0]"#;
+        let data: TiingoIexData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.0, "Q");
+        assert_eq!(data.3, "MSFT");
+        assert_eq!(data.5, Some(380.0)); // bidPrice
+        assert_eq!(data.6, Some(380.25)); // midPrice
+        assert_eq!(data.7, Some(380.5)); // askPrice
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tiingo_ws_url() {
+        assert!(TIINGO_WS_URL.starts_with("wss://"));
+        assert!(TIINGO_WS_URL.contains("tiingo"));
     }
 }

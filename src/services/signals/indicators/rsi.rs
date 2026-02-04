@@ -20,6 +20,7 @@ impl Default for Rsi {
 }
 
 impl Rsi {
+    #[allow(dead_code)]
     pub fn new(period: usize) -> Self {
         Self { period }
     }
@@ -98,7 +99,7 @@ impl Signal for Rsi {
             -((rsi - 70.0) / 30.0 * 100.0).max(-100.0)
         } else {
             // Neutral zone - linear interpolation
-            ((50.0 - rsi) / 20.0 * 50.0)
+            (50.0 - rsi) / 20.0 * 50.0
         };
 
         Some(make_signal_output(
@@ -107,5 +108,122 @@ impl Signal for Rsi {
             rsi,
             clamp_score(score),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    fn create_downtrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 200.0 - i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 1.0,
+                    low: base - 2.0,
+                    close: base - 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_rsi_id_and_name() {
+        let rsi = Rsi::default();
+        assert_eq!(rsi.id(), "rsi");
+        assert_eq!(rsi.name(), "RSI (14)");
+    }
+
+    #[test]
+    fn test_rsi_category() {
+        let rsi = Rsi::default();
+        assert_eq!(rsi.category(), SignalCategory::Momentum);
+    }
+
+    #[test]
+    fn test_rsi_min_periods() {
+        let rsi = Rsi::default();
+        assert_eq!(rsi.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_rsi_insufficient_data() {
+        let rsi = Rsi::default();
+        let candles = create_uptrend_candles(10);
+        let result = rsi.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rsi_uptrend_high_value() {
+        let rsi = Rsi::default();
+        let candles = create_uptrend_candles(50);
+        let result = rsi.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value > 50.0,
+            "RSI in uptrend should be > 50, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_rsi_downtrend_low_value() {
+        let rsi = Rsi::default();
+        let candles = create_downtrend_candles(50);
+        let result = rsi.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value < 50.0,
+            "RSI in downtrend should be < 50, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_rsi_score_range() {
+        let rsi = Rsi::default();
+        let candles = create_uptrend_candles(50);
+        let result = rsi.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
+    }
+
+    #[test]
+    fn test_rsi_value_range() {
+        let rsi = Rsi::default();
+        let candles = create_uptrend_candles(50);
+        let result = rsi.calculate(&candles).unwrap();
+        assert!(result.value >= 0.0 && result.value <= 100.0);
+    }
+
+    #[test]
+    fn test_rsi_custom_period() {
+        let rsi = Rsi::new(7);
+        assert_eq!(rsi.min_periods(), 8);
+        let candles = create_uptrend_candles(20);
+        let result = rsi.calculate(&candles);
+        assert!(result.is_some());
     }
 }

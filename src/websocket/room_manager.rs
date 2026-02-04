@@ -1,8 +1,8 @@
 use dashmap::DashMap;
-use std::collections::HashSet;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -20,6 +20,8 @@ pub struct ClientSubscription {
     pub last_updates: RwLock<HashMap<String, Instant>>,
     /// Whether this client is subscribed to peer updates.
     pub subscribed_to_peers: std::sync::atomic::AtomicBool,
+    /// Subscribed trading portfolio IDs.
+    pub trading_portfolios: RwLock<HashSet<String>>,
 }
 
 /// Manages WebSocket client subscriptions.
@@ -28,6 +30,8 @@ pub struct RoomManager {
     pub clients: DashMap<Uuid, ClientSubscription>,
     /// Asset rooms: asset symbol -> set of client IDs.
     rooms: DashMap<String, HashSet<Uuid>>,
+    /// Trading rooms: portfolio_id -> set of client IDs.
+    trading_rooms: DashMap<String, HashSet<Uuid>>,
 }
 
 impl RoomManager {
@@ -36,26 +40,33 @@ impl RoomManager {
         Arc::new(Self {
             clients: DashMap::new(),
             rooms: DashMap::new(),
+            trading_rooms: DashMap::new(),
         })
     }
 
     /// Register a new client.
     pub fn register(&self, tx: mpsc::UnboundedSender<String>) -> Uuid {
         let client_id = Uuid::new_v4();
-        self.clients.insert(client_id, ClientSubscription {
-            assets: HashSet::new(),
-            tx,
-            throttle_ms: AtomicU64::new(0),
-            last_updates: RwLock::new(HashMap::new()),
-            subscribed_to_peers: std::sync::atomic::AtomicBool::new(false),
-        });
+        self.clients.insert(
+            client_id,
+            ClientSubscription {
+                assets: HashSet::new(),
+                tx,
+                throttle_ms: AtomicU64::new(0),
+                last_updates: RwLock::new(HashMap::new()),
+                subscribed_to_peers: std::sync::atomic::AtomicBool::new(false),
+                trading_portfolios: RwLock::new(HashSet::new()),
+            },
+        );
         client_id
     }
 
     /// Subscribe a client to peer updates.
     pub fn subscribe_peers(&self, client_id: Uuid) -> bool {
         if let Some(client) = self.clients.get(&client_id) {
-            client.subscribed_to_peers.store(true, std::sync::atomic::Ordering::Relaxed);
+            client
+                .subscribed_to_peers
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             true
         } else {
             false
@@ -65,7 +76,9 @@ impl RoomManager {
     /// Unsubscribe a client from peer updates.
     pub fn unsubscribe_peers(&self, client_id: Uuid) -> bool {
         if let Some(client) = self.clients.get(&client_id) {
-            client.subscribed_to_peers.store(false, std::sync::atomic::Ordering::Relaxed);
+            client
+                .subscribed_to_peers
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             true
         } else {
             false
@@ -76,7 +89,10 @@ impl RoomManager {
     pub fn is_subscribed_to_peers(&self, client_id: Uuid) -> bool {
         self.clients
             .get(&client_id)
-            .map(|c| c.subscribed_to_peers.load(std::sync::atomic::Ordering::Relaxed))
+            .map(|c| {
+                c.subscribed_to_peers
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
             .unwrap_or(false)
     }
 
@@ -84,9 +100,65 @@ impl RoomManager {
     pub fn get_peer_subscribers(&self) -> Vec<mpsc::UnboundedSender<String>> {
         self.clients
             .iter()
-            .filter(|c| c.subscribed_to_peers.load(std::sync::atomic::Ordering::Relaxed))
+            .filter(|c| {
+                c.subscribed_to_peers
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
             .map(|c| c.tx.clone())
             .collect()
+    }
+
+    /// Subscribe a client to trading updates for a portfolio.
+    pub async fn subscribe_trading(&self, client_id: Uuid, portfolio_id: &str) -> bool {
+        if let Some(client) = self.clients.get(&client_id) {
+            let mut portfolios = client.trading_portfolios.write().await;
+            if portfolios.insert(portfolio_id.to_string()) {
+                // Add to trading room
+                self.trading_rooms
+                    .entry(portfolio_id.to_string())
+                    .or_default()
+                    .insert(client_id);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Unsubscribe a client from trading updates for a portfolio.
+    pub async fn unsubscribe_trading(&self, client_id: Uuid, portfolio_id: &str) -> bool {
+        if let Some(client) = self.clients.get(&client_id) {
+            let mut portfolios = client.trading_portfolios.write().await;
+            if portfolios.remove(portfolio_id) {
+                // Remove from trading room
+                if let Some(mut room) = self.trading_rooms.get_mut(portfolio_id) {
+                    room.remove(&client_id);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get all clients subscribed to a portfolio's trading updates.
+    pub fn get_trading_subscribers(&self, portfolio_id: &str) -> Vec<mpsc::UnboundedSender<String>> {
+        let client_ids: Vec<Uuid> = self
+            .trading_rooms
+            .get(portfolio_id)
+            .map(|room| room.iter().copied().collect())
+            .unwrap_or_default();
+
+        client_ids
+            .iter()
+            .filter_map(|id| self.clients.get(id).map(|c| c.tx.clone()))
+            .collect()
+    }
+
+    /// Broadcast a trading update to all clients subscribed to a portfolio.
+    pub fn broadcast_trading(&self, portfolio_id: &str, message: &str) {
+        let senders = self.get_trading_subscribers(portfolio_id);
+        for tx in senders {
+            let _ = tx.send(message.to_string());
+        }
     }
 
     /// Set throttle interval for a client.
@@ -143,10 +215,15 @@ impl RoomManager {
     /// Unregister a client and remove from all rooms.
     pub fn unregister(&self, client_id: Uuid) {
         if let Some((_, subscription)) = self.clients.remove(&client_id) {
+            // Remove from asset rooms
             for asset in subscription.assets {
                 if let Some(mut room) = self.rooms.get_mut(&asset) {
                     room.remove(&client_id);
                 }
+            }
+            // Remove from trading rooms - iterate through all since we can't await
+            for mut room in self.trading_rooms.iter_mut() {
+                room.remove(&client_id);
             }
         }
     }
@@ -162,10 +239,7 @@ impl RoomManager {
                     subscribed.push(asset_lower.clone());
 
                     // Add to room
-                    self.rooms
-                        .entry(asset_lower)
-                        .or_insert_with(HashSet::new)
-                        .insert(client_id);
+                    self.rooms.entry(asset_lower).or_default().insert(client_id);
                 }
             }
         }
@@ -198,7 +272,8 @@ impl RoomManager {
     pub fn get_subscribers(&self, asset: &str) -> Vec<mpsc::UnboundedSender<String>> {
         let asset_lower = asset.to_lowercase();
 
-        let client_ids: Vec<Uuid> = self.rooms
+        let client_ids: Vec<Uuid> = self
+            .rooms
             .get(&asset_lower)
             .map(|room| room.iter().copied().collect())
             .unwrap_or_default();
@@ -249,6 +324,7 @@ impl Default for RoomManager {
         Self {
             clients: DashMap::new(),
             rooms: DashMap::new(),
+            trading_rooms: DashMap::new(),
         }
     }
 }

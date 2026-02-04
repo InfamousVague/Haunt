@@ -103,3 +103,103 @@ impl Signal for Cci {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    fn create_downtrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 200.0 - i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 1.0,
+                    low: base - 2.0,
+                    close: base - 1.0,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_cci_id_and_name() {
+        let cci = Cci::default();
+        assert_eq!(cci.id(), "cci");
+        assert_eq!(cci.name(), "CCI (20)");
+    }
+
+    #[test]
+    fn test_cci_category() {
+        let cci = Cci::default();
+        assert_eq!(cci.category(), SignalCategory::Momentum);
+    }
+
+    #[test]
+    fn test_cci_min_periods() {
+        let cci = Cci::default();
+        assert_eq!(cci.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_cci_insufficient_data() {
+        let cci = Cci::default();
+        let candles = create_uptrend_candles(15);
+        let result = cci.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_cci_uptrend_positive() {
+        let cci = Cci::default();
+        let candles = create_uptrend_candles(30);
+        let result = cci.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value > 0.0,
+            "CCI in uptrend should be positive, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_cci_downtrend_negative() {
+        let cci = Cci::default();
+        let candles = create_downtrend_candles(30);
+        let result = cci.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value < 0.0,
+            "CCI in downtrend should be negative, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_cci_score_range() {
+        let cci = Cci::default();
+        let candles = create_uptrend_candles(30);
+        let result = cci.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
+    }
+}

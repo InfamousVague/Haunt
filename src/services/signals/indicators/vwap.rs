@@ -86,3 +86,73 @@ impl Signal for Vwap {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_uptrend_candles(count: usize) -> Vec<OhlcPoint> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64 * 1.5;
+                OhlcPoint {
+                    time: 1000000 + i as i64 * 60000,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 1.0,
+                    close: base + 1.0,
+                    volume: Some(1000.0 + (i % 5) as f64 * 100.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_vwap_id_and_name() {
+        let vwap = Vwap::default();
+        assert_eq!(vwap.id(), "vwap");
+        assert_eq!(vwap.name(), "VWAP");
+    }
+
+    #[test]
+    fn test_vwap_category() {
+        let vwap = Vwap::default();
+        assert_eq!(vwap.category(), SignalCategory::Volume);
+    }
+
+    #[test]
+    fn test_vwap_min_periods() {
+        let vwap = Vwap::default();
+        assert_eq!(vwap.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_vwap_insufficient_data() {
+        let vwap = Vwap::default();
+        let candles = create_uptrend_candles(15);
+        let result = vwap.calculate(&candles);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_vwap_produces_result() {
+        let vwap = Vwap::default();
+        let candles = create_uptrend_candles(30);
+        let result = vwap.calculate(&candles);
+        assert!(result.is_some());
+        let output = result.unwrap();
+        assert!(
+            output.value > 0.0,
+            "VWAP should be positive, got {}",
+            output.value
+        );
+    }
+
+    #[test]
+    fn test_vwap_score_range() {
+        let vwap = Vwap::default();
+        let candles = create_uptrend_candles(30);
+        let result = vwap.calculate(&candles).unwrap();
+        assert!(result.score >= -100 && result.score <= 100);
+    }
+}

@@ -4,8 +4,8 @@ use crate::services::signals::indicators::all_indicators;
 use crate::services::signals::{AccuracyStore, PredictionStore, Signal};
 use crate::services::ChartStore;
 use crate::types::{
-    Recommendation, SignalCategory, SignalDirection, SignalOutput, SignalPrediction,
-    SymbolSignals, TradingTimeframe,
+    Recommendation, SignalCategory, SignalDirection, SignalOutput, SignalPrediction, SymbolSignals,
+    TradingTimeframe,
 };
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -169,7 +169,8 @@ impl SignalStore {
         };
 
         // Record predictions for accuracy tracking
-        self.record_predictions(&symbol_signals, current_price).await;
+        self.record_predictions(&symbol_signals, current_price)
+            .await;
 
         Some(symbol_signals)
     }
@@ -209,7 +210,7 @@ impl SignalStore {
     /// Record predictions for accuracy tracking.
     /// Only creates new predictions if there isn't already a recent unvalidated one.
     async fn record_predictions(&self, signals: &SymbolSignals, current_price: f64) {
-        let now = chrono::Utc::now().timestamp_millis();
+        let _now = chrono::Utc::now().timestamp_millis();
         // Cooldown: don't create new prediction if one exists within last 5 minutes
         let prediction_cooldown_ms = 300_000i64;
 
@@ -217,9 +218,11 @@ impl SignalStore {
             // Only record non-neutral predictions
             if signal.score.abs() >= 20 {
                 // Check if there's already a recent unvalidated prediction for this indicator
-                let should_create = self
-                    .prediction_store
-                    .should_create_prediction(&signals.symbol, &signal.name, prediction_cooldown_ms);
+                let should_create = self.prediction_store.should_create_prediction(
+                    &signals.symbol,
+                    &signal.name,
+                    prediction_cooldown_ms,
+                );
 
                 if should_create {
                     let prediction = SignalPrediction::new(
@@ -268,6 +271,12 @@ impl SignalStore {
     /// Get accuracy store reference.
     pub fn accuracy_store(&self) -> &Arc<AccuracyStore> {
         &self.accuracy_store
+    }
+
+    /// Calculate composite score for a category (public for testing).
+    #[cfg(test)]
+    pub fn test_calculate_category_score(signals: &[SignalOutput], category: SignalCategory) -> i8 {
+        Self::calculate_category_score(signals, category)
     }
 
     /// Get accuracy-weighted recommendation for a symbol.
@@ -342,5 +351,134 @@ impl SignalStore {
             signals.signals.len() as u32,
             average_accuracy,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_signal(
+        name: &str,
+        category: SignalCategory,
+        score: i8,
+        accuracy: Option<f64>,
+    ) -> SignalOutput {
+        SignalOutput {
+            name: name.to_string(),
+            category,
+            score,
+            value: 50.0,
+            direction: SignalDirection::from_score(score),
+            accuracy,
+            sample_size: if accuracy.is_some() { Some(100) } else { None },
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+
+    // =========================================================================
+    // calculate_category_score Tests
+    // =========================================================================
+
+    #[test]
+    fn test_calculate_category_score_empty() {
+        let signals: Vec<SignalOutput> = vec![];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Trend);
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn test_calculate_category_score_single_signal() {
+        let signals = vec![create_test_signal(
+            "RSI",
+            SignalCategory::Momentum,
+            50,
+            None,
+        )];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Momentum);
+        assert_eq!(score, 50);
+    }
+
+    #[test]
+    fn test_calculate_category_score_no_matching_category() {
+        let signals = vec![create_test_signal(
+            "RSI",
+            SignalCategory::Momentum,
+            50,
+            None,
+        )];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Trend);
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn test_calculate_category_score_multiple_signals() {
+        let signals = vec![
+            create_test_signal("RSI", SignalCategory::Momentum, 60, None),
+            create_test_signal("MACD", SignalCategory::Momentum, 40, None),
+        ];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Momentum);
+        // Average of 60 and 40 = 50
+        assert_eq!(score, 50);
+    }
+
+    #[test]
+    fn test_calculate_category_score_with_accuracy_weights() {
+        let signals = vec![
+            create_test_signal("RSI", SignalCategory::Momentum, 100, Some(90.0)),
+            create_test_signal("MACD", SignalCategory::Momentum, 0, Some(50.0)),
+        ];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Momentum);
+        // Higher accuracy signal should be weighted more
+        // RSI: weight = 0.9, MACD: weight = 0.5
+        // (100 * 0.9 + 0 * 0.5) / (0.9 + 0.5) = 90 / 1.4 ≈ 64
+        assert!(score > 50); // RSI (100) should pull the score up
+    }
+
+    #[test]
+    fn test_calculate_category_score_mixed_categories() {
+        let signals = vec![
+            create_test_signal("RSI", SignalCategory::Momentum, 80, None),
+            create_test_signal("ADX", SignalCategory::Trend, 60, None),
+            create_test_signal("MACD", SignalCategory::Momentum, 40, None),
+        ];
+
+        let momentum_score =
+            SignalStore::test_calculate_category_score(&signals, SignalCategory::Momentum);
+        let trend_score =
+            SignalStore::test_calculate_category_score(&signals, SignalCategory::Trend);
+
+        // Momentum: (80 + 40) / 2 = 60
+        assert_eq!(momentum_score, 60);
+        // Trend: 60
+        assert_eq!(trend_score, 60);
+    }
+
+    #[test]
+    fn test_calculate_category_score_negative_signals() {
+        let signals = vec![
+            create_test_signal("RSI", SignalCategory::Momentum, -50, None),
+            create_test_signal("MACD", SignalCategory::Momentum, -30, None),
+        ];
+        let score = SignalStore::test_calculate_category_score(&signals, SignalCategory::Momentum);
+        // Average of -50 and -30 = -40
+        assert_eq!(score, -40);
+    }
+
+    #[test]
+    fn test_calculate_category_score_all_categories() {
+        // Verify all category types work
+        let categories = [
+            SignalCategory::Trend,
+            SignalCategory::Momentum,
+            SignalCategory::Volatility,
+            SignalCategory::Volume,
+        ];
+
+        for category in categories {
+            let signals = vec![create_test_signal("Test", category, 75, None)];
+            let score = SignalStore::test_calculate_category_score(&signals, category);
+            assert_eq!(score, 75);
+        }
     }
 }

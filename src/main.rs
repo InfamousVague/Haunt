@@ -10,19 +10,19 @@ use axum::{routing::get, Router};
 use config::Config;
 use services::{
     AccuracyStore, AssetService, AuthService, ChartStore, HistoricalDataService,
-    MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore,
-    SignalStore, SqliteStore,
+    MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh, PredictionStore, SignalStore,
+    SqliteStore,
 };
-use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient, TiingoWs};
+use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
 #[allow(unused_imports)]
-use sources::FinnhubWs;
+use sources::{FinnhubWs, TiingoWs};
 use std::sync::Arc;
-use types::TradingTimeframe;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use types::TradingTimeframe;
 use websocket::RoomManager;
 
 /// Application state shared across handlers.
@@ -42,6 +42,7 @@ pub struct AppState {
     pub sqlite_store: Arc<SqliteStore>,
     pub orderbook_service: Arc<OrderBookService>,
     pub peer_mesh: Option<Arc<PeerMesh>>,
+    pub trading_service: Arc<services::TradingService>,
 }
 
 #[tokio::main]
@@ -219,9 +220,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Create SQLite store for persistent profile and prediction storage
-    let sqlite_store = Arc::new(
-        SqliteStore::new("haunt.db").expect("Failed to initialize SQLite database"),
-    );
+    let sqlite_store =
+        Arc::new(SqliteStore::new("haunt.db").expect("Failed to initialize SQLite database"));
     info!("SQLite database initialized at haunt.db");
 
     // Connect prediction store to SQLite for permanent history
@@ -292,7 +292,9 @@ async fn main() -> anyhow::Result<()> {
 
         Some(mesh)
     } else {
-        info!("Peer mesh disabled (no SERVER_ID, PEER_SERVERS, or MESH_BOOTSTRAP_SERVERS configured)");
+        info!(
+            "Peer mesh disabled (no SERVER_ID, PEER_SERVERS, or MESH_BOOTSTRAP_SERVERS configured)"
+        );
         None
     };
 
@@ -322,6 +324,12 @@ async fn main() -> anyhow::Result<()> {
     // Create room manager for WebSocket subscriptions
     let room_manager = RoomManager::new();
 
+    // Create trading service for paper trading (with room_manager for real-time updates)
+    let trading_service = Arc::new(services::TradingService::with_room_manager(
+        sqlite_store.clone(),
+        room_manager.clone(),
+    ));
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -338,6 +346,7 @@ async fn main() -> anyhow::Result<()> {
         sqlite_store,
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
+        trading_service,
     };
 
     // Start the price sources
@@ -446,7 +455,10 @@ async fn main() -> anyhow::Result<()> {
                         total_validations, symbol_count
                     );
                 } else {
-                    debug!("Checked {} symbols - no predictions ready for validation", symbol_count);
+                    debug!(
+                        "Checked {} symbols - no predictions ready for validation",
+                        symbol_count
+                    );
                 }
             }
         });

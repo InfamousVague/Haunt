@@ -11,8 +11,8 @@ const POLL_INTERVAL_SECS: u64 = 30;
 
 /// Symbols to fetch from CryptoCompare.
 const SYMBOLS: &[&str] = &[
-    "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "AVAX", "DOT", "LINK",
-    "MATIC", "SHIB", "LTC", "TRX", "ATOM", "UNI", "XLM", "BCH", "NEAR", "APT",
+    "BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "AVAX", "DOT", "LINK", "MATIC", "SHIB",
+    "LTC", "TRX", "ATOM", "UNI", "XLM", "BCH", "NEAR", "APT",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -60,7 +60,8 @@ impl CryptoCompareClient {
         loop {
             if let Err(e) = self.fetch_prices().await {
                 error!("CryptoCompare fetch error: {}", e);
-                self.price_cache.report_source_error(PriceSource::CryptoCompare, &e.to_string());
+                self.price_cache
+                    .report_source_error(PriceSource::CryptoCompare, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
@@ -70,11 +71,11 @@ impl CryptoCompareClient {
         let fsyms = SYMBOLS.join(",");
         let url = format!(
             "{}/pricemultifull?fsyms={}&tsyms=USD",
-            CRYPTOCOMPARE_API_URL,
-            fsyms
+            CRYPTOCOMPARE_API_URL, fsyms
         );
 
-        let response: CryptoCompareResponse = self.client
+        let response: CryptoCompareResponse = self
+            .client
             .get(&url)
             .header("Authorization", format!("Apikey {}", self.api_key))
             .send()
@@ -96,12 +97,115 @@ impl CryptoCompareClient {
                             price,
                             usd_data.volume_24h,
                         );
-                        self.chart_store.add_price(&symbol_lower, price, usd_data.volume_24h, timestamp);
+                        self.chart_store.add_price(
+                            &symbol_lower,
+                            price,
+                            usd_data.volume_24h,
+                            timestamp,
+                        );
                     }
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // SYMBOLS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_symbols_contains_major_cryptos() {
+        assert!(SYMBOLS.contains(&"BTC"));
+        assert!(SYMBOLS.contains(&"ETH"));
+        assert!(SYMBOLS.contains(&"SOL"));
+        assert!(SYMBOLS.contains(&"DOGE"));
+    }
+
+    #[test]
+    fn test_symbols_count() {
+        assert!(SYMBOLS.len() >= 20);
+    }
+
+    #[test]
+    fn test_symbols_uppercase() {
+        for symbol in SYMBOLS {
+            assert_eq!(*symbol, symbol.to_uppercase());
+        }
+    }
+
+    // =========================================================================
+    // CryptoComparePriceData Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cryptocompare_price_data_deserialization() {
+        let json = r#"{"PRICE": 43500.50, "VOLUME24HOUR": 15000000000}"#;
+        let data: CryptoComparePriceData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.price, Some(43500.50));
+        assert_eq!(data.volume_24h, Some(15000000000.0));
+    }
+
+    #[test]
+    fn test_cryptocompare_price_data_minimal() {
+        let json = r#"{}"#;
+        let data: CryptoComparePriceData = serde_json::from_str(json).unwrap();
+        assert!(data.price.is_none());
+        assert!(data.volume_24h.is_none());
+    }
+
+    #[test]
+    fn test_cryptocompare_price_data_with_only_price() {
+        let json = r#"{"PRICE": 2500.00}"#;
+        let data: CryptoComparePriceData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.price, Some(2500.00));
+        assert!(data.volume_24h.is_none());
+    }
+
+    // =========================================================================
+    // CryptoCompareResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cryptocompare_response_deserialization() {
+        let json = r#"{
+            "RAW": {
+                "BTC": {
+                    "USD": {"PRICE": 43500.50, "VOLUME24HOUR": 15000000000}
+                },
+                "ETH": {
+                    "USD": {"PRICE": 2500.00, "VOLUME24HOUR": 8000000000}
+                }
+            }
+        }"#;
+
+        let response: CryptoCompareResponse = serde_json::from_str(json).unwrap();
+        assert!(response.raw.is_some());
+        let raw = response.raw.unwrap();
+        assert!(raw.contains_key("BTC"));
+        assert!(raw.contains_key("ETH"));
+
+        let btc_usd = raw.get("BTC").unwrap().get("USD").unwrap();
+        assert_eq!(btc_usd.price, Some(43500.50));
+    }
+
+    #[test]
+    fn test_cryptocompare_response_empty() {
+        let json = r#"{}"#;
+        let response: CryptoCompareResponse = serde_json::from_str(json).unwrap();
+        assert!(response.raw.is_none());
+    }
+
+    #[test]
+    fn test_cryptocompare_response_null_raw() {
+        let json = r#"{"RAW": null}"#;
+        let response: CryptoCompareResponse = serde_json::from_str(json).unwrap();
+        assert!(response.raw.is_none());
     }
 }

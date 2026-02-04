@@ -6,7 +6,7 @@ pub mod types;
 
 /// Services module for library use (excludes multi_source which depends on sources)
 pub mod services {
-    //! Core services for price aggregation and caching
+    // Core services for price aggregation and caching
 
     mod cache_impl {
         use dashmap::DashMap;
@@ -138,7 +138,11 @@ pub mod services {
                     high: self.high,
                     low: self.low,
                     close: self.close,
-                    volume: if self.volume > 0.0 { Some(self.volume) } else { None },
+                    volume: if self.volume > 0.0 {
+                        Some(self.volume)
+                    } else {
+                        None
+                    },
                 }
             }
         }
@@ -165,7 +169,8 @@ pub mod services {
             }
 
             fn add_price(&mut self, price: f64, volume: Option<f64>, timestamp: i64) {
-                let bucket_time = (timestamp / 1000) / self.resolution.seconds() * self.resolution.seconds();
+                let bucket_time =
+                    (timestamp / 1000) / self.resolution.seconds() * self.resolution.seconds();
 
                 if let Some(last) = self.buckets.back_mut() {
                     if last.time == bucket_time {
@@ -248,9 +253,7 @@ pub mod services {
                     ChartRange::OneHour | ChartRange::FourHours => {
                         entry.one_minute.get_data(start_time)
                     }
-                    ChartRange::OneDay => {
-                        entry.five_minute.get_data(start_time)
-                    }
+                    ChartRange::OneDay => entry.five_minute.get_data(start_time),
                     ChartRange::OneWeek | ChartRange::OneMonth => {
                         entry.one_hour.get_data(start_time)
                     }
@@ -272,5 +275,5 @@ pub mod services {
 }
 
 // Re-export commonly used types
-pub use types::*;
 pub use services::{Cache, ChartStore};
+pub use types::*;

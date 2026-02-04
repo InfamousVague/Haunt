@@ -40,6 +40,7 @@ struct HuobiResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HuobiTicker {
     symbol: String,
     close: f64,
@@ -49,6 +50,7 @@ struct HuobiTicker {
 
 /// Huobi REST client.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct HuobiClient {
     client: Client,
     api_key: Option<String>,
@@ -83,7 +85,8 @@ impl HuobiClient {
         loop {
             if let Err(e) = self.fetch_prices().await {
                 error!("Huobi fetch error: {}", e);
-                self.price_cache.report_source_error(PriceSource::Huobi, &e.to_string());
+                self.price_cache
+                    .report_source_error(PriceSource::Huobi, &e.to_string());
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
@@ -98,7 +101,11 @@ impl HuobiClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            warn!("Huobi API returned {}: {}", status, &text[..text.len().min(200)]);
+            warn!(
+                "Huobi API returned {}: {}",
+                status,
+                &text[..text.len().min(200)]
+            );
             return Err(anyhow::anyhow!("Huobi API error: {}", status));
         }
 
@@ -117,9 +124,8 @@ impl HuobiClient {
         let timestamp = chrono::Utc::now().timestamp_millis();
 
         // Build pair lookup
-        let pair_to_symbol: HashMap<&str, &str> = SYMBOL_PAIRS.iter()
-            .map(|(s, p)| (*p, *s))
-            .collect();
+        let pair_to_symbol: HashMap<&str, &str> =
+            SYMBOL_PAIRS.iter().map(|(s, p)| (*p, *s)).collect();
 
         for ticker in tickers {
             if let Some(symbol) = pair_to_symbol.get(ticker.symbol.as_str()) {
@@ -135,11 +141,123 @@ impl HuobiClient {
                         price,
                         Some(volume_24h),
                     );
-                    self.chart_store.add_price(symbol, price, Some(volume_24h), timestamp);
+                    self.chart_store
+                        .add_price(symbol, price, Some(volume_24h), timestamp);
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // SYMBOL_PAIRS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_symbol_pairs_contains_btc() {
+        let btc = SYMBOL_PAIRS.iter().find(|(s, _)| *s == "btc");
+        assert!(btc.is_some());
+        assert_eq!(btc.unwrap().1, "btcusdt");
+    }
+
+    #[test]
+    fn test_symbol_pairs_count() {
+        assert!(SYMBOL_PAIRS.len() >= 19);
+    }
+
+    #[test]
+    fn test_symbol_pairs_all_usdt() {
+        for (_, pair) in SYMBOL_PAIRS {
+            assert!(pair.ends_with("usdt"));
+        }
+    }
+
+    #[test]
+    fn test_symbol_pairs_all_lowercase() {
+        for (symbol, pair) in SYMBOL_PAIRS {
+            assert_eq!(*symbol, symbol.to_lowercase());
+            assert_eq!(*pair, pair.to_lowercase());
+        }
+    }
+
+    // =========================================================================
+    // HuobiTicker Tests
+    // =========================================================================
+
+    #[test]
+    fn test_huobi_ticker_deserialization() {
+        let json = r#"{
+            "symbol": "btcusdt",
+            "close": 43500.50,
+            "vol": 50000.0,
+            "amount": 2175000000.0
+        }"#;
+
+        let ticker: HuobiTicker = serde_json::from_str(json).unwrap();
+        assert_eq!(ticker.symbol, "btcusdt");
+        assert_eq!(ticker.close, 43500.50);
+        assert_eq!(ticker.vol, 50000.0);
+        assert_eq!(ticker.amount, 2175000000.0);
+    }
+
+    #[test]
+    fn test_huobi_ticker_debug() {
+        let json =
+            r#"{"symbol": "ethusdt", "close": 2500.0, "vol": 100000.0, "amount": 250000000.0}"#;
+        let ticker: HuobiTicker = serde_json::from_str(json).unwrap();
+        let debug_str = format!("{:?}", ticker);
+        assert!(debug_str.contains("HuobiTicker"));
+        assert!(debug_str.contains("ethusdt"));
+    }
+
+    // =========================================================================
+    // HuobiResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_huobi_response_success() {
+        let json = r#"{
+            "status": "ok",
+            "data": [
+                {"symbol": "btcusdt", "close": 43500.50, "vol": 50000.0, "amount": 2175000000.0}
+            ]
+        }"#;
+
+        let response: HuobiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.status, "ok");
+        assert!(response.data.is_some());
+        assert_eq!(response.data.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_huobi_response_error() {
+        let json = r#"{
+            "status": "error",
+            "data": null
+        }"#;
+
+        let response: HuobiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.status, "error");
+        assert!(response.data.is_none());
+    }
+
+    #[test]
+    fn test_huobi_response_multiple_tickers() {
+        let json = r#"{
+            "status": "ok",
+            "data": [
+                {"symbol": "btcusdt", "close": 43500.50, "vol": 50000.0, "amount": 2175000000.0},
+                {"symbol": "ethusdt", "close": 2500.0, "vol": 100000.0, "amount": 250000000.0}
+            ]
+        }"#;
+
+        let response: HuobiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.unwrap().len(), 2);
     }
 }

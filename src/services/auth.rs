@@ -1,14 +1,12 @@
-/**
- * Authentication Service
- *
- * Handles signature verification and session management.
- * Uses HMAC-SHA256 to verify signatures (compatible with Web Crypto API).
- *
- * Storage:
- * - SQLite: Profiles (long-term persistence)
- * - Redis: Sessions (24-hour TTL, ephemeral)
- * - DashMap: In-memory cache for both
- */
+//! Authentication Service
+//!
+//! Handles signature verification and session management.
+//! Uses HMAC-SHA256 to verify signatures (compatible with Web Crypto API).
+//!
+//! Storage:
+//! - SQLite: Profiles (long-term persistence)
+//! - Redis: Sessions (24-hour TTL, ephemeral)
+//! - DashMap: In-memory cache for both
 
 use crate::services::SqliteStore;
 use crate::types::{AuthChallenge, AuthRequest, Profile, Session};
@@ -18,6 +16,7 @@ use sha2::Sha256;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+#[allow(dead_code)]
 type HmacSha256 = Hmac<Sha256>;
 
 /// Authentication service for managing challenges, sessions, and profiles.
@@ -76,11 +75,7 @@ impl AuthService {
         }
 
         // 2. Verify signature
-        if !self.verify_signature(
-            &request.public_key,
-            &request.challenge,
-            &request.signature,
-        )? {
+        if !self.verify_signature(&request.public_key, &request.challenge, &request.signature)? {
             warn!(
                 "Invalid signature from public key {}",
                 &request.public_key[..16]
@@ -175,7 +170,8 @@ impl AuthService {
             drop(profile_ref); // Release read lock before write
 
             updated.last_seen = chrono::Utc::now().timestamp_millis();
-            self.profiles.insert(public_key.to_string(), updated.clone());
+            self.profiles
+                .insert(public_key.to_string(), updated.clone());
 
             // Update last_seen in SQLite
             if let Some(ref sqlite) = self.sqlite {
@@ -190,23 +186,34 @@ impl AuthService {
             if let Some(mut profile) = sqlite.get_profile(public_key) {
                 profile.last_seen = chrono::Utc::now().timestamp_millis();
                 let _ = sqlite.save_profile(&profile);
-                self.profiles.insert(public_key.to_string(), profile.clone());
-                info!("Loaded profile from SQLite for {}", &public_key[..16.min(public_key.len())]);
+                self.profiles
+                    .insert(public_key.to_string(), profile.clone());
+                info!(
+                    "Loaded profile from SQLite for {}",
+                    &public_key[..16.min(public_key.len())]
+                );
                 return profile;
             }
         }
 
         // Fallback: Check Redis if available
         if let Some(ref redis) = self.redis {
-            if let Ok(profile) = self.load_profile_from_redis(public_key, redis.clone()).await {
+            if let Ok(profile) = self
+                .load_profile_from_redis(public_key, redis.clone())
+                .await
+            {
                 let mut updated = profile;
                 updated.last_seen = chrono::Utc::now().timestamp_millis();
-                self.profiles.insert(public_key.to_string(), updated.clone());
+                self.profiles
+                    .insert(public_key.to_string(), updated.clone());
 
                 // Migrate to SQLite
                 if let Some(ref sqlite) = self.sqlite {
                     let _ = sqlite.save_profile(&updated);
-                    info!("Migrated profile from Redis to SQLite for {}", &public_key[..16.min(public_key.len())]);
+                    info!(
+                        "Migrated profile from Redis to SQLite for {}",
+                        &public_key[..16.min(public_key.len())]
+                    );
                 }
 
                 return updated;
@@ -215,14 +222,18 @@ impl AuthService {
 
         // Create new profile
         let profile = Profile::new(public_key.to_string());
-        self.profiles.insert(public_key.to_string(), profile.clone());
+        self.profiles
+            .insert(public_key.to_string(), profile.clone());
 
         // Save to SQLite
         if let Some(ref sqlite) = self.sqlite {
             let _ = sqlite.save_profile(&profile);
         }
 
-        info!("Created new profile for {}", &public_key[..16.min(public_key.len())]);
+        info!(
+            "Created new profile for {}",
+            &public_key[..16.min(public_key.len())]
+        );
         profile
     }
 
@@ -230,7 +241,10 @@ impl AuthService {
     pub async fn validate_session(&self, token: &str) -> Option<(Session, Profile)> {
         // Check memory cache
         // Note: Clone session data and drop refs to avoid deadlocks
-        let session_data = self.sessions.get(token).map(|s| (s.clone(), s.is_expired()));
+        let session_data = self
+            .sessions
+            .get(token)
+            .map(|s| (s.clone(), s.is_expired()));
 
         if let Some((session, is_expired)) = session_data {
             if is_expired {
@@ -275,15 +289,20 @@ impl AuthService {
         // Check SQLite (primary storage)
         if let Some(ref sqlite) = self.sqlite {
             if let Some(profile) = sqlite.get_profile(public_key) {
-                self.profiles.insert(public_key.to_string(), profile.clone());
+                self.profiles
+                    .insert(public_key.to_string(), profile.clone());
                 return Some(profile);
             }
         }
 
         // Fallback: Check Redis
         if let Some(ref redis) = self.redis {
-            if let Ok(profile) = self.load_profile_from_redis(public_key, redis.clone()).await {
-                self.profiles.insert(public_key.to_string(), profile.clone());
+            if let Ok(profile) = self
+                .load_profile_from_redis(public_key, redis.clone())
+                .await
+            {
+                self.profiles
+                    .insert(public_key.to_string(), profile.clone());
 
                 // Migrate to SQLite
                 if let Some(ref sqlite) = self.sqlite {
@@ -299,7 +318,8 @@ impl AuthService {
 
     /// Update profile settings.
     pub async fn update_profile(&self, profile: Profile) -> Result<Profile, AuthError> {
-        self.profiles.insert(profile.public_key.clone(), profile.clone());
+        self.profiles
+            .insert(profile.public_key.clone(), profile.clone());
 
         // Persist to SQLite (primary storage)
         if let Some(ref sqlite) = self.sqlite {
@@ -394,10 +414,8 @@ impl AuthService {
             .unwrap_or_default();
 
         for key in keys {
-            let result: Result<String, _> = redis::cmd("GET")
-                .arg(&key)
-                .query_async(&mut redis)
-                .await;
+            let result: Result<String, _> =
+                redis::cmd("GET").arg(&key).query_async(&mut redis).await;
             if let Ok(value) = result {
                 if let Ok(profile) = serde_json::from_str::<Profile>(&value) {
                     self.profiles.insert(profile.public_key.clone(), profile);
@@ -460,9 +478,7 @@ impl axum::response::IntoResponse for AuthError {
             AuthError::SessionNotFound => {
                 (axum::http::StatusCode::UNAUTHORIZED, "Session not found")
             }
-            AuthError::ProfileNotFound => {
-                (axum::http::StatusCode::NOT_FOUND, "Profile not found")
-            }
+            AuthError::ProfileNotFound => (axum::http::StatusCode::NOT_FOUND, "Profile not found"),
             AuthError::Unauthorized => (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized"),
         };
 
@@ -480,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_challenge_creation() {
-        let service = AuthService::new(None);
+        let service = AuthService::new(None, None);
         let challenge = service.create_challenge();
 
         assert_eq!(challenge.challenge.len(), 64);
@@ -489,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_profile_creation() {
-        let service = AuthService::new(None);
+        let service = AuthService::new(None, None);
         let public_key = "a".repeat(64);
 
         let profile = service.get_or_create_profile(&public_key).await;
@@ -502,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_validation() {
-        let service = AuthService::new(None);
+        let service = AuthService::new(None, None);
 
         // Create a session manually
         let public_key = "b".repeat(64);
@@ -524,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_session() {
-        let service = AuthService::new(None);
+        let service = AuthService::new(None, None);
 
         let result = service.validate_session("nonexistent").await;
         assert!(result.is_none());

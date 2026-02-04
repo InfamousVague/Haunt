@@ -1,11 +1,9 @@
-/**
- * Signal Prediction Tests
- *
- * Tests for the trading signals system including:
- * - Prediction recording and validation
- * - Accuracy tracking over time
- * - Real-time signal updates
- */
+//! Signal Prediction Tests
+//!
+//! Tests for the trading signals system including:
+//! - Prediction recording and validation
+//! - Accuracy tracking over time
+//! - Real-time signal updates
 
 use chrono::Utc;
 use std::time::Duration;
@@ -21,6 +19,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct SymbolSignals {
         pub symbol: String,
         pub signals: Vec<SignalOutput>,
@@ -35,6 +34,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct SignalOutput {
         pub name: String,
         pub category: String,
@@ -48,6 +48,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct SignalPrediction {
         pub id: String,
         pub symbol: String,
@@ -65,6 +66,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct PredictionsResponse {
         pub symbol: String,
         pub predictions: Vec<SignalPrediction>,
@@ -73,6 +75,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct AccuracyResponse {
         pub symbol: String,
         pub accuracies: Vec<SignalAccuracy>,
@@ -81,6 +84,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct SignalAccuracy {
         pub indicator: String,
         pub symbol: String,
@@ -95,6 +99,7 @@ mod common {
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct Recommendation {
         pub symbol: String,
         pub action: String,
@@ -136,25 +141,39 @@ async fn test_signals_endpoint_returns_data() {
     match response {
         Ok(resp) => {
             if resp.status().is_success() {
-                let wrapper: ApiResponse<SymbolSignals> = resp.json().await.expect("Failed to parse signals");
+                let wrapper: ApiResponse<SymbolSignals> =
+                    resp.json().await.expect("Failed to parse signals");
                 let signals = wrapper.data;
                 assert_eq!(signals.symbol.to_lowercase(), "btc");
-                assert!(!signals.signals.is_empty(), "Should have at least one signal");
+                assert!(
+                    !signals.signals.is_empty(),
+                    "Should have at least one signal"
+                );
 
                 println!("BTC Signals:");
                 println!("  Composite Score: {}", signals.composite_score);
                 println!("  Direction: {}", signals.direction);
-                println!("  Trend: {}, Momentum: {}", signals.trend_score, signals.momentum_score);
+                println!(
+                    "  Trend: {}, Momentum: {}",
+                    signals.trend_score, signals.momentum_score
+                );
                 println!("  Indicators: {}", signals.signals.len());
 
                 for signal in &signals.signals {
                     println!(
                         "    {} ({}) = {:.2} -> {} (accuracy: {:?})",
-                        signal.name, signal.category, signal.value, signal.direction, signal.accuracy
+                        signal.name,
+                        signal.category,
+                        signal.value,
+                        signal.direction,
+                        signal.accuracy
                     );
                 }
             } else {
-                println!("Signal endpoint returned {}: may need chart data", resp.status());
+                println!(
+                    "Signal endpoint returned {}: may need chart data",
+                    resp.status()
+                );
             }
         }
         Err(e) => {
@@ -197,7 +216,11 @@ async fn test_predictions_endpoint() {
                         pred.indicator,
                         pred.direction,
                         pred.price_at_prediction,
-                        if pred.validated { "validated" } else { "pending" },
+                        if pred.validated {
+                            "validated"
+                        } else {
+                            "pending"
+                        },
                         pred.outcome_5m,
                         pred.outcome_1h,
                         pred.outcome_4h,
@@ -266,11 +289,16 @@ async fn test_recommendation_endpoint() {
     match response {
         Ok(resp) => {
             if resp.status().is_success() {
-                let wrapper: ApiResponse<Recommendation> = resp.json().await.expect("Failed to parse recommendation");
+                let wrapper: ApiResponse<Recommendation> =
+                    resp.json().await.expect("Failed to parse recommendation");
                 let rec = wrapper.data;
 
                 println!("BTC Recommendation:");
-                println!("  Action: {} ({:.1}% confidence)", rec.action.to_uppercase(), rec.confidence);
+                println!(
+                    "  Action: {} ({:.1}% confidence)",
+                    rec.action.to_uppercase(),
+                    rec.confidence
+                );
                 println!("  Weighted Score: {:.1}", rec.weighted_score);
                 println!(
                     "  Indicators: {}/{} with accuracy data",
@@ -314,7 +342,8 @@ async fn test_signals_with_timeframe() {
         match response {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let wrapper: ApiResponse<SymbolSignals> = resp.json().await.expect("Failed to parse signals");
+                    let wrapper: ApiResponse<SymbolSignals> =
+                        resp.json().await.expect("Failed to parse signals");
                     let signals = wrapper.data;
                     println!(
                         "{} signals for BTC: composite={}, direction={}",
@@ -381,12 +410,21 @@ async fn test_prediction_validation_timing() {
                 }
 
                 println!("Prediction validation status:");
-                println!("  5m window: {} validated, {} pending (should be 0 if >5min old)", validated_5m, pending_5m);
-                println!("  1h window: {} validated, {} pending (should be 0 if >1hr old)", validated_1h, pending_1h);
+                println!(
+                    "  5m window: {} validated, {} pending (should be 0 if >5min old)",
+                    validated_5m, pending_5m
+                );
+                println!(
+                    "  1h window: {} validated, {} pending (should be 0 if >1hr old)",
+                    validated_1h, pending_1h
+                );
 
                 // If there are pending 5m predictions that are old enough, that's a problem
                 if pending_5m > 0 {
-                    println!("WARNING: {} predictions are >5min old but not yet validated for 5m", pending_5m);
+                    println!(
+                        "WARNING: {} predictions are >5min old but not yet validated for 5m",
+                        pending_5m
+                    );
                 }
             }
         }
@@ -419,13 +457,16 @@ async fn test_signals_real_time_updates() {
         match response {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let wrapper: ApiResponse<SymbolSignals> = resp.json().await.expect("Failed to parse signals");
+                    let wrapper: ApiResponse<SymbolSignals> =
+                        resp.json().await.expect("Failed to parse signals");
                     let signals = wrapper.data;
                     scores.push(signals.composite_score);
                     timestamps.push(signals.timestamp);
                     println!(
                         "  Request {}: score={}, timestamp={}",
-                        i + 1, signals.composite_score, signals.timestamp
+                        i + 1,
+                        signals.composite_score,
+                        signals.timestamp
                     );
                 }
             }
@@ -464,7 +505,8 @@ async fn test_multiple_symbols() {
             Ok(resp) => {
                 let status = resp.status();
                 if status.is_success() {
-                    let wrapper: ApiResponse<SymbolSignals> = resp.json().await.expect("Failed to parse");
+                    let wrapper: ApiResponse<SymbolSignals> =
+                        resp.json().await.expect("Failed to parse");
                     let signals = wrapper.data;
                     println!(
                         "  {}: {} ({} indicators)",

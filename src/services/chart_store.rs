@@ -1,10 +1,10 @@
 use crate::types::{ChartRange, ChartResolution, Mover, MoverTimeframe, OhlcPoint};
 use dashmap::DashMap;
-use redis::{aio::ConnectionManager, AsyncCommands};
+use redis::aio::ConnectionManager;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// OHLC bucket for a time period.
 #[derive(Debug, Clone)]
@@ -45,7 +45,11 @@ impl OhlcBucket {
             high: self.high,
             low: self.low,
             close: self.close,
-            volume: if self.volume > 0.0 { Some(self.volume) } else { None },
+            volume: if self.volume > 0.0 {
+                Some(self.volume)
+            } else {
+                None
+            },
         }
     }
 }
@@ -72,7 +76,8 @@ impl TimeSeries {
     }
 
     fn add_price(&mut self, price: f64, volume: Option<f64>, timestamp: i64) {
-        let bucket_time = (timestamp / 1000) / self.resolution.seconds() * self.resolution.seconds();
+        let bucket_time =
+            (timestamp / 1000) / self.resolution.seconds() * self.resolution.seconds();
 
         // Fast path: check if this is an update to the last bucket (real-time data)
         if let Some(last) = self.buckets.back_mut() {
@@ -186,17 +191,18 @@ impl ChartStore {
     /// Connect to Redis for persistence.
     pub async fn connect_redis(&self, redis_url: &str) {
         match redis::Client::open(redis_url) {
-            Ok(client) => {
-                match ConnectionManager::new(client).await {
-                    Ok(conn) => {
-                        info!("ChartStore connected to Redis at {}", redis_url);
-                        *self.redis.write().await = Some(conn);
-                    }
-                    Err(e) => {
-                        warn!("Failed to connect ChartStore to Redis: {}. Data will not persist.", e);
-                    }
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(conn) => {
+                    info!("ChartStore connected to Redis at {}", redis_url);
+                    *self.redis.write().await = Some(conn);
                 }
-            }
+                Err(e) => {
+                    warn!(
+                        "Failed to connect ChartStore to Redis: {}. Data will not persist.",
+                        e
+                    );
+                }
+            },
             Err(e) => {
                 warn!("Invalid Redis URL: {}. Data will not persist.", e);
             }
@@ -233,14 +239,21 @@ impl ChartStore {
                     if !prices.is_empty() {
                         self.seed_sparkline(symbol, &prices);
                         loaded_count += 1;
-                        debug!("Loaded {} sparkline points for {} from Redis", prices.len(), symbol);
+                        debug!(
+                            "Loaded {} sparkline points for {} from Redis",
+                            prices.len(),
+                            symbol
+                        );
                     }
                 }
             }
         }
 
         if loaded_count > 0 {
-            info!("Loaded sparkline data for {} symbols from Redis", loaded_count);
+            info!(
+                "Loaded sparkline data for {} symbols from Redis",
+                loaded_count
+            );
         }
     }
 
@@ -336,13 +349,19 @@ impl ChartStore {
                                 if !vals.is_empty() {
                                     let prices: Vec<f64> = vals
                                         .iter()
-                                        .filter_map(|v| v.split(':').nth(1).and_then(|p| p.parse().ok()))
+                                        .filter_map(|v| {
+                                            v.split(':').nth(1).and_then(|p| p.parse().ok())
+                                        })
                                         .collect();
 
                                     if !prices.is_empty() {
                                         self.seed_sparkline(symbol, &prices);
                                         loaded_count += 1;
-                                        debug!("Loaded {} sparkline points for {} from Redis", prices.len(), symbol);
+                                        debug!(
+                                            "Loaded {} sparkline points for {} from Redis",
+                                            prices.len(),
+                                            symbol
+                                        );
                                     }
                                 }
                             }
@@ -362,7 +381,10 @@ impl ChartStore {
         }
 
         if loaded_count > 0 {
-            info!("Loaded sparkline data for {} symbols from Redis (via SCAN)", loaded_count);
+            info!(
+                "Loaded sparkline data for {} symbols from Redis (via SCAN)",
+                loaded_count
+            );
         }
     }
 
@@ -406,9 +428,7 @@ impl ChartStore {
         let start_time = now - 86400; // 24 hours ago
         let data = entry.five_minute.get_data(start_time);
 
-        let total_volume: f64 = data.iter()
-            .filter_map(|p| p.volume)
-            .sum();
+        let total_volume: f64 = data.iter().filter_map(|p| p.volume).sum();
 
         if total_volume > 0.0 {
             Some(total_volume)
@@ -518,7 +538,11 @@ impl ChartStore {
             .filter(|m| m.change_percent > 0.0)
             .cloned()
             .collect();
-        gainers.sort_by(|a, b| b.change_percent.partial_cmp(&a.change_percent).unwrap_or(std::cmp::Ordering::Equal));
+        gainers.sort_by(|a, b| {
+            b.change_percent
+                .partial_cmp(&a.change_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         gainers.truncate(limit);
 
         let mut losers: Vec<Mover> = movers
@@ -526,7 +550,11 @@ impl ChartStore {
             .filter(|m| m.change_percent < 0.0)
             .cloned()
             .collect();
-        losers.sort_by(|a, b| a.change_percent.partial_cmp(&b.change_percent).unwrap_or(std::cmp::Ordering::Equal));
+        losers.sort_by(|a, b| {
+            a.change_percent
+                .partial_cmp(&b.change_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         losers.truncate(limit);
 
         (gainers, losers)
@@ -544,15 +572,9 @@ impl ChartStore {
         let start_time = now - range.duration_seconds();
 
         match range {
-            ChartRange::OneHour | ChartRange::FourHours => {
-                entry.one_minute.get_data(start_time)
-            }
-            ChartRange::OneDay => {
-                entry.five_minute.get_data(start_time)
-            }
-            ChartRange::OneWeek | ChartRange::OneMonth => {
-                entry.one_hour.get_data(start_time)
-            }
+            ChartRange::OneHour | ChartRange::FourHours => entry.one_minute.get_data(start_time),
+            ChartRange::OneDay => entry.five_minute.get_data(start_time),
+            ChartRange::OneWeek | ChartRange::OneMonth => entry.one_hour.get_data(start_time),
         }
     }
 
@@ -570,7 +592,8 @@ impl ChartStore {
         // For longer sparklines (>120 points), use 1-hour data
         if points > 120 {
             let start_time = now - (points as i64 * 3600); // 1 hour per point
-            let data: Vec<f64> = entry.one_hour
+            let data: Vec<f64> = entry
+                .one_hour
                 .get_data(start_time)
                 .iter()
                 .map(|p| p.close)
@@ -584,7 +607,8 @@ impl ChartStore {
         // For medium sparklines, use 5-minute data
         if points > 60 {
             let start_time = now - (points as i64 * 300); // 5 minutes per point
-            let data: Vec<f64> = entry.five_minute
+            let data: Vec<f64> = entry
+                .five_minute
                 .get_data(start_time)
                 .iter()
                 .map(|p| p.close)
@@ -597,7 +621,8 @@ impl ChartStore {
 
         // Default: 1-minute data
         let start_time = now - (points as i64 * 60);
-        entry.one_minute
+        entry
+            .one_minute
             .get_data(start_time)
             .iter()
             .rev()
@@ -637,7 +662,8 @@ impl ChartStore {
 
         // For sparklines, prefer hourly data for smoother visualization
         let start_time = now - (points as i64 * 3600);
-        let data: Vec<f64> = entry.one_hour
+        let data: Vec<f64> = entry
+            .one_hour
             .get_data(start_time)
             .iter()
             .map(|p| p.close)
@@ -649,7 +675,8 @@ impl ChartStore {
 
         // Fall back to 5-minute data if hourly data is sparse
         let start_time = now - (points as i64 * 300);
-        let data: Vec<f64> = entry.five_minute
+        let data: Vec<f64> = entry
+            .five_minute
             .get_data(start_time)
             .iter()
             .map(|p| p.close)
@@ -661,7 +688,8 @@ impl ChartStore {
 
         // Last resort: 1-minute data
         let start_time = now - (points as i64 * 60);
-        entry.one_minute
+        entry
+            .one_minute
             .get_data(start_time)
             .iter()
             .rev()
@@ -682,7 +710,7 @@ impl ChartStore {
         let now = chrono::Utc::now().timestamp_millis();
 
         // Spread prices evenly over the past hour
-        let interval_ms = 3600_000 / prices.len().max(1) as i64;
+        let interval_ms = 3_600_000 / prices.len().max(1) as i64;
 
         for (i, price) in prices.iter().enumerate() {
             let timestamp = now - (prices.len() - 1 - i) as i64 * interval_ms;

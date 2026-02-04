@@ -271,3 +271,170 @@ impl Default for AccuracyStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_accuracy_store_creation() {
+        let store = AccuracyStore::new();
+        assert!(store.accuracies.is_empty());
+        assert!(store.global_accuracies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_accuracy_store_default() {
+        let store = AccuracyStore::default();
+        assert!(store.accuracies.is_empty());
+        assert!(store.global_accuracies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_record_correct_outcome() {
+        let store = AccuracyStore::new();
+
+        // Record a correct outcome
+        store
+            .record_outcome("BTC", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+
+        // Check symbol accuracy
+        let accuracy = store.get_accuracy("RSI", "BTC", "day_trading").await;
+        assert!(accuracy.is_some());
+        let acc = accuracy.unwrap();
+        assert_eq!(acc.correct_predictions, 1);
+        assert_eq!(acc.total_predictions, 1);
+        assert_eq!(acc.accuracy_pct, 100.0);
+    }
+
+    #[tokio::test]
+    async fn test_record_incorrect_outcome() {
+        let store = AccuracyStore::new();
+
+        // Record an incorrect outcome
+        store
+            .record_outcome("ETH", "MACD", "swing_trading", PredictionOutcome::Incorrect)
+            .await;
+
+        // Check symbol accuracy
+        let accuracy = store.get_accuracy("MACD", "ETH", "swing_trading").await;
+        assert!(accuracy.is_some());
+        let acc = accuracy.unwrap();
+        assert_eq!(acc.correct_predictions, 0);
+        assert_eq!(acc.total_predictions, 1);
+        assert_eq!(acc.accuracy_pct, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_record_multiple_outcomes() {
+        let store = AccuracyStore::new();
+
+        // Record multiple outcomes
+        store
+            .record_outcome("BTC", "RSI", "scalping", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("BTC", "RSI", "scalping", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("BTC", "RSI", "scalping", PredictionOutcome::Incorrect)
+            .await;
+        store
+            .record_outcome("BTC", "RSI", "scalping", PredictionOutcome::Correct)
+            .await;
+
+        // Check accuracy (3/4 = 75%)
+        let accuracy = store.get_accuracy("RSI", "BTC", "scalping").await;
+        assert!(accuracy.is_some());
+        let acc = accuracy.unwrap();
+        assert_eq!(acc.correct_predictions, 3);
+        assert_eq!(acc.total_predictions, 4);
+        assert_eq!(acc.accuracy_pct, 75.0);
+    }
+
+    #[tokio::test]
+    async fn test_global_accuracy() {
+        let store = AccuracyStore::new();
+
+        // Record outcomes for different symbols
+        store
+            .record_outcome("BTC", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("ETH", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("SOL", "RSI", "day_trading", PredictionOutcome::Incorrect)
+            .await;
+
+        // Check global accuracy (2/3 ≈ 66.67%)
+        let global = store.get_global_accuracy("RSI", "day_trading").await;
+        assert!(global.is_some());
+        let acc = global.unwrap();
+        assert_eq!(acc.total_predictions, 3);
+        assert_eq!(acc.correct_predictions, 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_symbol_accuracies() {
+        let store = AccuracyStore::new();
+
+        // Record for multiple indicators
+        store
+            .record_outcome("BTC", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("BTC", "MACD", "day_trading", PredictionOutcome::Incorrect)
+            .await;
+        store
+            .record_outcome("ETH", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+
+        // Get all BTC accuracies
+        let btc_accuracies = store.get_symbol_accuracies("BTC");
+        assert_eq!(btc_accuracies.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_indicator_accuracies() {
+        let store = AccuracyStore::new();
+
+        // Record for different timeframes
+        store
+            .record_outcome("BTC", "RSI", "scalping", PredictionOutcome::Correct)
+            .await;
+        store
+            .record_outcome("BTC", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+
+        // Get all RSI accuracies
+        let rsi_accuracies = store.get_indicator_accuracies("RSI");
+        assert_eq!(rsi_accuracies.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_accuracy_case_insensitive_symbol() {
+        let store = AccuracyStore::new();
+
+        // Record with uppercase
+        store
+            .record_outcome("BTC", "RSI", "day_trading", PredictionOutcome::Correct)
+            .await;
+
+        // Query with lowercase should work
+        let accuracy = store.get_accuracy("RSI", "btc", "day_trading").await;
+        assert!(accuracy.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_accuracy_nonexistent_returns_none() {
+        let store = AccuracyStore::new();
+
+        // Query for nonexistent data
+        let accuracy = store
+            .get_accuracy("RSI", "NONEXISTENT", "day_trading")
+            .await;
+        assert!(accuracy.is_none());
+    }
+}

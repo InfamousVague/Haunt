@@ -1,15 +1,13 @@
-/**
- * Authentication API
- *
- * Endpoints for authentication and profile management.
- *
- * Flow:
- * 1. GET /api/auth/challenge - Get a challenge to sign
- * 2. POST /api/auth/verify - Submit signed challenge to authenticate
- * 3. GET /api/auth/me - Get current user profile (requires auth)
- * 4. PUT /api/auth/profile - Update profile settings (requires auth)
- * 5. POST /api/auth/logout - Logout and invalidate session
- */
+//! Authentication API
+//!
+//! Endpoints for authentication and profile management.
+//!
+//! Flow:
+//! 1. GET /api/auth/challenge - Get a challenge to sign
+//! 2. POST /api/auth/verify - Submit signed challenge to authenticate
+//! 3. GET /api/auth/me - Get current user profile (requires auth)
+//! 4. PUT /api/auth/profile - Update profile settings (requires auth)
+//! 5. POST /api/auth/logout - Logout and invalidate session
 
 use axum::{
     extract::{FromRequestParts, State},
@@ -19,8 +17,10 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::services::{AuthError, AuthService};
-use crate::types::{AuthChallenge, AuthRequest, AuthResponse, AuthenticatedUser, Profile, ProfileSettings};
+use crate::services::AuthError;
+use crate::types::{
+    AuthChallenge, AuthRequest, AuthResponse, AuthenticatedUser, Profile, ProfileSettings,
+};
 use crate::AppState;
 
 /// Create auth router.
@@ -64,9 +64,7 @@ async fn verify(
 /// GET /api/auth/me
 ///
 /// Get the current authenticated user's profile.
-async fn get_me(
-    auth: Authenticated,
-) -> Json<ApiResponse<Profile>> {
+async fn get_me(auth: Authenticated) -> Json<ApiResponse<Profile>> {
     Json(ApiResponse {
         data: auth.user.profile,
     })
@@ -91,9 +89,7 @@ async fn update_profile(
 /// POST /api/auth/logout
 ///
 /// Logout and invalidate the current session.
-async fn logout(
-    _auth: Authenticated,
-) -> Json<ApiResponse<LogoutResponse>> {
+async fn logout(_auth: Authenticated) -> Json<ApiResponse<LogoutResponse>> {
     // Get the token from the Authorization header
     // The Authenticated extractor already validated the session
     // We need to get the token to invalidate it
@@ -122,7 +118,10 @@ pub struct Authenticated {
 impl FromRequestParts<AppState> for Authenticated {
     type Rejection = AuthError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         // Get Authorization header
         let auth_header = parts
             .headers
@@ -167,6 +166,10 @@ pub struct LogoutResponse {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // ApiResponse Tests
+    // =========================================================================
+
     #[test]
     fn test_api_response_serialization() {
         let response = ApiResponse {
@@ -174,5 +177,62 @@ mod tests {
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"data\":\"test\""));
+    }
+
+    #[test]
+    fn test_api_response_with_struct() {
+        #[derive(Serialize)]
+        struct TestData {
+            value: i32,
+        }
+
+        let response = ApiResponse {
+            data: TestData { value: 42 },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"data\":{\"value\":42}"));
+    }
+
+    #[test]
+    fn test_api_response_with_vec() {
+        let response = ApiResponse {
+            data: vec!["a", "b", "c"],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"data\":[\"a\",\"b\",\"c\"]"));
+    }
+
+    #[test]
+    fn test_api_response_debug() {
+        let response = ApiResponse { data: 123 };
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("ApiResponse"));
+        assert!(debug_str.contains("123"));
+    }
+
+    // =========================================================================
+    // LogoutResponse Tests
+    // =========================================================================
+
+    #[test]
+    fn test_logout_response_success() {
+        let response = LogoutResponse { success: true };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(json, "{\"success\":true}");
+    }
+
+    #[test]
+    fn test_logout_response_failure() {
+        let response = LogoutResponse { success: false };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(json, "{\"success\":false}");
+    }
+
+    #[test]
+    fn test_logout_response_debug() {
+        let response = LogoutResponse { success: true };
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("LogoutResponse"));
+        assert!(debug_str.contains("true"));
     }
 }
