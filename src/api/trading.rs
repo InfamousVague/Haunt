@@ -195,6 +195,16 @@ async fn create_portfolio(
         request.risk_settings,
     )?;
 
+    // Broadcast portfolio creation to all peers for bidirectional sync
+    if let Some(ref sync_service) = state.sync_service {
+        if let Err(e) = sync_service
+            .broadcast_entity_update(crate::types::EntityType::Portfolio, &portfolio.id)
+            .await
+        {
+            tracing::warn!("Failed to broadcast portfolio creation: {}", e);
+        }
+    }
+
     Ok(Json(ApiResponse { data: portfolio }))
 }
 
@@ -373,7 +383,28 @@ async fn place_order(
         if let Some(current_price) = state.price_cache.get_price(&symbol.to_lowercase()) {
             // Execute the market order
             match state.trading_service.execute_market_order(&order.id, current_price, None) {
-                Ok(_trade) => {
+                Ok(trade) => {
+                    // Broadcast the trade, order, and position updates to all peers
+                    if let Some(ref sync_service) = state.sync_service {
+                        // Broadcast trade
+                        let _ = sync_service
+                            .broadcast_entity_update(crate::types::EntityType::Trade, &trade.id)
+                            .await;
+                        // Broadcast order update
+                        let _ = sync_service
+                            .broadcast_entity_update(crate::types::EntityType::Order, &order.id)
+                            .await;
+                        // Broadcast position if exists
+                        if let Some(ref pos_id) = trade.position_id {
+                            let _ = sync_service
+                                .broadcast_entity_update(crate::types::EntityType::Position, pos_id)
+                                .await;
+                        }
+                        // Broadcast portfolio update (balance changes)
+                        let _ = sync_service
+                            .broadcast_entity_update(crate::types::EntityType::Portfolio, &portfolio.id)
+                            .await;
+                    }
                     // Return the updated (filled) order
                     if let Some(filled_order) = state.trading_service.get_order(&order.id) {
                         return Ok(Json(ApiResponse { data: filled_order }));
@@ -386,6 +417,16 @@ async fn place_order(
             }
         } else {
             tracing::warn!("No price available for {}, market order stays pending", symbol);
+        }
+    }
+
+    // Broadcast order creation to all peers (for pending/limit orders)
+    if let Some(ref sync_service) = state.sync_service {
+        if let Err(e) = sync_service
+            .broadcast_entity_update(crate::types::EntityType::Order, &order.id)
+            .await
+        {
+            tracing::warn!("Failed to broadcast order creation: {}", e);
         }
     }
 

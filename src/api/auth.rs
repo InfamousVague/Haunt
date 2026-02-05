@@ -51,6 +51,17 @@ async fn verify(
 ) -> Result<Json<ApiResponse<AuthResponse>>, AuthError> {
     let (session, profile) = state.auth_service.verify(&request).await?;
 
+    // Broadcast profile creation/update to all peers for bidirectional sync
+    // This handles both new user registration and existing user login
+    if let Some(ref sync_service) = state.sync_service {
+        if let Err(e) = sync_service
+            .broadcast_entity_update(crate::types::EntityType::Profile, &profile.id)
+            .await
+        {
+            tracing::warn!("Failed to broadcast profile update: {}", e);
+        }
+    }
+
     let response = AuthResponse {
         authenticated: true,
         public_key: session.public_key.clone(),
@@ -135,6 +146,16 @@ async fn update_leaderboard_visibility(
     }
 
     let updated = state.auth_service.update_profile(profile).await?;
+
+    // Broadcast profile update to all peers for bidirectional sync
+    if let Some(ref sync_service) = state.sync_service {
+        if let Err(e) = sync_service
+            .broadcast_entity_update(crate::types::EntityType::Profile, &updated.id)
+            .await
+        {
+            tracing::warn!("Failed to broadcast profile update: {}", e);
+        }
+    }
 
     Ok(Json(ApiResponse { data: updated }))
 }

@@ -1500,6 +1500,65 @@ impl SyncService {
     pub fn get_active_sessions(&self) -> Vec<HistoricalSyncSession> {
         self.active_sessions.iter().map(|r| r.value().clone()).collect()
     }
+
+    /// Immediately broadcast an entity update to all peers.
+    /// Called when an entity is created or modified to push changes to other nodes.
+    pub async fn broadcast_entity_update(
+        &self,
+        entity_type: EntityType,
+        entity_id: &str,
+    ) -> Result<(), String> {
+        // Get entity data from database
+        let data = self
+            .sqlite_store
+            .get_entity_data(entity_type, entity_id)
+            .map_err(|e| format!("Failed to get entity data: {}", e))?;
+
+        if data.is_empty() {
+            return Err("Entity not found".to_string());
+        }
+
+        // Get or create version
+        let (version, timestamp) = match self
+            .sqlite_store
+            .get_entity_version(entity_type, entity_id)
+            .map_err(|e| format!("Failed to get entity version: {}", e))?
+        {
+            Some((v, t)) => (v, t),
+            None => {
+                // Increment version for first sync
+                let new_version = self
+                    .sqlite_store
+                    .increment_entity_version(entity_type, entity_id, &self.node_id)
+                    .map_err(|e| format!("Failed to increment version: {}", e))?;
+                (new_version, chrono::Utc::now().timestamp_millis())
+            }
+        };
+
+        // Calculate checksum
+        let checksum = Self::calculate_checksum(&data);
+
+        // Create sync message
+        let sync_msg = SyncMessage::DataUpdate {
+            entity_type,
+            entity_id: entity_id.to_string(),
+            version,
+            timestamp,
+            node_id: self.node_id.clone(),
+            checksum,
+            data,
+        };
+
+        // Broadcast to all peers (including primary)
+        self.broadcast_sync_message(sync_msg, None).await?;
+
+        info!(
+            "Broadcast {:?} {} (version {}) to all peers",
+            entity_type, entity_id, version
+        );
+
+        Ok(())
+    }
 }
 
 /// Task-safe subset of SyncService for spawned background tasks.
