@@ -15,7 +15,7 @@ use crate::types::{
     Portfolio, PredictionOutcome, Profile, ProfileSettings, RiskSettings, SignalPrediction,
     StrategyStatus, TimeInForce, Trade, TradingRule, TradingStrategy,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 use tracing::{debug, error, info};
