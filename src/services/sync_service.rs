@@ -504,4 +504,9 @@ impl SyncService {
             // TODO: Fix inconsistencies
         }
     }
+
+    /// Check if this node is the primary node.
+    pub fn is_primary(&self) -> bool {
+        self.is_primary
+    }
 }

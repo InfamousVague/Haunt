@@ -58,6 +58,10 @@ rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 
+# Terminal UI
+ratatui = "0.26"
+crossterm = "0.27"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

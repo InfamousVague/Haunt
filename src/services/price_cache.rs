@@ -838,3 +838,40 @@ impl PriceCacheRedisRef {
         }
     }
 }
+
+// TUI helper methods
+impl PriceCache {
+    /// Get top N prices with their 24h change percentage.
+    /// Returns (symbol, price, change_percent).
+    pub fn get_top_prices(&self, limit: usize) -> Vec<(String, f64, f64)> {
+        let mut prices: Vec<_> = self
+            .prices
+            .iter()
+            .filter_map(|entry| {
+                let symbol = entry.key().clone();
+                let data = entry.value();
+                let price = data.last_aggregated?;
+                // Mock change for now (in real impl, track 24h ago price)
+                let change = (rand::random::<f64>() - 0.5) * 10.0; // -5% to +5%
+                Some((symbol, price, change))
+            })
+            .collect();
+
+        prices.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        prices.truncate(limit);
+        prices
+    }
+
+    /// Get update counts per symbol.
+    pub fn get_update_counts(&self) -> HashMap<String, u64> {
+        self.symbol_source_updates
+            .iter()
+            .map(|entry| {
+                let symbol = entry.key().clone();
+                let sources = entry.value();
+                let total: u64 = sources.iter().map(|s| s.value().load(Ordering::Relaxed)).sum();
+                (symbol, total)
+            })
+            .collect()
+    }
+}

@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod services;
 mod sources;
+mod tui;
 mod types;
 mod websocket;
 
@@ -49,6 +50,10 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Check for TUI launch flag
+    let args: Vec<String> = std::env::args().collect();
+    let launch_tui = args.contains(&"--tui".to_string());
+
     // Load environment variables
     dotenvy::dotenv().ok();
 
@@ -374,9 +379,8 @@ async fn main() -> anyhow::Result<()> {
         );
         info!("Sync service created (primary: {})", is_primary);
         
-        // TODO: Connect sync_service to trading_service
-        // Requires adding interior mutability (Mutex/RwLock) to TradingService.sync_service field
-        // For now, sync triggers in TradingService will not fire
+        // Connect sync service to trading service for distributed sync
+        trading_service.set_sync_service(service.clone());
         
         Some(service)
     } else {
@@ -403,6 +407,31 @@ async fn main() -> anyhow::Result<()> {
         trading_service: trading_service.clone(),
         bot_runner: bot_runner.clone(),
     };
+
+    // If TUI mode requested, launch TUI instead of server
+    if launch_tui {
+        info!("Launching Terminal UI...");
+        
+        // Start the price sources in the background
+        coordinator.start().await;
+        
+        // Start peer mesh if configured
+        if let Some(ref mesh) = peer_mesh {
+            mesh.clone().start();
+            if let Some(ref sync) = sync_service {
+                sync.clone().start();
+            }
+        }
+        
+        // Start bot runner if configured
+        if let Some(ref runner) = bot_runner {
+            runner.clone().start().await;
+        }
+        
+        // Launch TUI
+        let state_arc = Arc::new(state);
+        return tui::run_tui(state_arc).await.map_err(|e| anyhow::anyhow!("TUI error: {}", e));
+    }
 
     // Keep a reference for the market simulation engine
     let trading_service_for_sim = trading_service;

@@ -207,4 +207,19 @@ impl MultiSourceCoordinator {
             ws.unsubscribe(symbols).await;
         }
     }
+
+    /// Get status of all sources (name, is_active).
+    pub fn source_status(&self) -> Vec<(&'static str, bool)> {
+        vec![
+            ("Coinbase", self.coinbase_ws.is_some()),
+            ("CoinGecko", self.coingecko.is_some()),
+            ("CryptoCompare", self.cryptocompare.is_some()),
+            ("CoinMarketCap", self.coinmarketcap.is_some()),
+            ("Binance", self.binance.is_some()),
+            ("Kraken", self.kraken.is_some()),
+            ("KuCoin", self.kucoin.is_some()),
+            ("OKX", self.okx.is_some()),
+            ("Huobi", self.huobi.is_some()),
+        ]
+    }
 }

@@ -23,7 +23,7 @@ use crate::types::{
 };
 use crate::websocket::RoomManager;
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -121,7 +121,7 @@ pub struct TradingService {
     /// Room manager for WebSocket broadcasts (optional for testing)
     room_manager: Option<Arc<RoomManager>>,
     /// Sync service for distributed data synchronization (optional)
-    sync_service: Option<Arc<SyncService>>,
+    sync_service: Arc<RwLock<Option<Arc<SyncService>>>>,
 }
 
 impl TradingService {
@@ -135,7 +135,7 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
-            sync_service: None,
+            sync_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -149,7 +149,7 @@ impl TradingService {
             config,
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
-            sync_service: None,
+            sync_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -163,7 +163,7 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::new(liquidity_config)),
             room_manager: None,
-            sync_service: None,
+            sync_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -177,7 +177,7 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: Some(room_manager),
-            sync_service: None,
+            sync_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -187,8 +187,11 @@ impl TradingService {
     }
 
     /// Set sync service for distributed data synchronization.
-    pub fn set_sync_service(&mut self, sync_service: Arc<SyncService>) {
-        self.sync_service = Some(sync_service);
+    pub fn set_sync_service(&self, sync_service: Arc<SyncService>) {
+        if let Ok(mut guard) = self.sync_service.write() {
+            *guard = Some(sync_service);
+            info!("Sync service connected to TradingService");
+        }
     }
 
     // ==========================================================================
@@ -333,8 +336,10 @@ impl TradingService {
         self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Insert, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Insert, None);
+            }
         }
 
         info!("Created portfolio {} for user {}", portfolio.id, user_id);
@@ -482,8 +487,10 @@ impl TradingService {
         self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Update, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Update, None);
+            }
         }
 
         // Broadcast portfolio settings change
@@ -679,8 +686,10 @@ impl TradingService {
         self.orders.insert(order.id.clone(), order.clone());
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Insert, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Insert, None);
+            }
         }
 
         // Broadcast order creation
@@ -782,8 +791,10 @@ impl TradingService {
         self.orders.insert(order.id.clone(), order.clone());
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Update, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Update, None);
+            }
         }
 
         // Broadcast order cancellation
@@ -865,8 +876,10 @@ impl TradingService {
         self.sqlite.create_trade(&trade)?;
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Trade, trade.id.clone(), SyncOperation::Insert, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Trade, trade.id.clone(), SyncOperation::Insert, None);
+            }
         }
 
         // Take portfolio snapshot for equity curve charting
@@ -988,8 +1001,10 @@ impl TradingService {
             self.positions.insert(position.id.clone(), position.clone());
 
             // Queue sync to other nodes
-            if let Some(ref sync_service) = self.sync_service {
-                let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+            if let Ok(guard) = self.sync_service.read() {
+                if let Some(ref sync_service) = *guard {
+                    let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+                }
             }
 
             // Broadcast position increase
@@ -1260,8 +1275,10 @@ impl TradingService {
         self.positions.insert(position.id.clone(), position.clone());
 
         // Queue sync to other nodes
-        if let Some(ref sync_service) = self.sync_service {
-            let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+        if let Ok(guard) = self.sync_service.read() {
+            if let Some(ref sync_service) = *guard {
+                let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+            }
         }
 
         // Broadcast position modification

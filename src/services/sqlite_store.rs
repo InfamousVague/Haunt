@@ -24,14 +24,17 @@ use uuid::Uuid;
 /// SQLite store for persistent profile and prediction data.
 pub struct SqliteStore {
     conn: Mutex<Connection>,
+    pub db_path: String,
 }
 
 impl SqliteStore {
     /// Create a new SQLite store at the given path.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        let db_path = path.as_ref().to_string_lossy().to_string();
         let conn = Connection::open(path)?;
         let store = Self {
             conn: Mutex::new(conn),
+            db_path,
         };
         store.init_schema()?;
         info!("SQLite store initialized");
@@ -43,6 +46,7 @@ impl SqliteStore {
         let conn = Connection::open_in_memory()?;
         let store = Self {
             conn: Mutex::new(conn),
+            db_path: ":memory:".to_string(),
         };
         store.init_schema()?;
         debug!("In-memory SQLite store initialized");
