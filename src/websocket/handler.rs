@@ -212,6 +212,20 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
         } => {
             debug!("Peer identified: {} ({}) v{}", id, region, version);
         }
+        // Peer mesh sync data - forward to SyncService via broadcast channel
+        ClientMessage::SyncData { from_id, data } => {
+            debug!("Received sync data from {} ({} bytes)", from_id, data.len());
+            // Forward to SyncService via the peer mesh's sync_data channel
+            // This allows the WebSocket handler to bridge sync data from peer connections
+            // that connect to the regular WebSocket endpoint
+            if let Some(peer_mesh) = &state.peer_mesh {
+                if let Err(e) = peer_mesh.forward_sync_data(from_id.clone(), data) {
+                    debug!("Failed to forward sync data from {}: {}", from_id, e);
+                }
+            } else {
+                debug!("Peer mesh not available to forward sync data from {}", from_id);
+            }
+        }
         // Trading subscriptions
         ClientMessage::SubscribeTrading { portfolio_id } => {
             let subscribed = state.room_manager.subscribe_trading(client_id, &portfolio_id).await;

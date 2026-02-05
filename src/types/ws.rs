@@ -48,6 +48,11 @@ pub enum ClientMessage {
         region: String,
         version: String,
     },
+    /// Peer mesh sync data (server-to-server sync)
+    SyncData {
+        from_id: String,
+        data: String,
+    },
     /// Subscribe to trading updates for a portfolio
     SubscribeTrading {
         portfolio_id: String,

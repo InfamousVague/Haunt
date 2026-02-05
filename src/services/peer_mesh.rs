@@ -221,6 +221,16 @@ impl PeerMesh {
         self.sync_data_tx.subscribe()
     }
 
+    /// Forward sync data received from WebSocket handler.
+    /// This allows the WebSocket handler to bridge sync data from peer connections
+    /// that connect to the regular WebSocket endpoint (not the peer mesh endpoint).
+    pub fn forward_sync_data(&self, from_id: String, data: String) -> Result<(), String> {
+        self.sync_data_tx
+            .send((from_id, data))
+            .map(|_| ())
+            .map_err(|e| format!("Failed to forward sync data: {}", e))
+    }
+
     /// Get this server's ID.
     pub fn server_id(&self) -> &str {
         &self.server_id
