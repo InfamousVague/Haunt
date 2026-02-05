@@ -4380,11 +4380,15 @@ impl SqliteStore {
         after_rowid: i64,
         limit: u32,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, rusqlite::Error> {
+        use crate::types::EntityType;
+
         let conn = self.conn.lock().unwrap();
         let table = entity_type.table_name();
 
+        // Some tables use INTEGER id (insurance_fund), others use TEXT (UUID).
+        // Use CAST to handle both cases uniformly.
         let mut stmt = conn.prepare(&format!(
-            "SELECT rowid, id FROM {} WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+            "SELECT rowid, CAST(id AS TEXT) FROM {} WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
             table
         ))?;
 
