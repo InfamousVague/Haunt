@@ -3,16 +3,16 @@ mod config;
 mod error;
 mod services;
 mod sources;
-mod tui;
 mod types;
 mod websocket;
 
 use axum::{routing::get, Router};
 use config::Config;
 use services::{
-    AccuracyStore, AssetService, AuthService, BotRunner, ChartStore, CryptoBroBot, GrandmaBot,
+    AccuracyStore, AssetService, AuthService, ChartStore, ExchangeMetricsService,
     HistoricalDataService, MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh,
-    PredictionStore, QuantBot, ScalperBot, SignalStore, SqliteStore, SyncService,
+    PredictionStore, RatService, SignalStore, SqliteStore, StorageManager, SyncService,
+    UsernameFilterService,
 };
 use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -44,58 +44,30 @@ pub struct AppState {
     pub orderbook_service: Arc<OrderBookService>,
     pub peer_mesh: Option<Arc<PeerMesh>>,
     pub sync_service: Option<Arc<SyncService>>,
+    pub storage_manager: Option<Arc<StorageManager>>,
     pub trading_service: Arc<services::TradingService>,
-    pub bot_runner: Option<Arc<BotRunner>>,
+    pub rat_service: Arc<RatService>,
+    pub exchange_metrics: Arc<ExchangeMetricsService>,
+    pub username_filter: Arc<UsernameFilterService>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Check for TUI launch flag
-    let args: Vec<String> = std::env::args().collect();
-    let launch_tui = args.contains(&"--tui".to_string());
-    let log_buffer = if launch_tui {
-        Some(Arc::new(tui::LogBuffer::new(500)))
-    } else {
-        None
-    };
-
     // Load environment variables
     dotenvy::dotenv().ok();
 
-    // Initialize tracing (disable console output in TUI mode)
-    if launch_tui {
-        // In TUI mode, route logs to the in-memory buffer.
-        let log_buffer = log_buffer
-            .as_ref()
-            .expect("log buffer should be available in TUI mode")
-            .clone();
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "haunt=info".into()),
-            )
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_writer(tui::LogMakeWriter::new(log_buffer))
-                    .with_ansi(false),
-            )
-            .init();
-    } else {
-        // Normal server mode with full logging
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "haunt=debug,tower_http=debug".into()),
-            )
-            .with(tracing_subscriber::fmt::layer())
-            .init();
-    }
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "haunt=debug,tower_http=debug".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     // Load configuration
     let config = Arc::new(Config::from_env());
-    if !launch_tui {
-        info!("Starting Haunt server on {}:{}", config.host, config.port);
-    }
+    info!("Starting Haunt server on {}:{}", config.host, config.port);
 
     // Create the multi-source coordinator
     let (coordinator, _price_rx) = MultiSourceCoordinator::new(&config);
@@ -365,37 +337,7 @@ async fn main() -> anyhow::Result<()> {
         room_manager.clone(),
     ));
 
-    // Create bot runner for AI trading bots
-    let bot_runner = {
-        let runner = BotRunner::new(
-            price_cache.clone(),
-            chart_store.clone(),
-            signal_store.clone(),
-            trading_service.clone(),
-            sqlite_store.clone(),
-        );
-
-        // Create and register all trading bots
-        let grandma = GrandmaBot::new();
-        runner.register_bot(grandma);
-        info!("Registered GrandmaBot for paper trading");
-
-        let crypto_bro = CryptoBroBot::new();
-        runner.register_bot(crypto_bro);
-        info!("Registered CryptoBroBot for paper trading");
-
-        let quant = QuantBot::new();
-        runner.register_bot(quant);
-        info!("Registered QuantBot (ML-powered adaptive trader) for paper trading");
-
-        let scalper = ScalperBot::new();
-        runner.register_bot(scalper);
-        info!("Registered ScalperBot (high-frequency scalper) for paper trading");
-
-        Some(Arc::new(runner))
-    };
-
-     // Create sync service if peer mesh is enabled
+    // Create sync service if peer mesh is enabled
     let sync_service = if let Some(ref mesh) = peer_mesh {
         let is_primary = config.server_id == "osaka";
         let service = SyncService::new(
@@ -405,14 +347,39 @@ async fn main() -> anyhow::Result<()> {
             is_primary,
         );
         info!("Sync service created (primary: {})", is_primary);
-        
+
         // Connect sync service to trading service for distributed sync
         trading_service.set_sync_service(service.clone());
-        
+
         Some(service)
     } else {
         None
     };
+
+    // Create storage manager for disk space monitoring and cleanup
+    let storage_manager = StorageManager::new(sqlite_store.clone(), config.storage.clone());
+    info!("Storage manager created (limit: {} MB)", config.storage.limit_mb);
+
+    // Create exchange metrics service for latency and dominance tracking
+    let exchange_metrics = ExchangeMetricsService::new();
+    info!("Exchange metrics service initialized");
+
+    // Connect exchange metrics to price cache for automatic latency tracking
+    price_cache.set_exchange_metrics(exchange_metrics.clone()).await;
+
+    // Create username filter service for validation and content moderation
+    let username_filter = UsernameFilterService::default_service();
+    info!("Username filter service initialized");
+
+    // Create RAT (Random Auto Trader) service for developer testing
+    let rat_service = RatService::new(
+        sqlite_store.clone(),
+        trading_service.clone(),
+        price_cache.clone(),
+    );
+    // Load persisted RAT configs from database
+    rat_service.load_from_database();
+    info!("RAT service initialized");
 
     // Create application state
     let state = AppState {
@@ -431,50 +398,12 @@ async fn main() -> anyhow::Result<()> {
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
         sync_service: sync_service.clone(),
+        storage_manager: Some(storage_manager.clone()),
         trading_service: trading_service.clone(),
-        bot_runner: bot_runner.clone(),
+        rat_service: rat_service.clone(),
+        exchange_metrics: exchange_metrics.clone(),
+        username_filter,
     };
-
-    // If TUI mode requested, launch TUI instead of server
-    if launch_tui {
-        eprintln!("Launching Haunt Terminal UI...");
-        eprintln!("   Initializing services...");
-        
-        // Start the price sources in the background
-        coordinator.start().await;
-        
-        // Start peer mesh if configured
-        if let Some(ref mesh) = peer_mesh {
-            mesh.clone().start();
-            if let Some(ref sync) = sync_service {
-                sync.clone().start();
-            }
-        }
-        
-        // Start bot runner if configured
-        if let Some(ref runner) = bot_runner {
-            let runner = runner.clone();
-            tokio::spawn(async move {
-                runner.start().await;
-            });
-        }
-        
-        eprintln!("   Services started. Launching UI...\n");
-        
-        // Brief delay to let services initialize
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
-        // Launch TUI
-        let state_arc = Arc::new(state);
-        let log_buffer = log_buffer
-            .as_ref()
-            .expect("log buffer should be available in TUI mode")
-            .clone();
-        let tui_state = Arc::new(tui::TuiState::new(log_buffer, 200, 200));
-        return tui::run_tui(state_arc, tui_state)
-            .await
-            .map_err(|e| anyhow::anyhow!("TUI error: {}", e));
-    }
 
     // Keep a reference for the market simulation engine
     let trading_service_for_sim = trading_service;
@@ -492,8 +421,17 @@ async fn main() -> anyhow::Result<()> {
             info!("Starting sync service...");
             sync.clone().start();
         }
+    }
 
-        // Spawn peer status broadcast task to connected WebSocket clients
+    // Start storage manager (always enabled)
+    info!("Starting storage manager...");
+    storage_manager.clone().start();
+
+    // Auto-start enabled RAT instances
+    rat_service.clone().auto_start_enabled();
+
+    // Spawn peer status broadcast task to connected WebSocket clients
+    if let Some(ref mesh) = peer_mesh {
         let mesh_for_broadcast = mesh.clone();
         let room_manager_for_peers = room_manager.clone();
         let config_for_peers = config.clone();
@@ -638,15 +576,6 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             }
-        });
-    }
-
-    // Start bot runner for AI trading bots
-    if let Some(ref runner) = bot_runner {
-        info!("Starting bot runner with {} registered bots", runner.bot_count());
-        let runner = runner.clone();
-        tokio::spawn(async move {
-            runner.start().await;
         });
     }
 

@@ -108,7 +108,10 @@ impl KuCoinClient {
             request = request.header("KC-API-KEY", key);
         }
 
+        // Measure request latency
+        let request_start = std::time::Instant::now();
         let response = request.send().await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -118,6 +121,8 @@ impl KuCoinClient {
                 status,
                 &text[..text.len().min(200)]
             );
+            self.price_cache
+                .record_source_error_metrics(PriceSource::KuCoin, &format!("HTTP {}", status));
             return Err(anyhow::anyhow!("KuCoin API error: {}", status));
         }
 
@@ -125,6 +130,8 @@ impl KuCoinClient {
 
         if data.code != "200000" {
             warn!("KuCoin API error code: {}", data.code);
+            self.price_cache
+                .record_source_error_metrics(PriceSource::KuCoin, &format!("API error: {}", data.code));
             return Err(anyhow::anyhow!("KuCoin API error: {}", data.code));
         }
 
@@ -155,11 +162,12 @@ impl KuCoinClient {
 
                 if price > 0.0 {
                     debug!("KuCoin price update: {} = ${}", symbol, price);
-                    self.price_cache.update_price(
+                    self.price_cache.update_price_with_latency(
                         symbol,
                         PriceSource::KuCoin,
                         price,
                         Some(volume_24h),
+                        latency_ms,
                     );
                     self.chart_store
                         .add_price(symbol, price, Some(volume_24h), timestamp);

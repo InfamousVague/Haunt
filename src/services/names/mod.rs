@@ -3,6 +3,8 @@
 //! Generates memorable usernames like PlayStation/Xbox auto-generated names.
 //! Pattern: {Adjective}{Noun}{Number}
 
+#![allow(dead_code)]
+
 use rand::Rng;
 
 /// Adjectives for username generation

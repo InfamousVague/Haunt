@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::services::{ChartStore, PriceCache};
+use crate::services::{ChartStore, ExchangeMetricsService, PriceCache};
 use crate::sources::{
     BinanceClient, CoinGeckoClient, CoinMarketCapClient, CoinbaseWs, CryptoCompareClient,
     HuobiClient, KrakenClient, KuCoinClient, OkxClient,
@@ -13,6 +13,7 @@ use tracing::{error, info};
 pub struct MultiSourceCoordinator {
     price_cache: Arc<PriceCache>,
     chart_store: Arc<ChartStore>,
+    exchange_metrics: Option<Arc<ExchangeMetricsService>>,
     coinbase_ws: Option<CoinbaseWs>,
     coingecko: Option<CoinGeckoClient>,
     cryptocompare: Option<CryptoCompareClient>,
@@ -86,6 +87,7 @@ impl MultiSourceCoordinator {
         let coordinator = Arc::new(Self {
             price_cache,
             chart_store,
+            exchange_metrics: None, // Set via set_exchange_metrics after construction
             coinbase_ws,
             coingecko,
             cryptocompare,
@@ -108,6 +110,11 @@ impl MultiSourceCoordinator {
     /// Get the chart store.
     pub fn chart_store(&self) -> Arc<ChartStore> {
         self.chart_store.clone()
+    }
+
+    /// Get the exchange metrics service (if set).
+    pub fn exchange_metrics(&self) -> Option<Arc<ExchangeMetricsService>> {
+        self.exchange_metrics.clone()
     }
 
     /// Start all price sources.

@@ -10,6 +10,8 @@
 //! - Position limit enforcement
 //! - Integration with trading service
 
+#![allow(dead_code)]
+
 use crate::services::SqliteStore;
 use crate::types::{
     ComparisonOperator, IndicatorType, LogicalOperator, PlaceOrderRequest, PositionSizeType,
@@ -404,6 +406,9 @@ impl StrategyEngine {
             time_in_force: None,
             client_order_id: Some(format!("strategy-{}-{}", signal.strategy_id, signal.rule_id)),
             bypass_drawdown: false,
+            reduce_only: false,
+            post_only: false,
+            margin_mode: None,
         }
     }
 

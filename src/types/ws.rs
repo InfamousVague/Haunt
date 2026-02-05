@@ -1,6 +1,6 @@
 use super::{
     AggregatedPrice, GlobalMetrics, Order, OrderStatus, PeerStatus, Portfolio, Position,
-    PriceSource, SignalDirection, Trade, TradeDirection,
+    PriceSource, RatConfig, RatStats, RatStatus, SignalDirection, Trade, TradeDirection,
 };
 use serde::{Deserialize, Serialize};
 
@@ -137,6 +137,10 @@ pub enum ServerMessage {
     /// Liquidation event
     LiquidationAlert {
         data: LiquidationAlertData,
+    },
+    /// RAT (Random Auto Trader) status update
+    RatStatusUpdate {
+        data: RatStatusUpdateData,
     },
 }
 
@@ -384,6 +388,24 @@ pub struct LiquidationAlertData {
     /// Loss amount.
     pub loss_amount: f64,
     /// Timestamp of liquidation.
+    pub timestamp: i64,
+}
+
+/// RAT (Random Auto Trader) status update payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RatStatusUpdateData {
+    /// Portfolio ID.
+    pub portfolio_id: String,
+    /// Current RAT status.
+    pub status: RatStatus,
+    /// Runtime statistics.
+    pub stats: RatStats,
+    /// Current configuration.
+    pub config: RatConfig,
+    /// Current number of open positions.
+    pub open_positions: u32,
+    /// Timestamp of update.
     pub timestamp: i64,
 }
 

@@ -74,14 +74,24 @@ impl CryptoCompareClient {
             CRYPTOCOMPARE_API_URL, fsyms
         );
 
-        let response: CryptoCompareResponse = self
+        // Measure request latency
+        let request_start = std::time::Instant::now();
+        let http_response = self
             .client
             .get(&url)
             .header("Authorization", format!("Apikey {}", self.api_key))
             .send()
-            .await?
-            .json()
             .await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
+
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            self.price_cache
+                .record_source_error_metrics(PriceSource::CryptoCompare, &format!("HTTP {}", status));
+            return Err(anyhow::anyhow!("CryptoCompare API error: {}", status));
+        }
+
+        let response: CryptoCompareResponse = http_response.json().await?;
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -91,11 +101,12 @@ impl CryptoCompareClient {
                     if let Some(price) = usd_data.price {
                         let symbol_lower = symbol.to_lowercase();
                         debug!("CryptoCompare price update: {} = ${}", symbol_lower, price);
-                        self.price_cache.update_price(
+                        self.price_cache.update_price_with_latency(
                             &symbol_lower,
                             PriceSource::CryptoCompare,
                             price,
                             usd_data.volume_24h,
+                            latency_ms,
                         );
                         self.chart_store.add_price(
                             &symbol_lower,

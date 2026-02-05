@@ -400,19 +400,14 @@ impl TradingService {
     /// Get leaderboard of top performing portfolios.
     ///
     /// Returns portfolios sorted by total return percentage, descending.
-    /// Only includes portfolios where the user has opted in to the leaderboard,
-    /// or bot portfolios (user_id starts with "bot_").
+    /// Only includes portfolios where the user has opted in to the leaderboard.
     pub fn get_leaderboard(&self, limit: usize) -> Vec<LeaderboardEntry> {
         let mut entries: Vec<LeaderboardEntry> = self
             .portfolios
             .iter()
             .filter(|r| {
                 let p = r.value();
-                // Always show bot portfolios
-                if p.user_id.starts_with("bot_") {
-                    return true;
-                }
-                // For user portfolios, check if they've opted in
+                // Check if user has opted in to the leaderboard
                 self.sqlite
                     .get_profile(&p.user_id)
                     .map(|profile| profile.show_on_leaderboard)
@@ -422,14 +417,10 @@ impl TradingService {
                 let p = r.value();
                 let open_positions = self.sqlite.position_count(&p.id) as u32;
                 // Get display name from profile if available
-                let display_name = if p.user_id.starts_with("bot_") {
-                    p.name.clone()
-                } else {
-                    self.sqlite
-                        .get_profile(&p.user_id)
-                        .map(|profile| profile.username)
-                        .unwrap_or_else(|| p.name.clone())
-                };
+                let display_name = self.sqlite
+                    .get_profile(&p.user_id)
+                    .map(|profile| profile.username)
+                    .unwrap_or_else(|| p.name.clone());
                 LeaderboardEntry {
                     portfolio_id: p.id.clone(),
                     name: display_name,
@@ -2465,13 +2456,17 @@ mod tests {
     // ==========================================================================
 
     #[test]
-    fn test_leaderboard_returns_portfolios() {
+    fn test_leaderboard_returns_opted_in_portfolios() {
         let service = create_test_service();
 
-        // Create multiple bot portfolios (bot_ prefix is always shown on leaderboard)
-        service.create_portfolio("bot_user1", "Portfolio 1", None, None).unwrap();
-        service.create_portfolio("bot_user2", "Portfolio 2", None, None).unwrap();
-        service.create_portfolio("bot_user3", "Portfolio 3", None, None).unwrap();
+        // Create user profiles that opt-in to leaderboard
+        service.sqlite.create_profile("user1", "Trader1", Some(true)).unwrap();
+        service.sqlite.create_profile("user2", "Trader2", Some(true)).unwrap();
+        service.sqlite.create_profile("user3", "Trader3", Some(true)).unwrap();
+
+        service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
+        service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
+        service.create_portfolio("user3", "Portfolio 3", None, None).unwrap();
 
         let leaderboard = service.get_leaderboard(10);
         assert_eq!(leaderboard.len(), 3, "Should have 3 portfolios on leaderboard");
@@ -2481,9 +2476,10 @@ mod tests {
     fn test_leaderboard_limits_results() {
         let service = create_test_service();
 
-        // Create 10 bot portfolios
+        // Create 10 user profiles that opt-in to leaderboard
         for i in 0..10 {
-            service.create_portfolio(&format!("bot_user_{}", i), &format!("Portfolio {}", i), None, None).unwrap();
+            service.sqlite.create_profile(&format!("user_{}", i), &format!("Trader{}", i), Some(true)).unwrap();
+            service.create_portfolio(&format!("user_{}", i), &format!("Portfolio {}", i), None, None).unwrap();
         }
 
         // Request only top 5
@@ -2495,15 +2491,17 @@ mod tests {
     fn test_leaderboard_entry_contains_correct_fields() {
         let service = create_test_service();
 
-        let portfolio = service.create_portfolio("bot_test_user", "Test Portfolio", None, None).unwrap();
+        // Create user profile that opts-in to leaderboard
+        service.sqlite.create_profile("test_user", "TestTrader", Some(true)).unwrap();
+        let portfolio = service.create_portfolio("test_user", "Test Portfolio", None, None).unwrap();
 
         let leaderboard = service.get_leaderboard(10);
         assert!(!leaderboard.is_empty());
 
         let entry = &leaderboard[0];
         assert_eq!(entry.portfolio_id, portfolio.id);
-        assert_eq!(entry.name, "Test Portfolio");
-        assert_eq!(entry.user_id, "bot_test_user");
+        assert_eq!(entry.name, "TestTrader"); // Uses profile username
+        assert_eq!(entry.user_id, "test_user");
         assert_eq!(entry.total_trades, 0);
         assert_eq!(entry.winning_trades, 0);
         assert_eq!(entry.win_rate, 0.0);
@@ -2513,9 +2511,12 @@ mod tests {
     fn test_leaderboard_sorted_by_return() {
         let service = create_test_service();
 
-        // Create bot portfolios
-        let p1 = service.create_portfolio("bot_user1", "Portfolio 1", None, None).unwrap();
-        let _p2 = service.create_portfolio("bot_user2", "Portfolio 2", None, None).unwrap();
+        // Create user profiles that opt-in to leaderboard
+        service.sqlite.create_profile("user1", "Trader1", Some(true)).unwrap();
+        service.sqlite.create_profile("user2", "Trader2", Some(true)).unwrap();
+
+        let p1 = service.create_portfolio("user1", "Portfolio 1", None, None).unwrap();
+        let _p2 = service.create_portfolio("user2", "Portfolio 2", None, None).unwrap();
 
         // Place a buy for p1 to change its value (use smaller quantity for $250k balance)
         let request = PlaceOrderRequest {

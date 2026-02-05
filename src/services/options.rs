@@ -6,6 +6,8 @@
 //! - Greeks calculation (Delta, Gamma, Theta, Vega, Rho)
 //! - Implied volatility calculation
 
+#![allow(dead_code)]
+
 use crate::types::{Greeks, OptionContract, OptionPosition, OptionStyle, OptionType};
 use std::f64::consts::{E, PI};
 use thiserror::Error;

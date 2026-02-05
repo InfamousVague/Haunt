@@ -1,3 +1,4 @@
+use crate::services::exchange_metrics::ExchangeMetricsService;
 use crate::types::{AggregatedPrice, AggregationConfig, PriceSource, SourcePrice, TradeDirection};
 use dashmap::DashMap;
 use redis::aio::ConnectionManager;
@@ -86,6 +87,8 @@ pub struct PriceCache {
     start_time: Instant,
     /// Recent update timestamps for TPS calculation (last 60 seconds).
     recent_updates: Mutex<VecDeque<Instant>>,
+    /// Exchange metrics service for latency and volume tracking.
+    exchange_metrics: RwLock<Option<Arc<ExchangeMetricsService>>>,
 }
 
 impl PriceCache {
@@ -104,8 +107,16 @@ impl PriceCache {
             source_errors: DashMap::new(),
             start_time: Instant::now(),
             recent_updates: Mutex::new(VecDeque::with_capacity(10000)),
+            exchange_metrics: RwLock::new(None),
         });
         (cache, rx)
+    }
+
+    /// Set the exchange metrics service for latency and volume tracking.
+    pub async fn set_exchange_metrics(&self, metrics: Arc<ExchangeMetricsService>) {
+        let mut guard = self.exchange_metrics.write().await;
+        *guard = Some(metrics);
+        info!("Exchange metrics service connected to PriceCache");
     }
 
     /// Connect to Redis for persistence.
@@ -320,6 +331,50 @@ impl PriceCache {
                 .save_to_redis(&symbol_for_redis, aggregated, &source_prices)
                 .await;
         });
+    }
+
+    /// Update a price from a source with latency tracking.
+    /// This variant records latency metrics for exchange performance monitoring.
+    pub fn update_price_with_latency(
+        &self,
+        symbol: &str,
+        source: PriceSource,
+        price: f64,
+        volume_24h: Option<f64>,
+        latency_ms: u64,
+    ) {
+        // Record latency in exchange metrics service
+        if let Ok(guard) = self.exchange_metrics.try_read() {
+            if let Some(ref metrics) = *guard {
+                metrics.record_latency(source, latency_ms);
+                metrics.record_success(source);
+
+                // Update volume if provided (for exchange-specific volume tracking)
+                if let Some(vol) = volume_24h {
+                    // Get current symbol count for this source (rough estimate)
+                    let symbol_count = self
+                        .symbol_source_updates
+                        .iter()
+                        .filter(|entry| entry.value().contains_key(&source))
+                        .count() as u64;
+                    metrics.update_volume(source, vol, symbol_count.max(1));
+                }
+            }
+        }
+
+        // Delegate to regular update_price
+        self.update_price(symbol, source, price, volume_24h);
+    }
+
+    /// Record an error from a source for metrics tracking.
+    pub fn record_source_error_metrics(&self, source: PriceSource, error: &str) {
+        if let Ok(guard) = self.exchange_metrics.try_read() {
+            if let Some(ref metrics) = *guard {
+                metrics.record_error(source, error);
+            }
+        }
+        // Also call the existing error reporting
+        self.report_source_error(source, error);
     }
 
     fn clone_for_redis(&self) -> PriceCacheRedisRef {

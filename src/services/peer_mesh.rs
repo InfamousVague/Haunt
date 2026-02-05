@@ -136,6 +136,10 @@ pub struct PeerMesh {
     shared_key: Option<String>,
     /// Whether authentication is required.
     require_auth: bool,
+    /// Message senders for each connected peer (peer_id -> sender).
+    peer_senders: DashMap<String, tokio::sync::mpsc::Sender<String>>,
+    /// Channel for forwarding received sync data to SyncService.
+    sync_data_tx: broadcast::Sender<(String, String)>, // (from_id, data)
 }
 
 impl PeerMesh {
@@ -149,6 +153,7 @@ impl PeerMesh {
         require_auth: bool,
     ) -> Arc<Self> {
         let (status_tx, _) = broadcast::channel(256);
+        let (sync_data_tx, _) = broadcast::channel(1024);
 
         Arc::new(Self {
             server_id,
@@ -161,6 +166,8 @@ impl PeerMesh {
             pending_pings: DashMap::new(),
             shared_key,
             require_auth,
+            peer_senders: DashMap::new(),
+            sync_data_tx,
         })
     }
 
@@ -208,6 +215,12 @@ impl PeerMesh {
         self.status_tx.subscribe()
     }
 
+    /// Subscribe to incoming sync data from peers.
+    /// Returns a receiver that yields (from_id, data) tuples.
+    pub fn subscribe_sync_data(&self) -> broadcast::Receiver<(String, String)> {
+        self.sync_data_tx.subscribe()
+    }
+
     /// Get this server's ID.
     pub fn server_id(&self) -> &str {
         &self.server_id
@@ -247,6 +260,75 @@ impl PeerMesh {
     pub fn broadcast_statuses(&self) {
         let statuses = self.get_all_statuses();
         let _ = self.status_tx.send(statuses);
+    }
+
+    /// Send a message to all connected peers.
+    /// Returns the number of peers the message was sent to.
+    pub async fn send_to_all_peers(&self, message: PeerMessage) -> usize {
+        let json = match serde_json::to_string(&message) {
+            Ok(j) => j,
+            Err(e) => {
+                error!("Failed to serialize PeerMessage: {}", e);
+                return 0;
+            }
+        };
+
+        let mut sent_count = 0;
+        for entry in self.peer_senders.iter() {
+            let peer_id = entry.key();
+            let sender = entry.value();
+
+            match sender.try_send(json.clone()) {
+                Ok(_) => {
+                    debug!("Sent message to peer {}", peer_id);
+                    sent_count += 1;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    warn!("Message queue full for peer {}", peer_id);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    debug!("Channel closed for peer {}, removing sender", peer_id);
+                    // Will be cleaned up on next connection attempt
+                }
+            }
+        }
+
+        debug!("Sent message to {}/{} peers", sent_count, self.peer_senders.len());
+        sent_count
+    }
+
+    /// Send a message to specific peers.
+    /// Returns the number of peers the message was sent to.
+    pub async fn send_to_peers(&self, message: PeerMessage, peer_ids: &[String]) -> usize {
+        let json = match serde_json::to_string(&message) {
+            Ok(j) => j,
+            Err(e) => {
+                error!("Failed to serialize PeerMessage: {}", e);
+                return 0;
+            }
+        };
+
+        let mut sent_count = 0;
+        for peer_id in peer_ids {
+            if let Some(sender) = self.peer_senders.get(peer_id) {
+                match sender.try_send(json.clone()) {
+                    Ok(_) => {
+                        debug!("Sent message to peer {}", peer_id);
+                        sent_count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to send to peer {}: {}", peer_id, e);
+                    }
+                }
+            }
+        }
+
+        sent_count
+    }
+
+    /// Get the number of connected peers with active send channels.
+    pub fn connected_peer_count(&self) -> usize {
+        self.peer_senders.len()
     }
 
     /// Get all known peers (discovered via gossip).
@@ -685,11 +767,18 @@ impl PeerMesh {
             }
         }
 
+        // Create a shared message channel for all outgoing messages (pings, sync data, etc.)
+        let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<String>(256);
+
+        // Store the sender for this peer so other services can send messages
+        self.peer_senders.insert(peer_id.to_string(), msg_tx.clone());
+        let cleanup_peer_id = peer_id.to_string();
+        let cleanup_mesh = self.clone();
+
         // Spawn ping task (every 1 second for real-time latency)
         let ping_peer_id = peer_id.to_string();
         let ping_mesh = self.clone();
-
-        let (ping_tx, mut ping_rx) = tokio::sync::mpsc::channel::<String>(32);
+        let ping_tx = msg_tx.clone();
 
         let ping_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -726,9 +815,9 @@ impl PeerMesh {
             }
         });
 
-        // Spawn write task
+        // Spawn write task - handles all outgoing messages
         let write_task = tokio::spawn(async move {
-            while let Some(msg) = ping_rx.recv().await {
+            while let Some(msg) = msg_rx.recv().await {
                 if write
                     .send(tokio_tungstenite::tungstenite::Message::Text(msg))
                     .await
@@ -771,6 +860,10 @@ impl PeerMesh {
             }
         }
         info!("Exiting message loop for peer {}", peer_id);
+
+        // Clean up the peer sender
+        cleanup_mesh.peer_senders.remove(&cleanup_peer_id);
+        debug!("Removed sender for peer {}", cleanup_peer_id);
 
         ping_task.abort();
         write_task.abort();
@@ -862,8 +955,10 @@ impl PeerMesh {
             }
             PeerMessage::SyncData { from_id, data } => {
                 debug!("Received sync data from {} ({} bytes)", from_id, data.len());
-                // TODO: Forward to SyncService for processing
-                // For now, just log - actual handling will be implemented when SyncService is fully integrated
+                // Forward to SyncService via the sync_data channel
+                if let Err(e) = self.sync_data_tx.send((from_id.clone(), data)) {
+                    debug!("No subscribers for sync data ({})", e);
+                }
             }
         }
     }

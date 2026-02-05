@@ -259,6 +259,88 @@ pub enum SyncMessage {
         node_id: String,
         changes: Vec<FieldChange>,
     },
+
+    // ========== Phase 3: Historical Sync Messages ==========
+
+    /// Request historical sync from a peer (new node joining).
+    HistoricalSyncRequest {
+        /// Unique session ID for tracking this sync
+        session_id: String,
+        /// Requesting node ID
+        from_node_id: String,
+        /// Entity types to sync (empty = all)
+        entity_types: Vec<EntityType>,
+        /// Batch size preference (100-1000)
+        batch_size: u32,
+        /// Resume from checkpoint if available
+        resume_from_checkpoint: Option<String>,
+    },
+
+    /// Response accepting/rejecting historical sync request.
+    HistoricalSyncResponse {
+        session_id: String,
+        accepted: bool,
+        /// Total entities to sync
+        total_entities: u64,
+        /// Estimated batches
+        estimated_batches: u32,
+        /// Error message if rejected
+        error: Option<String>,
+    },
+
+    /// Historical sync batch delivery.
+    HistoricalSyncBatch {
+        session_id: String,
+        batch_id: String,
+        entity_type: EntityType,
+        batch_number: u32,
+        total_batches: u32,
+        entities: Vec<SyncEntity>,
+        compression: CompressionType,
+        checksum: String,
+        /// Checkpoint to save for resume
+        checkpoint_id: Option<String>,
+    },
+
+    /// Acknowledgment of received batch.
+    HistoricalSyncBatchAck {
+        session_id: String,
+        batch_id: String,
+        ack: BatchAck,
+    },
+
+    /// Progress update during historical sync.
+    HistoricalSyncProgress {
+        session_id: String,
+        progress: SyncProgressUpdate,
+    },
+
+    /// Pause historical sync session.
+    HistoricalSyncPause {
+        session_id: String,
+        reason: Option<String>,
+    },
+
+    /// Resume historical sync session.
+    HistoricalSyncResume {
+        session_id: String,
+        from_checkpoint: Option<String>,
+    },
+
+    /// Cancel historical sync session.
+    HistoricalSyncCancel {
+        session_id: String,
+        reason: Option<String>,
+    },
+
+    /// Historical sync completed.
+    HistoricalSyncComplete {
+        session_id: String,
+        total_entities: u64,
+        total_batches: u32,
+        duration_ms: i64,
+        bytes_transferred: u64,
+    },
 }
 
 /// Single item in a batch update.
@@ -404,4 +486,95 @@ pub struct SyncState {
     pub failed_sync_count: u32,
     pub total_synced_entities: u64,
     pub sync_enabled: bool,
+}
+
+// ========== Phase 3: Enhanced Sync Types ==========
+
+/// Historical sync session tracking for new node onboarding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalSyncSession {
+    pub id: String,
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub status: HistoricalSyncStatus,
+    pub entity_types: Vec<EntityType>,
+    pub total_entities: u64,
+    pub synced_entities: u64,
+    pub failed_entities: u64,
+    pub progress_percent: f32,
+    pub current_entity_type: Option<EntityType>,
+    pub current_batch: u32,
+    pub total_batches: u32,
+    pub bytes_transferred: u64,
+    pub compression_savings_bytes: u64,
+    pub started_at: i64,
+    pub updated_at: i64,
+    pub completed_at: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Status of a historical sync session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalSyncStatus {
+    /// Sync is queued but not started
+    Pending,
+    /// Sync is actively transferring data
+    InProgress,
+    /// Sync paused (can be resumed)
+    Paused,
+    /// Sync completed successfully
+    Completed,
+    /// Sync failed with error
+    Failed,
+    /// Sync was cancelled
+    Cancelled,
+}
+
+/// Checkpoint for resumable sync operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncCheckpoint {
+    pub id: String,
+    pub session_id: String,
+    pub entity_type: EntityType,
+    pub last_synced_id: String,
+    pub last_synced_rowid: i64,
+    pub batch_number: u32,
+    pub items_in_batch: u32,
+    pub checksum: String,
+    pub compression_type: CompressionType,
+    pub compressed_size_bytes: u64,
+    pub uncompressed_size_bytes: u64,
+    pub created_at: i64,
+    pub acked_at: Option<i64>,
+}
+
+/// Sync progress update for real-time monitoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncProgressUpdate {
+    pub session_id: String,
+    pub entity_type: Option<EntityType>,
+    pub total_entities: u64,
+    pub synced_entities: u64,
+    pub failed_entities: u64,
+    pub progress_percent: f32,
+    pub current_batch: u32,
+    pub total_batches: u32,
+    pub bytes_per_second: f64,
+    pub estimated_remaining_ms: i64,
+    pub timestamp: i64,
+}
+
+/// Batch acknowledgment from receiving node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAck {
+    pub batch_id: String,
+    pub session_id: String,
+    pub items_received: u32,
+    pub items_applied: u32,
+    pub items_skipped: u32,
+    pub items_failed: u32,
+    pub checksum_verified: bool,
+    pub errors: Vec<(String, String)>, // (entity_id, error)
+    pub timestamp: i64,
 }

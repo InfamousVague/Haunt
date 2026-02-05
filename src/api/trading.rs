@@ -157,7 +157,7 @@ pub struct LeaderboardQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ClosePositionQuery {
-    pub price: f64,
+    pub price: Option<f64>,
 }
 
 // =============================================================================
@@ -541,7 +541,8 @@ async fn close_position(
         ));
     }
 
-    let trade = state.trading_service.close_position(&id, query.price)?;
+    let close_price = query.price.unwrap_or(pos.current_price);
+    let trade = state.trading_service.close_position(&id, close_price)?;
     Ok(Json(ApiResponse { data: trade }))
 }
 
@@ -597,6 +598,18 @@ async fn get_leaderboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_close_position_query_allows_missing_price() {
+        let query: ClosePositionQuery = serde_urlencoded::from_str("").unwrap();
+        assert!(query.price.is_none());
+    }
+
+    #[test]
+    fn test_close_position_query_parses_price() {
+        let query: ClosePositionQuery = serde_urlencoded::from_str("price=123.45").unwrap();
+        assert_eq!(query.price, Some(123.45));
+    }
 
     #[test]
     fn test_error_response_serialization() {

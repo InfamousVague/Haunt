@@ -160,10 +160,11 @@ impl std::fmt::Display for OrderStatus {
 }
 
 /// Time in force for orders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeInForce {
     /// Good till cancelled - remains active until filled or cancelled
+    #[default]
     Gtc,
     /// Good till date - expires at specified date/time
     Gtd,
@@ -171,12 +172,6 @@ pub enum TimeInForce {
     Fok,
     /// Immediate or cancel - fill what's available, cancel rest
     Ioc,
-}
-
-impl Default for TimeInForce {
-    fn default() -> Self {
-        TimeInForce::Gtc
-    }
 }
 
 impl std::fmt::Display for TimeInForce {
@@ -208,19 +203,14 @@ impl std::fmt::Display for PositionSide {
 }
 
 /// Margin mode for leveraged positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MarginMode {
     /// Each position has independent margin
+    #[default]
     Isolated,
     /// All positions share account margin
     Cross,
-}
-
-impl Default for MarginMode {
-    fn default() -> Self {
-        MarginMode::Isolated
-    }
 }
 
 impl std::fmt::Display for MarginMode {
@@ -233,21 +223,16 @@ impl std::fmt::Display for MarginMode {
 }
 
 /// Cost basis calculation method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CostBasisMethod {
     /// First in, first out
+    #[default]
     Fifo,
     /// Last in, first out
     Lifo,
     /// Weighted average cost
     Average,
-}
-
-impl Default for CostBasisMethod {
-    fn default() -> Self {
-        CostBasisMethod::Fifo
-    }
 }
 
 impl std::fmt::Display for CostBasisMethod {
@@ -1524,19 +1509,14 @@ impl std::fmt::Display for OptionType {
 }
 
 /// Option exercise style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OptionStyle {
     /// Can be exercised any time before expiration
+    #[default]
     American,
     /// Can only be exercised at expiration
     European,
-}
-
-impl Default for OptionStyle {
-    fn default() -> Self {
-        OptionStyle::American
-    }
 }
 
 impl std::fmt::Display for OptionStyle {
@@ -2486,6 +2466,15 @@ pub struct PlaceOrderRequest {
     /// Bypass drawdown protection for this order (one-time override)
     #[serde(default)]
     pub bypass_drawdown: bool,
+    /// Order can only reduce an existing position, not increase it
+    #[serde(default)]
+    pub reduce_only: bool,
+    /// Order will only be placed if it would be a maker order (adds liquidity)
+    #[serde(default)]
+    pub post_only: bool,
+    /// Margin mode for the position (isolated or cross)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_mode: Option<MarginMode>,
 }
 
 /// Request to modify a position.

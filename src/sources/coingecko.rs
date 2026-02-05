@@ -205,8 +205,19 @@ impl CoinGeckoClient {
             url.push_str(&format!("&x_cg_pro_api_key={}", key));
         }
 
-        let response: HashMap<String, CoinGeckoPrice> =
-            self.client.get(&url).send().await?.json().await?;
+        // Measure request latency
+        let request_start = std::time::Instant::now();
+        let http_response = self.client.get(&url).send().await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
+
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            self.price_cache
+                .record_source_error_metrics(PriceSource::CoinGecko, &format!("HTTP {}", status));
+            return Err(anyhow::anyhow!("CoinGecko API error: {}", status));
+        }
+
+        let response: HashMap<String, CoinGeckoPrice> = http_response.json().await?;
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -214,11 +225,12 @@ impl CoinGeckoClient {
             if let Some(price_data) = response.get(*id) {
                 if let Some(price) = price_data.usd {
                     debug!("CoinGecko price update: {} = ${}", symbol, price);
-                    self.price_cache.update_price(
+                    self.price_cache.update_price_with_latency(
                         symbol,
                         PriceSource::CoinGecko,
                         price,
                         price_data.usd_24h_vol,
+                        latency_ms,
                     );
                     self.chart_store
                         .add_price(symbol, price, price_data.usd_24h_vol, timestamp);

@@ -31,6 +31,69 @@ pub struct MeshAuthConfig {
     pub require_auth: bool,
 }
 
+/// Storage management configuration.
+#[derive(Debug, Clone)]
+pub struct StorageConfig {
+    /// Maximum database size in MB (0 = unlimited).
+    pub limit_mb: u64,
+    /// Warning threshold percentage (0-100).
+    pub warning_threshold_pct: u8,
+    /// Critical threshold percentage (0-100, triggers auto-cleanup).
+    pub critical_threshold_pct: u8,
+    /// Enable automatic cleanup when threshold reached.
+    pub auto_cleanup_enabled: bool,
+    /// Retention periods for various data types (in days).
+    pub retention: RetentionConfig,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            limit_mb: 30 * 1024, // 30 GB default
+            warning_threshold_pct: 80,
+            critical_threshold_pct: 95,
+            auto_cleanup_enabled: true,
+            retention: RetentionConfig::default(),
+        }
+    }
+}
+
+/// Data retention periods in days.
+#[derive(Debug, Clone)]
+pub struct RetentionConfig {
+    /// Trade history retention (default: 90 days).
+    pub trades_days: u32,
+    /// Portfolio snapshots retention (default: 180 days).
+    pub portfolio_snapshots_days: u32,
+    /// Prediction history retention (default: 30 days).
+    pub prediction_history_days: u32,
+    /// Completed sync queue items retention (default: 7 days).
+    pub sync_queue_days: u32,
+    /// Node metrics retention (default: 1 day).
+    pub node_metrics_days: u32,
+    /// Funding payments retention (default: 365 days).
+    pub funding_payments_days: u32,
+    /// Margin history retention (default: 90 days).
+    pub margin_history_days: u32,
+    /// Sync progress/checkpoints retention (default: 7 days).
+    pub sync_data_days: u32,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            trades_days: 90,
+            portfolio_snapshots_days: 180,
+            prediction_history_days: 30,
+            sync_queue_days: 7,
+            node_metrics_days: 1,
+            funding_payments_days: 365,
+            margin_history_days: 90,
+            sync_data_days: 7,
+        }
+    }
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -86,6 +149,8 @@ pub struct Config {
     pub public_api_url: String,
     /// Mesh authentication configuration.
     pub mesh_auth: MeshAuthConfig,
+    /// Storage management configuration.
+    pub storage: StorageConfig,
 }
 
 impl Config {
@@ -193,6 +258,58 @@ impl Config {
                     .ok()
                     .map(|v| v == "true" || v == "1")
                     .unwrap_or(false),
+            },
+            storage: StorageConfig {
+                limit_mb: env::var("STORAGE_LIMIT_MB")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30 * 1024), // 30 GB default
+                warning_threshold_pct: env::var("STORAGE_WARNING_PCT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(80),
+                critical_threshold_pct: env::var("STORAGE_CRITICAL_PCT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(95),
+                auto_cleanup_enabled: env::var("STORAGE_AUTO_CLEANUP")
+                    .ok()
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(true),
+                retention: RetentionConfig {
+                    trades_days: env::var("RETENTION_TRADES_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(90),
+                    portfolio_snapshots_days: env::var("RETENTION_SNAPSHOTS_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(180),
+                    prediction_history_days: env::var("RETENTION_PREDICTIONS_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(30),
+                    sync_queue_days: env::var("RETENTION_SYNC_QUEUE_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(7),
+                    node_metrics_days: env::var("RETENTION_METRICS_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1),
+                    funding_payments_days: env::var("RETENTION_FUNDING_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(365),
+                    margin_history_days: env::var("RETENTION_MARGIN_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(90),
+                    sync_data_days: env::var("RETENTION_SYNC_DATA_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(7),
+                },
             },
         }
     }
@@ -319,6 +436,7 @@ mod tests {
                 shared_key: String::new(),
                 require_auth: false,
             },
+            storage: StorageConfig::default(),
         };
 
         assert_eq!(config.host, "0.0.0.0");
@@ -360,6 +478,7 @@ mod tests {
                 shared_key: "production-secret".to_string(),
                 require_auth: true,
             },
+            storage: StorageConfig::default(),
         };
 
         assert_eq!(config.cmc_api_key, Some("cmc-key".to_string()));
@@ -412,6 +531,7 @@ mod tests {
                 shared_key: String::new(),
                 require_auth: false,
             },
+            storage: StorageConfig::default(),
         };
 
         assert_eq!(config.peer_servers.len(), 2);
@@ -451,6 +571,7 @@ mod tests {
                 shared_key: String::new(),
                 require_auth: false,
             },
+            storage: StorageConfig::default(),
         };
 
         let cloned = config.clone();

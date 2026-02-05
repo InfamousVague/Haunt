@@ -7,6 +7,8 @@
 //! - Market impact modeling
 //! - Volume-based limit order fill probability
 
+#![allow(dead_code)]
+
 use crate::types::{AggregatedOrderBook, AggregatedLevel, OrderSide};
 
 /// Result of simulating a market order execution.

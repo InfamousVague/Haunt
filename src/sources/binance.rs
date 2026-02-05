@@ -97,7 +97,10 @@ impl BinanceClient {
             request = request.header("X-MBX-APIKEY", key);
         }
 
+        // Measure request latency
+        let request_start = std::time::Instant::now();
         let response = request.send().await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -106,6 +109,10 @@ impl BinanceClient {
                 "Binance API returned {}: {}",
                 status,
                 &text[..text.len().min(200)]
+            );
+            self.price_cache.record_source_error_metrics(
+                PriceSource::Binance,
+                &format!("HTTP {}", status),
             );
             return Err(anyhow::anyhow!("Binance API error: {}", status));
         }
@@ -124,11 +131,12 @@ impl BinanceClient {
 
                 if price > 0.0 {
                     debug!("Binance price update: {} = ${}", symbol, price);
-                    self.price_cache.update_price(
+                    self.price_cache.update_price_with_latency(
                         symbol,
                         PriceSource::Binance,
                         price,
                         Some(volume_24h),
+                        latency_ms,
                     );
                     self.chart_store
                         .add_price(symbol, price, Some(volume_24h), timestamp);

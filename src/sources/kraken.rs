@@ -95,7 +95,10 @@ impl KrakenClient {
 
         let url = format!("{}/Ticker?pair={}", KRAKEN_API_URL, pairs_str);
 
+        // Measure request latency
+        let request_start = std::time::Instant::now();
         let response = self.client.get(&url).send().await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -105,6 +108,8 @@ impl KrakenClient {
                 status,
                 &text[..text.len().min(200)]
             );
+            self.price_cache
+                .record_source_error_metrics(PriceSource::Kraken, &format!("HTTP {}", status));
             return Err(anyhow::anyhow!("Kraken API error: {}", status));
         }
 
@@ -145,11 +150,12 @@ impl KrakenClient {
 
                 if price > 0.0 {
                     debug!("Kraken price update: {} = ${}", symbol, price);
-                    self.price_cache.update_price(
+                    self.price_cache.update_price_with_latency(
                         symbol,
                         PriceSource::Kraken,
                         price,
                         Some(volume_24h),
+                        latency_ms,
                     );
                     self.chart_store
                         .add_price(symbol, price, Some(volume_24h), timestamp);

@@ -652,6 +652,120 @@ impl SqliteStore {
             [],
         )?;
 
+        // ========== Phase 3: Historical Sync Tables ==========
+
+        // Historical sync sessions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS historical_sync_sessions (
+                id TEXT PRIMARY KEY,
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                entity_types_json TEXT NOT NULL DEFAULT '[]',
+                total_entities INTEGER NOT NULL DEFAULT 0,
+                synced_entities INTEGER NOT NULL DEFAULT 0,
+                failed_entities INTEGER NOT NULL DEFAULT 0,
+                progress_percent REAL NOT NULL DEFAULT 0,
+                current_entity_type TEXT,
+                current_batch INTEGER NOT NULL DEFAULT 0,
+                total_batches INTEGER NOT NULL DEFAULT 0,
+                bytes_transferred INTEGER NOT NULL DEFAULT 0,
+                compression_savings_bytes INTEGER NOT NULL DEFAULT 0,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                error TEXT
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_historical_sync_sessions_status ON historical_sync_sessions(status)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_historical_sync_sessions_target ON historical_sync_sessions(target_node_id)",
+            [],
+        )?;
+
+        // Sync checkpoints table for resumable transfers
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                last_synced_id TEXT NOT NULL,
+                last_synced_rowid INTEGER NOT NULL,
+                batch_number INTEGER NOT NULL,
+                items_in_batch INTEGER NOT NULL,
+                checksum TEXT NOT NULL,
+                compression_type TEXT NOT NULL DEFAULT 'none',
+                compressed_size_bytes INTEGER NOT NULL DEFAULT 0,
+                uncompressed_size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                acked_at INTEGER,
+                FOREIGN KEY (session_id) REFERENCES historical_sync_sessions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_checkpoints_session ON sync_checkpoints(session_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_checkpoints_entity_type ON sync_checkpoints(entity_type, batch_number)",
+            [],
+        )?;
+
+        // Sync progress tracking table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_progress (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                entity_type TEXT,
+                total_entities INTEGER NOT NULL,
+                synced_entities INTEGER NOT NULL,
+                failed_entities INTEGER NOT NULL,
+                progress_percent REAL NOT NULL,
+                current_batch INTEGER NOT NULL,
+                total_batches INTEGER NOT NULL,
+                bytes_per_second REAL NOT NULL DEFAULT 0,
+                estimated_remaining_ms INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES historical_sync_sessions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_progress_session ON sync_progress(session_id, timestamp DESC)",
+            [],
+        )?;
+
+        // Batch acknowledgments table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_batch_acks (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                items_received INTEGER NOT NULL,
+                items_applied INTEGER NOT NULL,
+                items_skipped INTEGER NOT NULL,
+                items_failed INTEGER NOT NULL,
+                checksum_verified INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT DEFAULT '[]',
+                timestamp INTEGER NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES historical_sync_sessions(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_batch_acks_session ON sync_batch_acks(session_id)",
+            [],
+        )?;
+
         // ========== Add Sync Columns to Existing Tables ==========
 
         // Add version tracking columns (migrations for existing databases)
@@ -708,6 +822,61 @@ impl SqliteStore {
         let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
         let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        // ========== Random Auto Trader (RAT) Tables ==========
+
+        // RAT configurations table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rat_configs (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT UNIQUE NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                trade_interval_secs INTEGER NOT NULL DEFAULT 60,
+                max_open_positions INTEGER NOT NULL DEFAULT 5,
+                symbols_json TEXT NOT NULL DEFAULT '[]',
+                min_hold_time_secs INTEGER NOT NULL DEFAULT 30,
+                size_range_min_pct REAL NOT NULL DEFAULT 0.05,
+                size_range_max_pct REAL NOT NULL DEFAULT 0.15,
+                stop_loss_probability REAL NOT NULL DEFAULT 0.7,
+                take_profit_probability REAL NOT NULL DEFAULT 0.6,
+                stop_loss_range_min_pct REAL NOT NULL DEFAULT 0.02,
+                stop_loss_range_max_pct REAL NOT NULL DEFAULT 0.05,
+                take_profit_range_min_pct REAL NOT NULL DEFAULT 0.03,
+                take_profit_range_max_pct REAL NOT NULL DEFAULT 0.08,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rat_configs_portfolio ON rat_configs(portfolio_id)",
+            [],
+        )?;
+
+        // RAT statistics table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rat_stats (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT UNIQUE NOT NULL,
+                total_trades INTEGER NOT NULL DEFAULT 0,
+                winning_trades INTEGER NOT NULL DEFAULT 0,
+                losing_trades INTEGER NOT NULL DEFAULT 0,
+                total_pnl REAL NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                last_trade_at INTEGER,
+                started_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rat_stats_portfolio ON rat_stats(portfolio_id)",
+            [],
+        )?;
 
         info!("SQLite schema initialized with sync tables");
         Ok(())
@@ -3775,9 +3944,620 @@ impl SqliteStore {
 
         Ok(metrics)
     }
+
+    // ========== Phase 3: Historical Sync Methods ==========
+
+    /// Create a new historical sync session.
+    pub fn create_historical_sync_session(
+        &self,
+        session: &crate::types::HistoricalSyncSession,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let entity_types_json = serde_json::to_string(&session.entity_types).unwrap_or_default();
+        let current_entity_type = session.current_entity_type
+            .map(|et| format!("{:?}", et).to_lowercase());
+
+        conn.execute(
+            "INSERT INTO historical_sync_sessions (
+                id, source_node_id, target_node_id, status, entity_types_json,
+                total_entities, synced_entities, failed_entities, progress_percent,
+                current_entity_type, current_batch, total_batches,
+                bytes_transferred, compression_savings_bytes,
+                started_at, updated_at, completed_at, error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                session.id,
+                session.source_node_id,
+                session.target_node_id,
+                format!("{:?}", session.status).to_lowercase(),
+                entity_types_json,
+                session.total_entities as i64,
+                session.synced_entities as i64,
+                session.failed_entities as i64,
+                session.progress_percent,
+                current_entity_type,
+                session.current_batch,
+                session.total_batches,
+                session.bytes_transferred as i64,
+                session.compression_savings_bytes as i64,
+                session.started_at,
+                session.updated_at,
+                session.completed_at,
+                session.error,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update historical sync session progress.
+    pub fn update_historical_sync_session(
+        &self,
+        session: &crate::types::HistoricalSyncSession,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let current_entity_type = session.current_entity_type
+            .map(|et| format!("{:?}", et).to_lowercase());
+
+        conn.execute(
+            "UPDATE historical_sync_sessions SET
+                status = ?1,
+                synced_entities = ?2,
+                failed_entities = ?3,
+                progress_percent = ?4,
+                current_entity_type = ?5,
+                current_batch = ?6,
+                total_batches = ?7,
+                bytes_transferred = ?8,
+                compression_savings_bytes = ?9,
+                updated_at = ?10,
+                completed_at = ?11,
+                error = ?12
+             WHERE id = ?13",
+            params![
+                format!("{:?}", session.status).to_lowercase(),
+                session.synced_entities as i64,
+                session.failed_entities as i64,
+                session.progress_percent,
+                current_entity_type,
+                session.current_batch,
+                session.total_batches,
+                session.bytes_transferred as i64,
+                session.compression_savings_bytes as i64,
+                session.updated_at,
+                session.completed_at,
+                session.error,
+                session.id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get historical sync session by ID.
+    pub fn get_historical_sync_session(&self, session_id: &str) -> Option<crate::types::HistoricalSyncSession> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id, source_node_id, target_node_id, status, entity_types_json,
+                    total_entities, synced_entities, failed_entities, progress_percent,
+                    current_entity_type, current_batch, total_batches,
+                    bytes_transferred, compression_savings_bytes,
+                    started_at, updated_at, completed_at, error
+             FROM historical_sync_sessions WHERE id = ?1",
+            params![session_id],
+            |row| {
+                let entity_types_json: String = row.get(4)?;
+                let entity_types: Vec<crate::types::EntityType> =
+                    serde_json::from_str(&entity_types_json).unwrap_or_default();
+
+                let status_str: String = row.get(3)?;
+                let status = parse_historical_sync_status(&status_str);
+
+                let current_entity_type_str: Option<String> = row.get(9)?;
+                let current_entity_type = current_entity_type_str
+                    .map(|s| parse_entity_type(&s));
+
+                Ok(crate::types::HistoricalSyncSession {
+                    id: row.get(0)?,
+                    source_node_id: row.get(1)?,
+                    target_node_id: row.get(2)?,
+                    status,
+                    entity_types,
+                    total_entities: row.get::<_, i64>(5)? as u64,
+                    synced_entities: row.get::<_, i64>(6)? as u64,
+                    failed_entities: row.get::<_, i64>(7)? as u64,
+                    progress_percent: row.get(8)?,
+                    current_entity_type,
+                    current_batch: row.get(10)?,
+                    total_batches: row.get(11)?,
+                    bytes_transferred: row.get::<_, i64>(12)? as u64,
+                    compression_savings_bytes: row.get::<_, i64>(13)? as u64,
+                    started_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                    completed_at: row.get(16)?,
+                    error: row.get(17)?,
+                })
+            },
+        ).ok()
+    }
+
+    /// Get active historical sync sessions.
+    pub fn get_active_sync_sessions(&self) -> Result<Vec<crate::types::HistoricalSyncSession>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, source_node_id, target_node_id, status, entity_types_json,
+                    total_entities, synced_entities, failed_entities, progress_percent,
+                    current_entity_type, current_batch, total_batches,
+                    bytes_transferred, compression_savings_bytes,
+                    started_at, updated_at, completed_at, error
+             FROM historical_sync_sessions
+             WHERE status IN ('pending', 'in_progress', 'paused')
+             ORDER BY started_at ASC"
+        )?;
+
+        let sessions = stmt.query_map([], |row| {
+            let entity_types_json: String = row.get(4)?;
+            let entity_types: Vec<crate::types::EntityType> =
+                serde_json::from_str(&entity_types_json).unwrap_or_default();
+
+            let status_str: String = row.get(3)?;
+            let status = parse_historical_sync_status(&status_str);
+
+            let current_entity_type_str: Option<String> = row.get(9)?;
+            let current_entity_type = current_entity_type_str
+                .map(|s| parse_entity_type(&s));
+
+            Ok(crate::types::HistoricalSyncSession {
+                id: row.get(0)?,
+                source_node_id: row.get(1)?,
+                target_node_id: row.get(2)?,
+                status,
+                entity_types,
+                total_entities: row.get::<_, i64>(5)? as u64,
+                synced_entities: row.get::<_, i64>(6)? as u64,
+                failed_entities: row.get::<_, i64>(7)? as u64,
+                progress_percent: row.get(8)?,
+                current_entity_type,
+                current_batch: row.get(10)?,
+                total_batches: row.get(11)?,
+                bytes_transferred: row.get::<_, i64>(12)? as u64,
+                compression_savings_bytes: row.get::<_, i64>(13)? as u64,
+                started_at: row.get(14)?,
+                updated_at: row.get(15)?,
+                completed_at: row.get(16)?,
+                error: row.get(17)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(sessions)
+    }
+
+    /// Save sync checkpoint.
+    pub fn save_sync_checkpoint(&self, checkpoint: &crate::types::SyncCheckpoint) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_checkpoints (
+                id, session_id, entity_type, last_synced_id, last_synced_rowid,
+                batch_number, items_in_batch, checksum, compression_type,
+                compressed_size_bytes, uncompressed_size_bytes, created_at, acked_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                checkpoint.id,
+                checkpoint.session_id,
+                format!("{:?}", checkpoint.entity_type).to_lowercase(),
+                checkpoint.last_synced_id,
+                checkpoint.last_synced_rowid,
+                checkpoint.batch_number,
+                checkpoint.items_in_batch,
+                checkpoint.checksum,
+                format!("{:?}", checkpoint.compression_type).to_lowercase(),
+                checkpoint.compressed_size_bytes as i64,
+                checkpoint.uncompressed_size_bytes as i64,
+                checkpoint.created_at,
+                checkpoint.acked_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get latest checkpoint for a session and entity type.
+    pub fn get_latest_checkpoint(
+        &self,
+        session_id: &str,
+        entity_type: crate::types::EntityType,
+    ) -> Option<crate::types::SyncCheckpoint> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id, session_id, entity_type, last_synced_id, last_synced_rowid,
+                    batch_number, items_in_batch, checksum, compression_type,
+                    compressed_size_bytes, uncompressed_size_bytes, created_at, acked_at
+             FROM sync_checkpoints
+             WHERE session_id = ?1 AND entity_type = ?2
+             ORDER BY batch_number DESC
+             LIMIT 1",
+            params![session_id, format!("{:?}", entity_type).to_lowercase()],
+            |row| {
+                let compression_str: String = row.get(8)?;
+                let compression_type = parse_compression_type(&compression_str);
+                let entity_type_str: String = row.get(2)?;
+
+                Ok(crate::types::SyncCheckpoint {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    entity_type: parse_entity_type(&entity_type_str),
+                    last_synced_id: row.get(3)?,
+                    last_synced_rowid: row.get(4)?,
+                    batch_number: row.get(5)?,
+                    items_in_batch: row.get(6)?,
+                    checksum: row.get(7)?,
+                    compression_type,
+                    compressed_size_bytes: row.get::<_, i64>(9)? as u64,
+                    uncompressed_size_bytes: row.get::<_, i64>(10)? as u64,
+                    created_at: row.get(11)?,
+                    acked_at: row.get(12)?,
+                })
+            },
+        ).ok()
+    }
+
+    /// Mark checkpoint as acknowledged.
+    pub fn ack_checkpoint(&self, checkpoint_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE sync_checkpoints SET acked_at = ?1 WHERE id = ?2",
+            params![chrono::Utc::now().timestamp_millis(), checkpoint_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Record sync progress update.
+    pub fn record_sync_progress(&self, progress: &crate::types::SyncProgressUpdate) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let entity_type = progress.entity_type
+            .map(|et| format!("{:?}", et).to_lowercase());
+
+        conn.execute(
+            "INSERT INTO sync_progress (
+                id, session_id, entity_type, total_entities, synced_entities,
+                failed_entities, progress_percent, current_batch, total_batches,
+                bytes_per_second, estimated_remaining_ms, timestamp
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                progress.session_id,
+                entity_type,
+                progress.total_entities as i64,
+                progress.synced_entities as i64,
+                progress.failed_entities as i64,
+                progress.progress_percent,
+                progress.current_batch,
+                progress.total_batches,
+                progress.bytes_per_second,
+                progress.estimated_remaining_ms,
+                progress.timestamp,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get sync progress history for a session.
+    pub fn get_sync_progress_history(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::types::SyncProgressUpdate>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT session_id, entity_type, total_entities, synced_entities,
+                    failed_entities, progress_percent, current_batch, total_batches,
+                    bytes_per_second, estimated_remaining_ms, timestamp
+             FROM sync_progress
+             WHERE session_id = ?1
+             ORDER BY timestamp DESC
+             LIMIT ?2"
+        )?;
+
+        let progress = stmt.query_map(params![session_id, limit as i64], |row| {
+            let entity_type_str: Option<String> = row.get(1)?;
+            let entity_type = entity_type_str.map(|s| parse_entity_type(&s));
+
+            Ok(crate::types::SyncProgressUpdate {
+                session_id: row.get(0)?,
+                entity_type,
+                total_entities: row.get::<_, i64>(2)? as u64,
+                synced_entities: row.get::<_, i64>(3)? as u64,
+                failed_entities: row.get::<_, i64>(4)? as u64,
+                progress_percent: row.get(5)?,
+                current_batch: row.get(6)?,
+                total_batches: row.get(7)?,
+                bytes_per_second: row.get(8)?,
+                estimated_remaining_ms: row.get(9)?,
+                timestamp: row.get(10)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(progress)
+    }
+
+    /// Save batch acknowledgment.
+    pub fn save_batch_ack(&self, ack: &crate::types::BatchAck) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let errors_json = serde_json::to_string(&ack.errors).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO sync_batch_acks (
+                id, batch_id, session_id, items_received, items_applied,
+                items_skipped, items_failed, checksum_verified, errors_json, timestamp
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                ack.batch_id,
+                ack.session_id,
+                ack.items_received,
+                ack.items_applied,
+                ack.items_skipped,
+                ack.items_failed,
+                if ack.checksum_verified { 1 } else { 0 },
+                errors_json,
+                ack.timestamp,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get entity count for historical sync estimation.
+    pub fn get_entity_count(&self, entity_type: crate::types::EntityType) -> Result<u64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let table = entity_type.table_name();
+
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {}", table),
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(count as u64)
+    }
+
+    /// Get entities for historical sync batch (paginated by ROWID).
+    pub fn get_entities_for_sync(
+        &self,
+        entity_type: crate::types::EntityType,
+        after_rowid: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let table = entity_type.table_name();
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT rowid, id FROM {} WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+            table
+        ))?;
+
+        let rows: Vec<(i64, String)> = stmt.query_map(params![after_rowid, limit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        drop(stmt);
+        drop(conn);
+
+        // Get full entity data for each ID
+        let mut entities = Vec::with_capacity(rows.len());
+        for (rowid, entity_id) in rows {
+            match self.get_entity_data(entity_type, &entity_id) {
+                Ok(data) if !data.is_empty() => {
+                    entities.push((rowid, entity_id, data));
+                }
+                _ => continue,
+            }
+        }
+
+        Ok(entities)
+    }
+
+    /// Clean up old sync data (checkpoints, progress, old completed sessions).
+    pub fn cleanup_old_sync_data(&self, max_age_days: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff = chrono::Utc::now().timestamp_millis() - (max_age_days * 24 * 60 * 60 * 1000);
+
+        let mut deleted = 0u32;
+
+        // Delete old completed sessions
+        let count = conn.execute(
+            "DELETE FROM historical_sync_sessions
+             WHERE status IN ('completed', 'failed', 'cancelled')
+             AND completed_at < ?1",
+            params![cutoff],
+        )?;
+        deleted += count as u32;
+
+        // Delete orphaned checkpoints
+        let count = conn.execute(
+            "DELETE FROM sync_checkpoints
+             WHERE session_id NOT IN (SELECT id FROM historical_sync_sessions)",
+            [],
+        )?;
+        deleted += count as u32;
+
+        // Delete old progress records
+        let count = conn.execute(
+            "DELETE FROM sync_progress WHERE timestamp < ?1",
+            params![cutoff],
+        )?;
+        deleted += count as u32;
+
+        // Delete old batch acks
+        let count = conn.execute(
+            "DELETE FROM sync_batch_acks WHERE timestamp < ?1",
+            params![cutoff],
+        )?;
+        deleted += count as u32;
+
+        // Delete old completed sync queue items
+        let count = conn.execute(
+            "DELETE FROM sync_queue WHERE completed_at IS NOT NULL AND completed_at < ?1",
+            params![cutoff],
+        )?;
+        deleted += count as u32;
+
+        Ok(deleted)
+    }
+
+    // ========== Phase 4: Storage Management Cleanup Methods ==========
+
+    /// Cleanup old trades by timestamp.
+    pub fn cleanup_old_trades(&self, cutoff_timestamp: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM trades WHERE created_at < ?1",
+            params![cutoff_timestamp],
+        )?;
+
+        Ok(count as u32)
+    }
+
+    /// Cleanup old portfolio snapshots.
+    pub fn cleanup_old_portfolio_snapshots(&self, cutoff_timestamp: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM portfolio_snapshots WHERE timestamp < ?1",
+            params![cutoff_timestamp],
+        )?;
+
+        Ok(count as u32)
+    }
+
+    /// Cleanup old node metrics.
+    pub fn cleanup_old_node_metrics(&self, cutoff_timestamp: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM node_metrics WHERE timestamp < ?1",
+            params![cutoff_timestamp],
+        )?;
+
+        Ok(count as u32)
+    }
+
+    /// Cleanup old funding payments.
+    pub fn cleanup_old_funding_payments(&self, cutoff_timestamp: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM funding_payments WHERE timestamp < ?1",
+            params![cutoff_timestamp],
+        )?;
+
+        Ok(count as u32)
+    }
+
+    /// Cleanup old margin history.
+    pub fn cleanup_old_margin_history(&self, cutoff_timestamp: i64) -> Result<u32, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let count = conn.execute(
+            "DELETE FROM margin_history WHERE timestamp < ?1",
+            params![cutoff_timestamp],
+        )?;
+
+        Ok(count as u32)
+    }
+
+    /// Get row count for a specific table.
+    pub fn get_table_row_count(&self, table_name: &str) -> Result<u64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // Validate table name to prevent SQL injection
+        let valid_tables = vec![
+            "profiles", "portfolios", "orders", "positions", "trades",
+            "options_positions", "strategies", "funding_payments", "liquidations",
+            "margin_history", "portfolio_snapshots", "prediction_history",
+            "sync_queue", "sync_versions", "sync_conflicts", "node_metrics",
+            "historical_sync_sessions", "sync_checkpoints", "sync_progress", "sync_batch_acks",
+            "insurance_fund",
+        ];
+
+        if !valid_tables.contains(&table_name) {
+            return Err(rusqlite::Error::InvalidParameterName(format!("Invalid table: {}", table_name)));
+        }
+
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {}", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(count as u64)
+    }
+
+    /// Run VACUUM to reclaim disk space.
+    pub fn vacuum(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("VACUUM", [])?;
+        Ok(())
+    }
+
+    /// Get detailed storage stats per table.
+    pub fn get_detailed_storage_stats(&self) -> Result<Vec<(String, u64)>, rusqlite::Error> {
+        let tables = vec![
+            "profiles", "portfolios", "orders", "positions", "trades",
+            "options_positions", "strategies", "funding_payments", "liquidations",
+            "margin_history", "portfolio_snapshots", "prediction_history",
+            "sync_queue", "sync_versions", "sync_conflicts", "node_metrics",
+            "historical_sync_sessions", "sync_checkpoints", "sync_progress", "sync_batch_acks",
+        ];
+
+        let mut stats = Vec::new();
+
+        for table in tables {
+            if let Ok(count) = self.get_table_row_count(table) {
+                stats.push((table.to_string(), count));
+            }
+        }
+
+        // Sort by row count descending
+        stats.sort_by(|a, b| b.1.cmp(&a.1));
+
+        Ok(stats)
+    }
 }
 
 // ========== Parsing Helpers for Trading Types ==========
+
+fn parse_historical_sync_status(s: &str) -> crate::types::HistoricalSyncStatus {
+    match s {
+        "in_progress" => crate::types::HistoricalSyncStatus::InProgress,
+        "paused" => crate::types::HistoricalSyncStatus::Paused,
+        "completed" => crate::types::HistoricalSyncStatus::Completed,
+        "failed" => crate::types::HistoricalSyncStatus::Failed,
+        "cancelled" => crate::types::HistoricalSyncStatus::Cancelled,
+        _ => crate::types::HistoricalSyncStatus::Pending,
+    }
+}
+
+fn parse_compression_type(s: &str) -> crate::types::CompressionType {
+    match s {
+        "gzip" => crate::types::CompressionType::Gzip,
+        "brotli" => crate::types::CompressionType::Brotli,
+        _ => crate::types::CompressionType::None,
+    }
+}
 
 fn parse_cost_basis_method(s: &str) -> CostBasisMethod {
     match s {
@@ -3974,6 +4754,251 @@ fn parse_outcome(s: &str) -> PredictionOutcome {
         "correct" => PredictionOutcome::Correct,
         "incorrect" => PredictionOutcome::Incorrect,
         _ => PredictionOutcome::Neutral,
+    }
+}
+
+// ========== RAT (Random Auto Trader) Methods ==========
+
+use crate::types::{RatConfig, RatStats};
+
+impl SqliteStore {
+    /// Create or update a RAT configuration.
+    pub fn save_rat_config(&self, config: &RatConfig) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let symbols_json = serde_json::to_string(&config.symbols).unwrap_or_default();
+
+        conn.execute(
+            "INSERT INTO rat_configs (
+                id, portfolio_id, enabled, trade_interval_secs, max_open_positions,
+                symbols_json, min_hold_time_secs, size_range_min_pct, size_range_max_pct,
+                stop_loss_probability, take_profit_probability,
+                stop_loss_range_min_pct, stop_loss_range_max_pct,
+                take_profit_range_min_pct, take_profit_range_max_pct,
+                created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            ON CONFLICT(portfolio_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                trade_interval_secs = excluded.trade_interval_secs,
+                max_open_positions = excluded.max_open_positions,
+                symbols_json = excluded.symbols_json,
+                min_hold_time_secs = excluded.min_hold_time_secs,
+                size_range_min_pct = excluded.size_range_min_pct,
+                size_range_max_pct = excluded.size_range_max_pct,
+                stop_loss_probability = excluded.stop_loss_probability,
+                take_profit_probability = excluded.take_profit_probability,
+                stop_loss_range_min_pct = excluded.stop_loss_range_min_pct,
+                stop_loss_range_max_pct = excluded.stop_loss_range_max_pct,
+                take_profit_range_min_pct = excluded.take_profit_range_min_pct,
+                take_profit_range_max_pct = excluded.take_profit_range_max_pct,
+                updated_at = excluded.updated_at",
+            params![
+                config.id,
+                config.portfolio_id,
+                config.enabled as i64,
+                config.trade_interval_secs as i64,
+                config.max_open_positions as i64,
+                symbols_json,
+                config.min_hold_time_secs as i64,
+                config.size_range_pct.0,
+                config.size_range_pct.1,
+                config.stop_loss_probability,
+                config.take_profit_probability,
+                config.stop_loss_range_pct.0,
+                config.stop_loss_range_pct.1,
+                config.take_profit_range_pct.0,
+                config.take_profit_range_pct.1,
+                config.created_at,
+                config.updated_at,
+            ],
+        )?;
+
+        debug!("Saved RAT config for portfolio {}", config.portfolio_id);
+        Ok(())
+    }
+
+    /// Get RAT configuration for a portfolio.
+    pub fn get_rat_config(&self, portfolio_id: &str) -> Option<RatConfig> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, enabled, trade_interval_secs, max_open_positions,
+                    symbols_json, min_hold_time_secs, size_range_min_pct, size_range_max_pct,
+                    stop_loss_probability, take_profit_probability,
+                    stop_loss_range_min_pct, stop_loss_range_max_pct,
+                    take_profit_range_min_pct, take_profit_range_max_pct,
+                    created_at, updated_at
+             FROM rat_configs WHERE portfolio_id = ?1",
+            params![portfolio_id],
+            |row| {
+                let symbols_json: String = row.get(5)?;
+                let symbols: Vec<String> = serde_json::from_str(&symbols_json).unwrap_or_default();
+
+                Ok(RatConfig {
+                    id: row.get(0)?,
+                    portfolio_id: row.get(1)?,
+                    enabled: row.get::<_, i64>(2)? != 0,
+                    trade_interval_secs: row.get::<_, i64>(3)? as u64,
+                    max_open_positions: row.get::<_, i64>(4)? as u32,
+                    symbols,
+                    min_hold_time_secs: row.get::<_, i64>(6)? as u64,
+                    size_range_pct: (row.get(7)?, row.get(8)?),
+                    stop_loss_probability: row.get(9)?,
+                    take_profit_probability: row.get(10)?,
+                    stop_loss_range_pct: (row.get(11)?, row.get(12)?),
+                    take_profit_range_pct: (row.get(13)?, row.get(14)?),
+                    created_at: row.get(15)?,
+                    updated_at: row.get(16)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(config) => Some(config),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching RAT config: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get all enabled RAT configurations.
+    pub fn get_enabled_rat_configs(&self) -> Vec<RatConfig> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, enabled, trade_interval_secs, max_open_positions,
+                    symbols_json, min_hold_time_secs, size_range_min_pct, size_range_max_pct,
+                    stop_loss_probability, take_profit_probability,
+                    stop_loss_range_min_pct, stop_loss_range_max_pct,
+                    take_profit_range_min_pct, take_profit_range_max_pct,
+                    created_at, updated_at
+             FROM rat_configs WHERE enabled = 1",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Error preparing RAT configs query: {}", e);
+                return vec![];
+            }
+        };
+
+        let configs = stmt
+            .query_map([], |row| {
+                let symbols_json: String = row.get(5)?;
+                let symbols: Vec<String> = serde_json::from_str(&symbols_json).unwrap_or_default();
+
+                Ok(RatConfig {
+                    id: row.get(0)?,
+                    portfolio_id: row.get(1)?,
+                    enabled: row.get::<_, i64>(2)? != 0,
+                    trade_interval_secs: row.get::<_, i64>(3)? as u64,
+                    max_open_positions: row.get::<_, i64>(4)? as u32,
+                    symbols,
+                    min_hold_time_secs: row.get::<_, i64>(6)? as u64,
+                    size_range_pct: (row.get(7)?, row.get(8)?),
+                    stop_loss_probability: row.get(9)?,
+                    take_profit_probability: row.get(10)?,
+                    stop_loss_range_pct: (row.get(11)?, row.get(12)?),
+                    take_profit_range_pct: (row.get(13)?, row.get(14)?),
+                    created_at: row.get(15)?,
+                    updated_at: row.get(16)?,
+                })
+            })
+            .ok()
+            .map(|iter| iter.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        configs
+    }
+
+    /// Delete RAT configuration for a portfolio.
+    pub fn delete_rat_config(&self, portfolio_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM rat_configs WHERE portfolio_id = ?1",
+            params![portfolio_id],
+        )?;
+        Ok(())
+    }
+
+    /// Create or update RAT statistics.
+    pub fn save_rat_stats(&self, stats: &RatStats) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO rat_stats (
+                id, portfolio_id, total_trades, winning_trades, losing_trades,
+                total_pnl, errors, last_trade_at, started_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(portfolio_id) DO UPDATE SET
+                total_trades = excluded.total_trades,
+                winning_trades = excluded.winning_trades,
+                losing_trades = excluded.losing_trades,
+                total_pnl = excluded.total_pnl,
+                errors = excluded.errors,
+                last_trade_at = excluded.last_trade_at,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at",
+            params![
+                stats.id,
+                stats.portfolio_id,
+                stats.total_trades as i64,
+                stats.winning_trades as i64,
+                stats.losing_trades as i64,
+                stats.total_pnl,
+                stats.errors as i64,
+                stats.last_trade_at,
+                stats.started_at,
+                stats.updated_at,
+            ],
+        )?;
+
+        debug!("Saved RAT stats for portfolio {}", stats.portfolio_id);
+        Ok(())
+    }
+
+    /// Get RAT statistics for a portfolio.
+    pub fn get_rat_stats(&self, portfolio_id: &str) -> Option<RatStats> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT id, portfolio_id, total_trades, winning_trades, losing_trades,
+                    total_pnl, errors, last_trade_at, started_at, updated_at
+             FROM rat_stats WHERE portfolio_id = ?1",
+            params![portfolio_id],
+            |row| {
+                Ok(RatStats {
+                    id: row.get(0)?,
+                    portfolio_id: row.get(1)?,
+                    total_trades: row.get::<_, i64>(2)? as u64,
+                    winning_trades: row.get::<_, i64>(3)? as u64,
+                    losing_trades: row.get::<_, i64>(4)? as u64,
+                    total_pnl: row.get(5)?,
+                    errors: row.get::<_, i64>(6)? as u32,
+                    last_trade_at: row.get(7)?,
+                    started_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(stats) => Some(stats),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                error!("Error fetching RAT stats: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Delete RAT statistics for a portfolio.
+    pub fn delete_rat_stats(&self, portfolio_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM rat_stats WHERE portfolio_id = ?1",
+            params![portfolio_id],
+        )?;
+        Ok(())
     }
 }
 

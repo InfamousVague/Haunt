@@ -96,7 +96,10 @@ impl HuobiClient {
         // Fetch all tickers in one request
         let url = format!("{}/market/tickers", HUOBI_API_URL);
 
+        // Measure request latency
+        let request_start = std::time::Instant::now();
         let response = self.client.get(&url).send().await?;
+        let latency_ms = request_start.elapsed().as_millis() as u64;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -106,6 +109,8 @@ impl HuobiClient {
                 status,
                 &text[..text.len().min(200)]
             );
+            self.price_cache
+                .record_source_error_metrics(PriceSource::Huobi, &format!("HTTP {}", status));
             return Err(anyhow::anyhow!("Huobi API error: {}", status));
         }
 
@@ -113,6 +118,8 @@ impl HuobiClient {
 
         if data.status != "ok" {
             warn!("Huobi API error: {}", data.status);
+            self.price_cache
+                .record_source_error_metrics(PriceSource::Huobi, &format!("API error: {}", data.status));
             return Err(anyhow::anyhow!("Huobi API error: {}", data.status));
         }
 
@@ -135,11 +142,12 @@ impl HuobiClient {
 
                 if price > 0.0 {
                     debug!("Huobi price update: {} = ${}", symbol, price);
-                    self.price_cache.update_price(
+                    self.price_cache.update_price_with_latency(
                         symbol,
                         PriceSource::Huobi,
                         price,
                         Some(volume_24h),
+                        latency_ms,
                     );
                     self.chart_store
                         .add_price(symbol, price, Some(volume_24h), timestamp);

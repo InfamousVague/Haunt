@@ -8,6 +8,8 @@
 //! - Insurance fund management
 //! - ADL (Auto-Deleverage) system when insurance fund is insufficient
 
+#![allow(dead_code)]
+
 use crate::services::SqliteStore;
 use crate::types::{
     AdlEntry, AssetClass, FundingPayment, FundingRate, InsuranceFund, Liquidation,

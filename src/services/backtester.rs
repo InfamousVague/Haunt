@@ -9,6 +9,8 @@
 //! - Buy-and-hold comparison
 //! - Monte Carlo simulation for robustness testing
 
+#![allow(dead_code)]
+
 use crate::services::{SqliteStore, StrategyEngine, IndicatorSnapshot};
 use crate::types::{
     AssetClass, BacktestConfig, BacktestMetrics, BacktestResult, BacktestStatus, BacktestTrade,
