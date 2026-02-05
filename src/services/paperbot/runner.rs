@@ -12,7 +12,7 @@ use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 use crate::error::AppError;
-use crate::services::{PriceCache, SignalStore, SqliteStore, TradingService};
+use crate::services::{ChartStore, PriceCache, SignalStore, SqliteStore, TradingService};
 use crate::types::{AssetClass, TradingTimeframe};
 
 use super::{BotPersonality, DecisionContext, TradingBot, TradeDecision};
@@ -54,11 +54,14 @@ pub struct BotRunner {
     statuses: RwLock<HashMap<String, BotStatus>>,
     /// Price cache for market data
     price_cache: Arc<PriceCache>,
+    /// Chart store for 24h high/low and price change data
+    chart_store: Arc<ChartStore>,
     /// Signal store for indicators
     signal_store: Arc<SignalStore>,
     /// Trading service for order execution
     trading_service: Arc<TradingService>,
     /// SQLite store for persistence
+    #[allow(dead_code)]
     sqlite_store: Arc<SqliteStore>,
     /// Shutdown signal sender
     shutdown_tx: broadcast::Sender<()>,
@@ -70,6 +73,7 @@ impl BotRunner {
     /// Create a new bot runner
     pub fn new(
         price_cache: Arc<PriceCache>,
+        chart_store: Arc<ChartStore>,
         signal_store: Arc<SignalStore>,
         trading_service: Arc<TradingService>,
         sqlite_store: Arc<SqliteStore>,
@@ -80,6 +84,7 @@ impl BotRunner {
             bots: RwLock::new(HashMap::new()),
             statuses: RwLock::new(HashMap::new()),
             price_cache,
+            chart_store,
             signal_store,
             trading_service,
             sqlite_store,
@@ -501,14 +506,24 @@ impl BotRunner {
                 (None, None, None, None, None, None, None, None, None)
             };
 
+        // Get 24h data from chart store for momentum-based trading
+        let (high_24h, low_24h) = self
+            .chart_store
+            .get_high_low_24h(symbol)
+            .map(|(h, l)| (Some(h), Some(l)))
+            .unwrap_or((None, None));
+
+        let price_change_24h_pct = self.chart_store.get_price_change(symbol, 24 * 60 * 60);
+        let volume_24h = self.chart_store.get_volume_24h(symbol);
+
         Ok(DecisionContext {
             symbol: symbol.to_string(),
             asset_class,
             current_price,
-            high_24h: None,    // Price cache doesn't have 24h data
-            low_24h: None,
-            volume_24h: None,
-            price_change_24h_pct: None,
+            high_24h,
+            low_24h,
+            volume_24h,
+            price_change_24h_pct,
             rsi,
             macd_histogram,
             macd_crossover: None, // TODO: Track crossovers
@@ -723,14 +738,16 @@ mod tests {
         let sqlite = Arc::new(SqliteStore::new(":memory:").expect("Failed to create SQLite"));
         let trading_service = Arc::new(TradingService::new(sqlite.clone()));
         let (price_cache, _rx) = PriceCache::new(AggregationConfig::default());
+        let chart_store = ChartStore::new(); // Already returns Arc<ChartStore>
         let signal_store = SignalStore::new(
-            ChartStore::new(),
+            chart_store.clone(),
             PredictionStore::new(),
             AccuracyStore::new(),
         );
 
         let runner = BotRunner::new(
             price_cache,
+            chart_store,
             signal_store,
             trading_service.clone(),
             sqlite,

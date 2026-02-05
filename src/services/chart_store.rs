@@ -482,6 +482,44 @@ impl ChartStore {
         Some(((current - past) / past) * 100.0)
     }
 
+    /// Get 24h high and low prices for a symbol.
+    /// Returns (high, low) if data is available.
+    pub fn get_high_low_24h(&self, symbol: &str) -> Option<(f64, f64)> {
+        let symbol_lower = symbol.to_lowercase();
+        let entry = self.data.get(&symbol_lower)?;
+
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now - 24 * 60 * 60; // 24 hours ago
+
+        // Use 1-hour data for 24h range (more efficient than 1-minute)
+        let data = entry.one_hour.get_data(cutoff);
+
+        if data.is_empty() {
+            // Fallback to 5-minute data
+            let data = entry.five_minute.get_data(cutoff);
+            if data.is_empty() {
+                return None;
+            }
+
+            let high = data.iter().map(|p| p.high).fold(f64::NEG_INFINITY, f64::max);
+            let low = data.iter().map(|p| p.low).fold(f64::INFINITY, f64::min);
+
+            if high.is_finite() && low.is_finite() && high >= low {
+                return Some((high, low));
+            }
+            return None;
+        }
+
+        let high = data.iter().map(|p| p.high).fold(f64::NEG_INFINITY, f64::max);
+        let low = data.iter().map(|p| p.low).fold(f64::INFINITY, f64::min);
+
+        if high.is_finite() && low.is_finite() && high >= low {
+            Some((high, low))
+        } else {
+            None
+        }
+    }
+
     /// Get top movers (gainers and losers) for a time window.
     /// If symbol_filter is Some, only include symbols in the filter set.
     pub fn get_top_movers(

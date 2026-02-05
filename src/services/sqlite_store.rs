@@ -3532,6 +3532,52 @@ impl SqliteStore {
             open_positions as u32,
         ))
     }
+
+    /// Get recent node metrics for a specific node.
+    pub fn get_node_metrics(&self, node_id: &str, limit: usize) -> Result<Vec<crate::types::NodeMetrics>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, node_id, timestamp, sync_lag_ms, pending_sync_count,
+                    synced_entities_1m, sync_errors_1m, sync_throughput_mbps,
+                    db_size_mb, db_row_count, db_write_rate, db_read_rate,
+                    cpu_usage_pct, memory_usage_mb, disk_usage_pct,
+                    network_rx_mbps, network_tx_mbps,
+                    active_users, active_portfolios, open_orders, open_positions
+             FROM node_metrics
+             WHERE node_id = ?1
+             ORDER BY timestamp DESC
+             LIMIT ?2",
+        )?;
+
+        let metrics = stmt.query_map(params![node_id, limit as i64], |row| {
+            Ok(crate::types::NodeMetrics {
+                id: row.get(0)?,
+                node_id: row.get(1)?,
+                timestamp: row.get(2)?,
+                sync_lag_ms: row.get(3)?,
+                pending_sync_count: row.get(4)?,
+                synced_entities_1m: row.get(5)?,
+                sync_errors_1m: row.get(6)?,
+                sync_throughput_mbps: row.get(7)?,
+                db_size_mb: row.get(8)?,
+                db_row_count: row.get(9)?,
+                db_write_rate: row.get(10)?,
+                db_read_rate: row.get(11)?,
+                cpu_usage_pct: row.get(12)?,
+                memory_usage_mb: row.get(13)?,
+                disk_usage_pct: row.get(14)?,
+                network_rx_mbps: row.get(15)?,
+                network_tx_mbps: row.get(16)?,
+                active_users: row.get(17)?,
+                active_portfolios: row.get(18)?,
+                open_orders: row.get(19)?,
+                open_positions: row.get(20)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(metrics)
+    }
 }
 
 // ========== Parsing Helpers for Trading Types ==========
