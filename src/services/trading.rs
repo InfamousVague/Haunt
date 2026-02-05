@@ -25,6 +25,7 @@ use crate::websocket::RoomManager;
 use dashmap::DashMap;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 /// Trading service errors.
@@ -122,11 +123,14 @@ pub struct TradingService {
     room_manager: Option<Arc<RoomManager>>,
     /// Sync service for distributed data synchronization (optional)
     sync_service: Arc<RwLock<Option<Arc<SyncService>>>>,
+    /// Broadcast channel for trade executions (TUI/local consumers)
+    trade_tx: broadcast::Sender<Trade>,
 }
 
 impl TradingService {
     /// Create a new trading service.
     pub fn new(sqlite: Arc<SqliteStore>) -> Self {
+        let (trade_tx, _) = broadcast::channel(1024);
         Self {
             portfolios: Arc::new(DashMap::new()),
             orders: Arc::new(DashMap::new()),
@@ -136,11 +140,13 @@ impl TradingService {
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
             sync_service: Arc::new(RwLock::new(None)),
+            trade_tx,
         }
     }
 
     /// Create a new trading service with custom execution config.
     pub fn with_config(sqlite: Arc<SqliteStore>, config: ExecutionConfig) -> Self {
+        let (trade_tx, _) = broadcast::channel(1024);
         Self {
             portfolios: Arc::new(DashMap::new()),
             orders: Arc::new(DashMap::new()),
@@ -150,11 +156,13 @@ impl TradingService {
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
             sync_service: Arc::new(RwLock::new(None)),
+            trade_tx,
         }
     }
 
     /// Create a new trading service with custom liquidity simulation.
     pub fn with_liquidity_config(sqlite: Arc<SqliteStore>, liquidity_config: LiquiditySimConfig) -> Self {
+        let (trade_tx, _) = broadcast::channel(1024);
         Self {
             portfolios: Arc::new(DashMap::new()),
             orders: Arc::new(DashMap::new()),
@@ -164,11 +172,13 @@ impl TradingService {
             liquidity_sim: Arc::new(LiquiditySimulator::new(liquidity_config)),
             room_manager: None,
             sync_service: Arc::new(RwLock::new(None)),
+            trade_tx,
         }
     }
 
     /// Create a new trading service with room manager for WebSocket broadcasts.
     pub fn with_room_manager(sqlite: Arc<SqliteStore>, room_manager: Arc<RoomManager>) -> Self {
+        let (trade_tx, _) = broadcast::channel(1024);
         Self {
             portfolios: Arc::new(DashMap::new()),
             orders: Arc::new(DashMap::new()),
@@ -178,6 +188,7 @@ impl TradingService {
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: Some(room_manager),
             sync_service: Arc::new(RwLock::new(None)),
+            trade_tx,
         }
     }
 
@@ -257,6 +268,13 @@ impl TradingService {
                 room_manager.broadcast_trading(&trade.portfolio_id, &json);
             }
         }
+
+        let _ = self.trade_tx.send(trade.clone());
+    }
+
+    /// Subscribe to trade executions.
+    pub fn subscribe_trades(&self) -> broadcast::Receiver<Trade> {
+        self.trade_tx.subscribe()
     }
 
     /// Broadcast a margin warning to subscribers.

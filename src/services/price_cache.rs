@@ -841,9 +841,9 @@ impl PriceCacheRedisRef {
 
 // TUI helper methods
 impl PriceCache {
-    /// Get top N prices with their 24h change percentage.
-    /// Returns (symbol, price, change_percent).
-    pub fn get_top_prices(&self, limit: usize) -> Vec<(String, f64, f64)> {
+    /// Get top N prices.
+    /// Returns (symbol, price).
+    pub fn get_top_prices(&self, limit: usize) -> Vec<(String, f64)> {
         let mut prices: Vec<_> = self
             .prices
             .iter()
@@ -851,11 +851,7 @@ impl PriceCache {
                 let symbol = entry.key().clone();
                 let data = entry.value();
                 let price = data.last_aggregated?;
-                // Mock change for now (in real impl, track 24h ago price)
-                // Use symbol hash to generate consistent but varied changes
-                let hash = symbol.bytes().map(|b| b as u64).sum::<u64>();
-                let change = ((hash % 1000) as f64 / 100.0) - 5.0; // -5% to +5%
-                Some((symbol, price, change))
+                Some((symbol, price))
             })
             .collect();
 
