@@ -1543,10 +1543,20 @@ impl SyncServiceTask {
                 }
 
                 // Get batch of entities
+                debug!(
+                    "Fetching batch for {:?}, after_rowid={}, batch_size={}",
+                    entity_type, after_rowid, batch_size
+                );
                 let entities = self.sqlite_store.get_entities_for_sync(entity_type, after_rowid, batch_size)
                     .map_err(|e| format!("Failed to get entities: {}", e))?;
 
+                debug!(
+                    "Got {} entities for {:?} (after_rowid={})",
+                    entities.len(), entity_type, after_rowid
+                );
+
                 if entities.is_empty() {
+                    debug!("No more entities for {:?}, moving to next type", entity_type);
                     break;
                 }
 
