@@ -314,6 +314,7 @@ pub enum PositionUpdateType {
     StopLossTriggered,
     TakeProfitTriggered,
     Liquidated,
+    PnlChanged,
 }
 
 /// Portfolio update payload.

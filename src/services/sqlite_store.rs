@@ -9,11 +9,11 @@
 //! - Recent predictions (7-day TTL, quick access)
 
 use crate::types::{
-    AssetClass, BracketRole, CostBasisMethod, Fill, FundingPayment, Greeks, InsuranceFund,
-    Liquidation, MarginChangeType, MarginHistory, MarginMode, OptionPosition, OptionStyle,
-    OptionType, Order, OrderSide, OrderStatus, OrderType, Position, PositionSide, Portfolio,
-    PredictionOutcome, Profile, ProfileSettings, RiskSettings, SignalPrediction, StrategyStatus,
-    TimeInForce, Trade, TradingRule, TradingStrategy,
+    AssetClass, BracketRole, CostBasisMethod, EquityPoint, Fill, FundingPayment, Greeks,
+    InsuranceFund, Liquidation, MarginChangeType, MarginHistory, MarginMode, OptionPosition,
+    OptionStyle, OptionType, Order, OrderSide, OrderStatus, OrderType, Position, PositionSide,
+    Portfolio, PredictionOutcome, Profile, ProfileSettings, RiskSettings, SignalPrediction,
+    StrategyStatus, TimeInForce, Trade, TradingRule, TradingStrategy,
 };
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -380,6 +380,32 @@ impl SqliteStore {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_margin_history_timestamp ON margin_history(timestamp DESC)",
+            [],
+        )?;
+
+        // Portfolio snapshots table (for equity curve charting)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                equity REAL NOT NULL,
+                cash REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                realized_pnl REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL,
+                drawdown_pct REAL NOT NULL,
+                peak_equity REAL NOT NULL,
+                FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_portfolio ON portfolio_snapshots(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_timestamp ON portfolio_snapshots(portfolio_id, timestamp DESC)",
             [],
         )?;
 
@@ -2378,6 +2404,174 @@ impl SqliteStore {
         })
     }
 
+    // ========== Portfolio Snapshot Methods ==========
+
+    /// Create a portfolio snapshot for equity curve charting.
+    pub fn create_portfolio_snapshot(
+        &self,
+        portfolio_id: &str,
+        equity: f64,
+        cash: f64,
+        positions_value: f64,
+        realized_pnl: f64,
+        unrealized_pnl: f64,
+        drawdown_pct: f64,
+        peak_equity: f64,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+
+        conn.execute(
+            "INSERT INTO portfolio_snapshots (
+                id, portfolio_id, timestamp, equity, cash, positions_value,
+                realized_pnl, unrealized_pnl, drawdown_pct, peak_equity
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                portfolio_id,
+                timestamp,
+                equity,
+                cash,
+                positions_value,
+                realized_pnl,
+                unrealized_pnl,
+                drawdown_pct,
+                peak_equity,
+            ],
+        )?;
+
+        debug!(
+            "Created portfolio snapshot for {} - equity: {:.2}",
+            portfolio_id, equity
+        );
+        Ok(())
+    }
+
+    /// Create a portfolio snapshot from a Portfolio object.
+    pub fn create_snapshot_from_portfolio(
+        &self,
+        portfolio: &Portfolio,
+    ) -> Result<(), rusqlite::Error> {
+        let peak_equity = portfolio.starting_balance.max(portfolio.total_value);
+        let drawdown_pct = if peak_equity > 0.0 {
+            ((peak_equity - portfolio.total_value) / peak_equity) * 100.0
+        } else {
+            0.0
+        };
+
+        self.create_portfolio_snapshot(
+            &portfolio.id,
+            portfolio.total_value,
+            portfolio.cash_balance,
+            portfolio.total_value - portfolio.cash_balance,
+            portfolio.realized_pnl,
+            portfolio.unrealized_pnl,
+            drawdown_pct,
+            peak_equity,
+        )
+    }
+
+    /// Get portfolio snapshots for charting (equity curve).
+    /// Returns points ordered by timestamp ascending.
+    pub fn get_portfolio_snapshots(
+        &self,
+        portfolio_id: &str,
+        since_timestamp: Option<i64>,
+        limit: Option<usize>,
+    ) -> Vec<EquityPoint> {
+        let conn = self.conn.lock().unwrap();
+
+        // Always use the query with since parameter (use 0 if not specified)
+        let query = "SELECT timestamp, equity, cash, positions_value, realized_pnl, unrealized_pnl, drawdown_pct
+             FROM portfolio_snapshots
+             WHERE portfolio_id = ?1 AND timestamp >= ?2
+             ORDER BY timestamp ASC
+             LIMIT ?3";
+
+        let mut stmt = match conn.prepare(query) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing snapshots query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        let limit_val = limit.unwrap_or(10000) as i64;
+        let since = since_timestamp.unwrap_or(0);
+
+        stmt.query_map(params![portfolio_id, since, limit_val], |row| {
+            Ok(EquityPoint {
+                timestamp: row.get(0)?,
+                equity: row.get(1)?,
+                cash: row.get(2)?,
+                positions_value: row.get(3)?,
+                realized_pnl: row.get(4)?,
+                unrealized_pnl: row.get(5)?,
+                drawdown_pct: row.get(6)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Get the latest snapshot for a portfolio.
+    pub fn get_latest_portfolio_snapshot(&self, portfolio_id: &str) -> Option<EquityPoint> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT timestamp, equity, cash, positions_value, realized_pnl, unrealized_pnl, drawdown_pct
+             FROM portfolio_snapshots
+             WHERE portfolio_id = ?1
+             ORDER BY timestamp DESC
+             LIMIT 1",
+            params![portfolio_id],
+            |row| {
+                Ok(EquityPoint {
+                    timestamp: row.get(0)?,
+                    equity: row.get(1)?,
+                    cash: row.get(2)?,
+                    positions_value: row.get(3)?,
+                    realized_pnl: row.get(4)?,
+                    unrealized_pnl: row.get(5)?,
+                    drawdown_pct: row.get(6)?,
+                })
+            },
+        )
+        .ok()
+    }
+
+    /// Delete old snapshots to manage storage (keep last N days).
+    pub fn cleanup_old_snapshots(&self, portfolio_id: &str, days_to_keep: i64) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff = chrono::Utc::now().timestamp_millis() - (days_to_keep * 24 * 60 * 60 * 1000);
+
+        let deleted = conn.execute(
+            "DELETE FROM portfolio_snapshots WHERE portfolio_id = ?1 AND timestamp < ?2",
+            params![portfolio_id, cutoff],
+        )?;
+
+        if deleted > 0 {
+            debug!(
+                "Cleaned up {} old snapshots for portfolio {}",
+                deleted, portfolio_id
+            );
+        }
+
+        Ok(deleted)
+    }
+
+    /// Get snapshot count for a portfolio.
+    pub fn snapshot_count(&self, portfolio_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM portfolio_snapshots WHERE portfolio_id = ?1",
+            params![portfolio_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
     // ========== Backtest Methods ==========
 
     /// Create a new backtest result.
@@ -2807,17 +3001,17 @@ mod tests {
         assert_eq!(loaded.id, portfolio.id);
         assert_eq!(loaded.user_id, "user123");
         assert_eq!(loaded.name, "Test Portfolio");
-        assert_eq!(loaded.starting_balance, 5_000_000.0);
+        assert_eq!(loaded.starting_balance, 250_000.0);
 
         // Update portfolio
         let mut updated = loaded.clone();
-        updated.cash_balance = 4_500_000.0;
-        updated.unrealized_pnl = 100_000.0;
+        updated.cash_balance = 225_000.0;
+        updated.unrealized_pnl = 10_000.0;
         updated.recalculate();
         store.update_portfolio(&updated).unwrap();
 
         let reloaded = store.get_portfolio(&portfolio.id).unwrap();
-        assert_eq!(reloaded.cash_balance, 4_500_000.0);
+        assert_eq!(reloaded.cash_balance, 225_000.0);
 
         // Get user portfolios
         let portfolios = store.get_user_portfolios("user123");
@@ -2826,6 +3020,94 @@ mod tests {
         // Delete portfolio
         store.delete_portfolio(&portfolio.id).unwrap();
         assert!(store.get_portfolio(&portfolio.id).is_none());
+    }
+
+    #[test]
+    fn test_portfolio_snapshots() {
+        let store = SqliteStore::new_in_memory().unwrap();
+
+        // Create portfolio
+        let portfolio = Portfolio::new("user123".to_string(), "Snapshot Test".to_string());
+        store.create_portfolio(&portfolio).unwrap();
+
+        // Create several snapshots
+        store
+            .create_portfolio_snapshot(
+                &portfolio.id,
+                250_000.0, // equity
+                250_000.0, // cash
+                0.0,       // positions_value
+                0.0,       // realized_pnl
+                0.0,       // unrealized_pnl
+                0.0,       // drawdown_pct
+                250_000.0, // peak_equity
+            )
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        store
+            .create_portfolio_snapshot(
+                &portfolio.id,
+                260_000.0, // equity increased
+                240_000.0, // cash decreased (bought something)
+                20_000.0,  // positions_value
+                0.0,       // realized_pnl
+                10_000.0,  // unrealized_pnl
+                0.0,       // drawdown_pct
+                260_000.0, // new peak
+            )
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        store
+            .create_portfolio_snapshot(
+                &portfolio.id,
+                255_000.0, // equity dropped
+                240_000.0, // cash same
+                15_000.0,  // positions_value dropped
+                0.0,       // realized_pnl
+                5_000.0,   // unrealized_pnl dropped
+                1.92,      // drawdown_pct = (260000 - 255000) / 260000 * 100
+                260_000.0, // peak unchanged
+            )
+            .unwrap();
+
+        // Verify snapshot count
+        assert_eq!(store.snapshot_count(&portfolio.id), 3);
+
+        // Get all snapshots
+        let snapshots = store.get_portfolio_snapshots(&portfolio.id, None, None);
+        assert_eq!(snapshots.len(), 3);
+
+        // Verify order is ascending by timestamp
+        assert!(snapshots[0].timestamp < snapshots[1].timestamp);
+        assert!(snapshots[1].timestamp < snapshots[2].timestamp);
+
+        // Verify values
+        assert_eq!(snapshots[0].equity, 250_000.0);
+        assert_eq!(snapshots[1].equity, 260_000.0);
+        assert_eq!(snapshots[2].equity, 255_000.0);
+
+        // Get latest snapshot
+        let latest = store.get_latest_portfolio_snapshot(&portfolio.id).unwrap();
+        assert_eq!(latest.equity, 255_000.0);
+        assert_eq!(latest.unrealized_pnl, 5_000.0);
+
+        // Create snapshot from portfolio object
+        let mut test_portfolio = portfolio.clone();
+        test_portfolio.total_value = 270_000.0;
+        test_portfolio.cash_balance = 220_000.0;
+        test_portfolio.unrealized_pnl = 20_000.0;
+        store.create_snapshot_from_portfolio(&test_portfolio).unwrap();
+
+        assert_eq!(store.snapshot_count(&portfolio.id), 4);
+
+        // Test cleanup (keep only recent)
+        let deleted = store.cleanup_old_snapshots(&portfolio.id, 0).unwrap();
+        // All snapshots created in this test should be deleted since days_to_keep=0
+        assert!(deleted > 0);
     }
 
     #[test]
