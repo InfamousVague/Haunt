@@ -3257,6 +3257,35 @@ impl SqliteStore {
                 }
                 Ok(Vec::new())
             }
+            EntityType::Liquidation => {
+                if let Some(liquidation) = self.get_liquidation(entity_id) {
+                    serde_json::to_vec(&liquidation)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::OptionsPosition => {
+                if let Some(position) = self.get_option_position(entity_id) {
+                    serde_json::to_vec(&position)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::Strategy => {
+                if let Some(strategy) = self.get_strategy(entity_id) {
+                    serde_json::to_vec(&strategy)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::InsuranceFund => {
+                let fund = self.get_insurance_fund();
+                serde_json::to_vec(&fund)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            }
             // For other entity types, return empty for now
             _ => Ok(Vec::new()),
         }
@@ -3442,6 +3471,38 @@ impl SqliteStore {
                         position.funding_payments,
                         position.created_at,
                         position.updated_at,
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(())
+            }
+            EntityType::Liquidation => {
+                let liquidation: crate::types::Liquidation = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+                
+                // Insert liquidation (append-only)
+                conn.execute(
+                    "INSERT OR IGNORE INTO liquidations (
+                        id, position_id, portfolio_id, symbol,
+                        quantity, liquidation_price, mark_price, loss, liquidation_fee,
+                        is_partial, remaining_quantity, liquidated_at,
+                        version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    params![
+                        liquidation.id,
+                        liquidation.position_id,
+                        liquidation.portfolio_id,
+                        liquidation.symbol,
+                        liquidation.quantity,
+                        liquidation.liquidation_price,
+                        liquidation.mark_price,
+                        liquidation.loss,
+                        liquidation.liquidation_fee,
+                        if liquidation.is_partial { 1 } else { 0 },
+                        liquidation.remaining_quantity,
+                        liquidation.liquidated_at,
                         version as i64,
                         timestamp,
                         node_id,
