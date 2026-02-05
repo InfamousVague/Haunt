@@ -4,17 +4,22 @@ use crate::AppState;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Stylize,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 use std::sync::Arc;
 
-use super::{events, Theme};
+use super::{Theme, TuiState};
 
 /// Render the logs view.
-pub fn render(frame: &mut Frame, area: Rect, _app_state: &Arc<AppState>, theme: &Theme) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    _app_state: &Arc<AppState>,
+    theme: &Theme,
+    tui_state: &Arc<TuiState>,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -24,7 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, _app_state: &Arc<AppState>, theme: 
         .split(area);
 
     render_log_controls(frame, chunks[0], theme);
-    render_log_output(frame, chunks[1], theme);
+    render_log_output(frame, chunks[1], theme, tui_state);
 }
 
 /// Render log controls.
@@ -64,52 +69,44 @@ fn render_log_controls(frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 /// Render log output.
-fn render_log_output(frame: &mut Frame, area: Rect, theme: &Theme) {
-    // Mock log entries
-    let logs = vec![
-        ("INFO", "haunt::api", "Server started on 0.0.0.0:3000"),
-        ("DEBUG", "haunt::sources", "Connected to CoinGecko WebSocket"),
-        ("INFO", "haunt::services", "Price cache loaded 1,234 symbols from Redis"),
-        ("DEBUG", "haunt::websocket", "Client connected: room=BTC-USD"),
-        ("INFO", "haunt::services", "Sync service initialized"),
-        ("WARN", "haunt::sources", "CoinCap rate limit exceeded, backing off"),
-        ("DEBUG", "haunt::api", "GET /api/prices/BTC - 200 OK (2ms)"),
-        ("INFO", "haunt::services", "Bot runner started with 4 strategies"),
-        ("DEBUG", "haunt::services", "Scalper bot opened position: BTC-USD"),
-        ("INFO", "haunt::services", "Chart store synced to Redis (234 sparklines)"),
-        ("DEBUG", "haunt::websocket", "Broadcasting price update to 5 clients"),
-        ("ERROR", "haunt::sources", "Failed to connect to Finnhub: connection timeout"),
-        ("INFO", "haunt::services", "Peer mesh connected to 3 nodes"),
-        ("DEBUG", "haunt::services", "Sync: replicated 12 entities to sapporo"),
-        ("WARN", "haunt::services", "Order book depth below threshold for ETH-USD"),
-        ("INFO", "haunt::api", "POST /api/signals - Signal saved successfully"),
-        ("DEBUG", "haunt::services", "Grandma bot: analyzing 1h candles"),
-        ("INFO", "haunt::services", "Historical data updated: 500 new candles"),
-        ("DEBUG", "haunt::websocket", "Client disconnected: session_id=abc123"),
-        ("INFO", "haunt::services", "Database checkpoint completed (2.1MB)"),
-    ];
+fn render_log_output(frame: &mut Frame, area: Rect, theme: &Theme, tui_state: &Arc<TuiState>) {
+    let lines = tui_state.log_buffer().recent(200);
+    if lines.is_empty() {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled("No logs yet.", theme.muted())),
+        ];
 
-    let items: Vec<ListItem> = logs
+        let block = Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("📝 System Logs (Live)")
+                    .border_style(theme.border()),
+            )
+            .centered();
+
+        frame.render_widget(block, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = lines
         .iter()
         .rev()
-        .map(|(level, module, message)| {
-            let (level_style, level_icon) = match *level {
-                "ERROR" => (theme.error(), "✗"),
-                "WARN" => (theme.warning(), "⚠"),
-                "INFO" => (theme.success(), "●"),
-                "DEBUG" => (theme.muted(), "○"),
-                _ => (theme.info(), "·"),
+        .map(|line| {
+            let style = if line.contains("ERROR") {
+                theme.error()
+            } else if line.contains("WARN") {
+                theme.warning()
+            } else if line.contains("INFO") {
+                theme.success()
+            } else if line.contains("DEBUG") {
+                theme.muted()
+            } else {
+                theme.info()
             };
 
-            ListItem::new(Line::from(vec![
-                Span::styled(level_icon, level_style),
-                Span::raw(" "),
-                Span::styled(format!("{:5}", level), level_style),
-                Span::raw(" "),
-                Span::styled(format!("{:30}", module), theme.info()),
-                Span::raw(" "),
-                Span::raw(*message),
-            ]))
+            ListItem::new(Line::from(Span::styled(line.clone(), style)))
         })
         .collect();
 

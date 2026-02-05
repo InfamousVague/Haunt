@@ -53,20 +53,32 @@ async fn main() -> anyhow::Result<()> {
     // Check for TUI launch flag
     let args: Vec<String> = std::env::args().collect();
     let launch_tui = args.contains(&"--tui".to_string());
+    let log_buffer = if launch_tui {
+        Some(Arc::new(tui::LogBuffer::new(500)))
+    } else {
+        None
+    };
 
     // Load environment variables
     dotenvy::dotenv().ok();
 
     // Initialize tracing (disable console output in TUI mode)
     if launch_tui {
-        // In TUI mode, we'll suppress console logging to avoid interfering with the UI
-        // Logs can still be viewed in the Logs tab
+        // In TUI mode, route logs to the in-memory buffer.
+        let log_buffer = log_buffer
+            .as_ref()
+            .expect("log buffer should be available in TUI mode")
+            .clone();
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "error".into()), // Only show errors
+                    .unwrap_or_else(|_| "haunt=info".into()),
             )
-            .with(tracing_subscriber::fmt::layer())
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(tui::LogMakeWriter::new(log_buffer))
+                    .with_ansi(false),
+            )
             .init();
     } else {
         // Normal server mode with full logging
@@ -425,7 +437,7 @@ async fn main() -> anyhow::Result<()> {
 
     // If TUI mode requested, launch TUI instead of server
     if launch_tui {
-        eprintln!("🚀 Launching Haunt Terminal UI...");
+        eprintln!("Launching Haunt Terminal UI...");
         eprintln!("   Initializing services...");
         
         // Start the price sources in the background
@@ -441,7 +453,10 @@ async fn main() -> anyhow::Result<()> {
         
         // Start bot runner if configured
         if let Some(ref runner) = bot_runner {
-            runner.clone().start().await;
+            let runner = runner.clone();
+            tokio::spawn(async move {
+                runner.start().await;
+            });
         }
         
         eprintln!("   Services started. Launching UI...\n");
@@ -451,7 +466,14 @@ async fn main() -> anyhow::Result<()> {
         
         // Launch TUI
         let state_arc = Arc::new(state);
-        return tui::run_tui(state_arc).await.map_err(|e| anyhow::anyhow!("TUI error: {}", e));
+        let log_buffer = log_buffer
+            .as_ref()
+            .expect("log buffer should be available in TUI mode")
+            .clone();
+        let tui_state = Arc::new(tui::TuiState::new(log_buffer, 200, 200));
+        return tui::run_tui(state_arc, tui_state)
+            .await
+            .map_err(|e| anyhow::anyhow!("TUI error: {}", e));
     }
 
     // Keep a reference for the market simulation engine

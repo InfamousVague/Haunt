@@ -1,6 +1,6 @@
 //! Main TUI application logic.
 
-use super::{bots, dashboard, database, events, logs, network, Route, Theme};
+use super::{bots, dashboard, database, events, logs, network, Route, Theme, TuiState};
 use crate::AppState;
 use crossterm::{
     execute,
@@ -26,6 +26,8 @@ pub struct App {
     current_route: Route,
     /// Application state.
     app_state: Arc<AppState>,
+    /// TUI shared state.
+    tui_state: Arc<TuiState>,
     /// Theme.
     theme: Theme,
     /// Should quit.
@@ -34,10 +36,11 @@ pub struct App {
 
 impl App {
     /// Create a new TUI application.
-    pub fn new(app_state: Arc<AppState>) -> Self {
+    pub fn new(app_state: Arc<AppState>, tui_state: Arc<TuiState>) -> Self {
         Self {
             current_route: Route::Dashboard,
             app_state,
+            tui_state,
             theme: Theme::default(),
             should_quit: false,
         }
@@ -104,9 +107,9 @@ impl App {
         match self.current_route {
             Route::Dashboard => dashboard::render(frame, chunks[1], &self.app_state, &self.theme),
             Route::Database => database::render(frame, chunks[1], &self.app_state, &self.theme),
-            Route::Bots => bots::render(frame, chunks[1], &self.app_state, &self.theme),
-            Route::Network => network::render(frame, chunks[1], &self.app_state, &self.theme),
-            Route::Logs => logs::render(frame, chunks[1], &self.app_state, &self.theme),
+            Route::Bots => bots::render(frame, chunks[1], &self.app_state, &self.theme, &self.tui_state),
+            Route::Network => network::render(frame, chunks[1], &self.app_state, &self.theme, &self.tui_state),
+            Route::Logs => logs::render(frame, chunks[1], &self.app_state, &self.theme, &self.tui_state),
         }
 
         // Render status bar
@@ -175,7 +178,7 @@ impl App {
 }
 
 /// Run the TUI application.
-pub async fn run_tui(app_state: Arc<AppState>) -> io::Result<()> {
+pub async fn run_tui(app_state: Arc<AppState>, tui_state: Arc<TuiState>) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -184,8 +187,36 @@ pub async fn run_tui(app_state: Arc<AppState>) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app and event handler
-    let mut app = App::new(app_state);
+    let mut app = App::new(app_state.clone(), tui_state.clone());
     let mut event_handler = events::EventHandler::new(Duration::from_millis(250));
+
+    // Subscribe to trade executions
+    let tui_state_for_trades = tui_state.clone();
+    let mut trade_rx = app_state.trading_service.subscribe_trades();
+    tokio::spawn(async move {
+        loop {
+            match trade_rx.recv().await {
+                Ok(trade) => tui_state_for_trades.push_trade(trade),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    // Subscribe to sync events
+    if let Some(sync_service) = app_state.sync_service.as_ref() {
+        let tui_state_for_sync = tui_state.clone();
+        let mut sync_rx = sync_service.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match sync_rx.recv().await {
+                    Ok(msg) => tui_state_for_sync.push_sync(msg),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // Main loop
     loop {

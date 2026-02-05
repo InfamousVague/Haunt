@@ -8,9 +8,11 @@ mod network;
 mod logs;
 mod theme;
 mod events;
+mod state;
 
 pub use app::{App, run_tui};
 pub use theme::Theme;
+pub use state::{LogBuffer, LogMakeWriter, TuiState};
 
 use crate::AppState;
 

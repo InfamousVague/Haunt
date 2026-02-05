@@ -4,9 +4,8 @@ use crate::AppState;
 use crossterm::event::KeyEvent;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 use std::sync::Arc;
@@ -174,27 +173,33 @@ fn render_system_info(frame: &mut Frame, area: Rect, app_state: &Arc<AppState>, 
 /// Render recent price updates.
 fn render_price_updates(frame: &mut Frame, area: Rect, app_state: &Arc<AppState>, theme: &Theme) {
     let prices = app_state.price_cache.get_top_prices(10);
-    
+
+    if prices.is_empty() {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled("No price data yet.", theme.muted())),
+        ];
+
+        let block = Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("💰 Price Updates")
+                    .border_style(theme.border()),
+            )
+            .centered();
+
+        frame.render_widget(block, area);
+        return;
+    }
+
     let items: Vec<ListItem> = prices
         .iter()
-        .map(|(symbol, price, change)| {
-            let change_color = if *change >= 0.0 {
-                theme.success()
-            } else {
-                theme.error()
-            };
-            
-            let change_symbol = if *change >= 0.0 { "▲" } else { "▼" };
-            
+        .map(|(symbol, price)| {
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:>8}", symbol), theme.title()),
                 Span::raw("  "),
-                Span::styled(format!("${:>10.2}", price), theme.info()),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{} {:>6.2}%", change_symbol, change.abs()),
-                    change_color,
-                ),
+                Span::styled(format!("${:>12.2}", price), theme.info()),
             ]))
         })
         .collect();

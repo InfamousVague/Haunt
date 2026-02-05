@@ -4,9 +4,8 @@ use crate::AppState;
 use crossterm::event::KeyEvent;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use std::sync::Arc;
@@ -103,69 +102,22 @@ fn render_db_status(frame: &mut Frame, area: Rect, app_state: &Arc<AppState>, th
 
 /// Render recent database operations.
 fn render_recent_operations(frame: &mut Frame, area: Rect, _app_state: &Arc<AppState>, theme: &Theme) {
-    // Mock recent operations for now
-    // In a real implementation, you'd track these in the app state
-    let operations = vec![
-        ("WRITE", "signals", "bullish_signal_BTC", "2ms", "success"),
-        ("READ", "prices", "ETH_price_cache", "1ms", "success"),
-        ("WRITE", "trades", "paper_trade_001", "3ms", "success"),
-        ("READ", "orderbook", "BTC-USD", "1ms", "success"),
-        ("WRITE", "sync", "peer_update_osaka", "5ms", "success"),
-        ("READ", "historical", "BTC_1h_candles", "12ms", "success"),
-        ("WRITE", "chart_store", "sparkline_ETH", "2ms", "success"),
-        ("READ", "signals", "latest_signals", "1ms", "success"),
-        ("WRITE", "metrics", "node_metrics", "1ms", "success"),
-        ("READ", "auth", "api_key_verify", "1ms", "success"),
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled("No database operations tracked yet.", theme.muted())),
+        Line::from(Span::styled("Wire a DB operation feed to populate this view.", theme.muted())),
     ];
 
-    let rows: Vec<Row> = operations
-        .iter()
-        .map(|(op, table, key, time, status)| {
-            let op_style = if *op == "WRITE" {
-                theme.warning()
-            } else {
-                theme.info()
-            };
+    let block = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("📝 Recent Operations")
+                .border_style(theme.border()),
+        )
+        .centered();
 
-            let status_style = if *status == "success" {
-                theme.success()
-            } else {
-                theme.error()
-            };
-
-            Row::new(vec![
-                Span::styled(*op, op_style).to_string(),
-                table.to_string(),
-                key.to_string(),
-                time.to_string(),
-                Span::styled(*status, status_style).to_string(),
-            ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(6),
-            Constraint::Length(15),
-            Constraint::Min(20),
-            Constraint::Length(8),
-            Constraint::Length(10),
-        ],
-    )
-    .header(
-        Row::new(vec!["Op", "Table", "Key", "Time", "Status"])
-            .style(theme.header())
-            .bottom_margin(1),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("📝 Recent Operations")
-            .border_style(theme.border()),
-    );
-
-    frame.render_widget(table, area);
+    frame.render_widget(block, area);
 }
 
 /// Handle keyboard events for database view.
