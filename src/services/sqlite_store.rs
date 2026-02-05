@@ -3433,21 +3433,38 @@ impl SqliteStore {
                 }
             }
             EntityType::Profile => {
-                // Get profile by ID (need to query by ID not public key)
+                // Get profile by ID directly to avoid nested lock
                 let conn = self.conn.lock().unwrap();
                 let result = conn.query_row(
-                    "SELECT public_key FROM profiles WHERE id = ?1",
+                    "SELECT id, public_key, username, created_at, last_seen,
+                            show_on_leaderboard, leaderboard_signature, leaderboard_consent_at, settings_json
+                     FROM profiles WHERE id = ?1",
                     params![entity_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        let settings_json: String = row.get(8)?;
+                        let settings: crate::types::ProfileSettings =
+                            serde_json::from_str(&settings_json).unwrap_or_default();
+
+                        Ok(crate::types::Profile {
+                            id: row.get(0)?,
+                            public_key: row.get(1)?,
+                            username: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            created_at: row.get(3)?,
+                            last_seen: row.get(4)?,
+                            show_on_leaderboard: row.get::<_, i64>(5)? != 0,
+                            leaderboard_signature: row.get(6)?,
+                            leaderboard_consent_at: row.get(7)?,
+                            settings,
+                        })
+                    },
                 );
-                
-                if let Ok(public_key) = result {
-                    if let Some(profile) = self.get_profile(&public_key) {
-                        return serde_json::to_vec(&profile)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)));
-                    }
+
+                match result {
+                    Ok(profile) => serde_json::to_vec(&profile)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Vec::new()),
+                    Err(e) => Err(e),
                 }
-                Ok(Vec::new())
             }
             EntityType::Liquidation => {
                 if let Some(liquidation) = self.get_liquidation(entity_id) {
