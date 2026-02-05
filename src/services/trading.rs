@@ -9,12 +9,12 @@
 //! Uses SQLite for persistence and DashMap for real-time caching.
 
 use crate::services::liquidity_sim::{LiquiditySimulator, LiquiditySimConfig};
-use crate::services::SqliteStore;
+use crate::services::{SqliteStore, SyncService};
 use crate::types::{
     AggregatedOrderBook, AssetClass, BracketOrder, BracketRole, CostBasisEntry, CostBasisMethod,
     EquityPoint, Fill, LeaderboardEntry, OcoOrder, Order, OrderSide, OrderStatus, OrderType,
     PlaceOrderRequest, Portfolio, Position, PositionSide, PortfolioSummary, RiskSettings,
-    TimeInForce, Trade,
+    TimeInForce, Trade, EntityType, SyncOperation,
 };
 use crate::types::{
     LiquidationAlertData, MarginWarningData, OrderUpdateData, OrderUpdateType,
@@ -120,6 +120,8 @@ pub struct TradingService {
     liquidity_sim: Arc<LiquiditySimulator>,
     /// Room manager for WebSocket broadcasts (optional for testing)
     room_manager: Option<Arc<RoomManager>>,
+    /// Sync service for distributed data synchronization (optional)
+    sync_service: Option<Arc<SyncService>>,
 }
 
 impl TradingService {
@@ -133,6 +135,7 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
+            sync_service: None,
         }
     }
 
@@ -146,6 +149,7 @@ impl TradingService {
             config,
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: None,
+            sync_service: None,
         }
     }
 
@@ -159,6 +163,7 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::new(liquidity_config)),
             room_manager: None,
+            sync_service: None,
         }
     }
 
@@ -172,12 +177,18 @@ impl TradingService {
             config: ExecutionConfig::default(),
             liquidity_sim: Arc::new(LiquiditySimulator::default()),
             room_manager: Some(room_manager),
+            sync_service: None,
         }
     }
 
     /// Set room manager for WebSocket broadcasts.
     pub fn set_room_manager(&mut self, room_manager: Arc<RoomManager>) {
         self.room_manager = Some(room_manager);
+    }
+
+    /// Set sync service for distributed data synchronization.
+    pub fn set_sync_service(&mut self, sync_service: Arc<SyncService>) {
+        self.sync_service = Some(sync_service);
     }
 
     // ==========================================================================
@@ -320,6 +331,11 @@ impl TradingService {
 
         // Cache in memory
         self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
+
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Insert, None);
+        }
 
         info!("Created portfolio {} for user {}", portfolio.id, user_id);
         Ok(portfolio)
@@ -464,6 +480,11 @@ impl TradingService {
 
         self.sqlite.update_portfolio(&portfolio)?;
         self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
+
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Portfolio, portfolio.id.clone(), SyncOperation::Update, None);
+        }
 
         // Broadcast portfolio settings change
         self.broadcast_portfolio_update(&portfolio, PortfolioUpdateType::SettingsChanged);
@@ -657,6 +678,11 @@ impl TradingService {
         self.sqlite.create_order(&order)?;
         self.orders.insert(order.id.clone(), order.clone());
 
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Insert, None);
+        }
+
         // Broadcast order creation
         self.broadcast_order_update(&order, OrderUpdateType::Created);
 
@@ -755,6 +781,11 @@ impl TradingService {
         self.sqlite.update_order(&order)?;
         self.orders.insert(order.id.clone(), order.clone());
 
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Order, order.id.clone(), SyncOperation::Update, None);
+        }
+
         // Broadcast order cancellation
         self.broadcast_order_update(&order, OrderUpdateType::Cancelled);
 
@@ -832,6 +863,11 @@ impl TradingService {
         trade.position_id = Some(position_id.clone());
 
         self.sqlite.create_trade(&trade)?;
+
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Trade, trade.id.clone(), SyncOperation::Insert, None);
+        }
 
         // Take portfolio snapshot for equity curve charting
         if let Err(e) = self.sqlite.create_snapshot_from_portfolio(&portfolio) {
@@ -950,6 +986,11 @@ impl TradingService {
 
             self.sqlite.update_position(&position)?;
             self.positions.insert(position.id.clone(), position.clone());
+
+            // Queue sync to other nodes
+            if let Some(ref sync_service) = self.sync_service {
+                let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+            }
 
             // Broadcast position increase
             self.broadcast_position_update(&position, PositionUpdateType::Increased);
@@ -1217,6 +1258,11 @@ impl TradingService {
 
         self.sqlite.update_position(&position)?;
         self.positions.insert(position.id.clone(), position.clone());
+
+        // Queue sync to other nodes
+        if let Some(ref sync_service) = self.sync_service {
+            let _ = sync_service.queue_sync(EntityType::Position, position.id.clone(), SyncOperation::Update, None);
+        }
 
         // Broadcast position modification
         self.broadcast_position_update(&position, PositionUpdateType::Modified);

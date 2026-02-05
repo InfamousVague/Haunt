@@ -327,6 +327,7 @@ async fn main() -> anyhow::Result<()> {
     let room_manager = RoomManager::new();
 
     // Create trading service for paper trading (with room_manager for real-time updates)
+    // TODO: Add interior mutability to sync_service field to enable runtime connection
     let trading_service = Arc::new(services::TradingService::with_room_manager(
         sqlite_store.clone(),
         room_manager.clone(),
@@ -362,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::new(runner))
     };
 
-    // Create sync service if peer mesh is enabled
+     // Create sync service if peer mesh is enabled
     let sync_service = if let Some(ref mesh) = peer_mesh {
         let is_primary = config.server_id == "osaka";
         let service = SyncService::new(
@@ -372,6 +373,11 @@ async fn main() -> anyhow::Result<()> {
             is_primary,
         );
         info!("Sync service created (primary: {})", is_primary);
+        
+        // TODO: Connect sync_service to trading_service
+        // Requires adding interior mutability (Mutex/RwLock) to TradingService.sync_service field
+        // For now, sync triggers in TradingService will not fire
+        
         Some(service)
     } else {
         None
