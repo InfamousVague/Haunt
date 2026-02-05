@@ -3511,8 +3511,14 @@ impl SqliteStore {
         node_id: &str,
     ) -> Result<crate::types::SyncUpdateResult, rusqlite::Error> {
         use crate::types::{EntityType, SyncUpdateResult, ConsistencyModel};
-        
+
         let conn = self.conn.lock().unwrap();
+
+        // Disable foreign key checks during sync to allow out-of-order entity arrival.
+        // Parent entities (Portfolio, Order, Position) may arrive after child entities
+        // (Trade, FundingPayment, Liquidation) during real-time or historical sync.
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
         let table = entity_type.table_name();
         let consistency = entity_type.consistency_model();
         
@@ -3526,10 +3532,12 @@ impl SqliteStore {
         // Detect conflicts
         if let Some((existing_version, existing_timestamp, existing_node)) = existing {
             let existing_version = existing_version as u64;
-            
+
             // For strong consistency, require version to be sequential
             if consistency == ConsistencyModel::Strong {
                 if version <= existing_version {
+                    // Re-enable FK checks before returning
+                    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
                     // Version conflict detected
                     return Ok(SyncUpdateResult::Conflict {
                         existing_version,
@@ -3543,6 +3551,8 @@ impl SqliteStore {
             } else {
                 // For eventual consistency, still detect version conflicts
                 if version != existing_version + 1 && version <= existing_version {
+                    // Re-enable FK checks before returning
+                    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
                     return Ok(SyncUpdateResult::Conflict {
                         existing_version,
                         existing_timestamp,
@@ -3556,7 +3566,37 @@ impl SqliteStore {
         }
         
         //  Apply update based on entity type
-        match entity_type {
+        let result = match entity_type {
+            EntityType::Profile => {
+                let profile: crate::types::Profile = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+
+                let settings_json = serde_json::to_string(&profile.settings).unwrap_or_default();
+
+                // Insert or update profile with version tracking
+                conn.execute(
+                    "INSERT OR REPLACE INTO profiles (
+                        id, public_key, username, created_at, last_seen,
+                        show_on_leaderboard, leaderboard_signature, leaderboard_consent_at,
+                        settings_json, version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        profile.id,
+                        profile.public_key,
+                        profile.username,
+                        profile.created_at,
+                        profile.last_seen,
+                        profile.show_on_leaderboard as i64,
+                        profile.leaderboard_signature,
+                        profile.leaderboard_consent_at,
+                        settings_json,
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(SyncUpdateResult::Applied)
+            }
             EntityType::Portfolio => {
                 let portfolio: crate::types::Portfolio = serde_json::from_slice(data)
                     .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
@@ -3763,7 +3803,12 @@ impl SqliteStore {
             }
             // For other entity types, do nothing for now
             _ => Ok(SyncUpdateResult::Applied),
-        }
+        };
+
+        // Re-enable foreign key checks after sync operation completes
+        let _ = conn.execute("PRAGMA foreign_keys = ON", []);
+
+        result
     }
 
     /// Record a sync conflict to the database.
