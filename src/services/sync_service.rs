@@ -2,8 +2,8 @@
 
 use crate::services::{PeerMesh, SqliteStore};
 use crate::types::{
-    EntityType, NodeMetrics, PeerMessage, SyncConflict, SyncMessage, SyncOperation,
-    SyncQueueItem, SyncState,
+    ConflictStrategy, EntityType, NodeMetrics, PeerMessage, SyncConflict, SyncMessage,
+    SyncOperation, SyncQueueItem, SyncState, SyncUpdateResult,
 };
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
@@ -408,16 +408,166 @@ impl SyncService {
         data: &[u8],
     ) -> Result<(), String> {
         // Update entity in database with new version
-        self.sqlite_store
+        let result = self.sqlite_store
             .update_entity_from_sync(entity_type, entity_id, data, version, timestamp, node_id)
             .map_err(|e| format!("Failed to update entity: {}", e))?;
 
-        info!(
-            "Applied sync update for {:?} {} to version {}",
-            entity_type, entity_id, version
-        );
+        match result {
+            SyncUpdateResult::Applied => {
+                info!(
+                    "Applied sync update for {:?} {} to version {}",
+                    entity_type, entity_id, version
+                );
+            }
+            SyncUpdateResult::Conflict {
+                existing_version,
+                existing_timestamp,
+                existing_node,
+                incoming_version,
+                incoming_timestamp,
+                incoming_node,
+            } => {
+                warn!(
+                    "Conflict detected for {:?} {}: local v{} ({}), remote v{} ({})",
+                    entity_type, entity_id, existing_version, existing_node, incoming_version, incoming_node
+                );
+
+                // Resolve conflict based on entity's conflict strategy
+                let strategy = entity_type.conflict_strategy();
+                let resolution_result = self.resolve_conflict(
+                    entity_type,
+                    entity_id,
+                    existing_version,
+                    existing_timestamp,
+                    &existing_node,
+                    incoming_version,
+                    incoming_timestamp,
+                    &incoming_node,
+                    data,
+                    strategy,
+                ).await?;
+
+                // Record conflict to database
+                if let Err(e) = self.sqlite_store.insert_sync_conflict(
+                    entity_type,
+                    entity_id,
+                    existing_version,
+                    existing_timestamp,
+                    &existing_node,
+                    incoming_version,
+                    incoming_timestamp,
+                    &incoming_node,
+                    &format!("{:?}", strategy),
+                    Some(resolution_result),
+                ) {
+                    error!("Failed to record conflict: {}", e);
+                }
+            }
+        }
 
         Ok(())
+    }
+
+    /// Resolve a sync conflict based on the conflict strategy.
+    async fn resolve_conflict(
+        &self,
+        entity_type: EntityType,
+        entity_id: &str,
+        local_version: u64,
+        local_timestamp: i64,
+        local_node: &str,
+        remote_version: u64,
+        remote_timestamp: i64,
+        remote_node: &str,
+        remote_data: &[u8],
+        strategy: ConflictStrategy,
+    ) -> Result<String, String> {
+        match strategy {
+            ConflictStrategy::PrimaryWins => {
+                // Primary node (Osaka) always wins
+                if self.is_primary {
+                    Ok(format!(
+                        "Primary node wins: kept local version {} over remote version {}",
+                        local_version, remote_version
+                    ))
+                } else if remote_node == "osaka" {
+                    // Remote is primary, accept remote update
+                    self.sqlite_store
+                        .update_entity_from_sync(
+                            entity_type,
+                            entity_id,
+                            remote_data,
+                            remote_version,
+                            remote_timestamp,
+                            remote_node,
+                        )
+                        .map_err(|e| format!("Failed to apply primary's update: {}", e))?;
+                    
+                    Ok(format!(
+                        "Primary node wins: accepted remote version {} from primary over local version {}",
+                        remote_version, local_version
+                    ))
+                } else {
+                    // Neither is primary, keep local
+                    Ok(format!(
+                        "Primary wins strategy but neither is primary: kept local version {}",
+                        local_version
+                    ))
+                }
+            }
+            ConflictStrategy::LastWriteWins => {
+                // Compare timestamps, newer wins
+                if remote_timestamp > local_timestamp {
+                    // Remote is newer, apply it
+                    self.sqlite_store
+                        .update_entity_from_sync(
+                            entity_type,
+                            entity_id,
+                            remote_data,
+                            remote_version,
+                            remote_timestamp,
+                            remote_node,
+                        )
+                        .map_err(|e| format!("Failed to apply remote update: {}", e))?;
+                    
+                    Ok(format!(
+                        "Last write wins: applied remote version {} (ts: {}) over local version {} (ts: {})",
+                        remote_version, remote_timestamp, local_version, local_timestamp
+                    ))
+                } else {
+                    Ok(format!(
+                        "Last write wins: kept local version {} (ts: {}) over remote version {} (ts: {})",
+                        local_version, local_timestamp, remote_version, remote_timestamp
+                    ))
+                }
+            }
+            ConflictStrategy::Merge => {
+                // For append-only entities (Trade, Liquidation), both can coexist
+                // Just insert if not exists (INSERT OR IGNORE handles this)
+                self.sqlite_store
+                    .update_entity_from_sync(
+                        entity_type,
+                        entity_id,
+                        remote_data,
+                        remote_version,
+                        remote_timestamp,
+                        remote_node,
+                    )
+                    .map_err(|e| format!("Failed to merge: {}", e))?;
+                
+                Ok(format!(
+                    "Merge strategy: attempted to insert remote version {} alongside local version {}",
+                    remote_version, local_version
+                ))
+            }
+            ConflictStrategy::Reject => {
+                // Reject remote update, keep local
+                Ok(format!(
+                    "Reject strategy: rejected remote version {} in favor of local version {}",
+                    remote_version, local_version
+                ))
+            }
+        }
     }
 
     /// Calculate SHA256 checksum of data.

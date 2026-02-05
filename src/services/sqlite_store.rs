@@ -3300,11 +3300,53 @@ impl SqliteStore {
         version: u64,
         timestamp: i64,
         node_id: &str,
-    ) -> Result<(), rusqlite::Error> {
-        use crate::types::EntityType;
+    ) -> Result<crate::types::SyncUpdateResult, rusqlite::Error> {
+        use crate::types::{EntityType, SyncUpdateResult, ConsistencyModel};
         
         let conn = self.conn.lock().unwrap();
+        let table = entity_type.table_name();
+        let consistency = entity_type.consistency_model();
         
+        // Check existing version for conflict detection
+        let existing = conn.query_row(
+            &format!("SELECT version, last_modified_at, last_modified_by FROM {} WHERE id = ?1", table),
+            params![entity_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
+        ).optional()?;
+        
+        // Detect conflicts
+        if let Some((existing_version, existing_timestamp, existing_node)) = existing {
+            let existing_version = existing_version as u64;
+            
+            // For strong consistency, require version to be sequential
+            if consistency == ConsistencyModel::Strong {
+                if version <= existing_version {
+                    // Version conflict detected
+                    return Ok(SyncUpdateResult::Conflict {
+                        existing_version,
+                        existing_timestamp,
+                        existing_node,
+                        incoming_version: version,
+                        incoming_timestamp: timestamp,
+                        incoming_node: node_id.to_string(),
+                    });
+                }
+            } else {
+                // For eventual consistency, still detect version conflicts
+                if version != existing_version + 1 && version <= existing_version {
+                    return Ok(SyncUpdateResult::Conflict {
+                        existing_version,
+                        existing_timestamp,
+                        existing_node,
+                        incoming_version: version,
+                        incoming_timestamp: timestamp,
+                        incoming_node: node_id.to_string(),
+                    });
+                }
+            }
+        }
+        
+        //  Apply update based on entity type
         match entity_type {
             EntityType::Portfolio => {
                 let portfolio: crate::types::Portfolio = serde_json::from_slice(data)
@@ -3348,7 +3390,7 @@ impl SqliteStore {
                         node_id,
                     ],
                 )?;
-                Ok(())
+                Ok(SyncUpdateResult::Applied)
             }
             EntityType::Order => {
                 let order: crate::types::Order = serde_json::from_slice(data)
@@ -3398,7 +3440,7 @@ impl SqliteStore {
                         node_id,
                     ],
                 )?;
-                Ok(())
+                Ok(SyncUpdateResult::Applied)
             }
             EntityType::Trade => {
                 let trade: crate::types::Trade = serde_json::from_slice(data)
@@ -3431,7 +3473,7 @@ impl SqliteStore {
                         node_id,
                     ],
                 )?;
-                Ok(())
+                Ok(SyncUpdateResult::Applied)
             }
             EntityType::Position => {
                 let position: crate::types::Position = serde_json::from_slice(data)
@@ -3476,7 +3518,7 @@ impl SqliteStore {
                         node_id,
                     ],
                 )?;
-                Ok(())
+                Ok(SyncUpdateResult::Applied)
             }
             EntityType::Liquidation => {
                 let liquidation: crate::types::Liquidation = serde_json::from_slice(data)
@@ -3508,11 +3550,56 @@ impl SqliteStore {
                         node_id,
                     ],
                 )?;
-                Ok(())
+                Ok(SyncUpdateResult::Applied)
             }
             // For other entity types, do nothing for now
-            _ => Ok(()),
+            _ => Ok(SyncUpdateResult::Applied),
         }
+    }
+
+    /// Record a sync conflict to the database.
+    pub fn insert_sync_conflict(
+        &self,
+        entity_type: crate::types::EntityType,
+        entity_id: &str,
+        local_version: u64,
+        local_timestamp: i64,
+        local_node: &str,
+        remote_version: u64,
+        remote_timestamp: i64,
+        remote_node: &str,
+        resolution_strategy: &str,
+        resolution_reason: Option<String>,
+    ) -> Result<String, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let conflict_id = uuid::Uuid::new_v4().to_string();
+        let detected_at = chrono::Utc::now().timestamp_millis();
+        
+        conn.execute(
+            "INSERT INTO sync_conflicts (
+                id, entity_type, entity_id,
+                local_version, local_timestamp, local_node,
+                remote_version, remote_timestamp, remote_node,
+                resolution_strategy, resolution_reason,
+                detected_at, resolved_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL)",
+            params![
+                conflict_id,
+                format!("{:?}", entity_type).to_lowercase(),
+                entity_id,
+                local_version as i64,
+                local_timestamp,
+                local_node,
+                remote_version as i64,
+                remote_timestamp,
+                remote_node,
+                resolution_strategy,
+                resolution_reason,
+                detected_at,
+            ],
+        )?;
+        
+        Ok(conflict_id)
     }
 
     /// Increment entity version (call after any entity modification).

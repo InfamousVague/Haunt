@@ -293,6 +293,22 @@ pub struct SyncConflict {
     pub resolution_reason: Option<String>,
 }
 
+/// Result of applying a sync update (may detect conflict).
+#[derive(Debug, Clone)]
+pub enum SyncUpdateResult {
+    /// Update applied successfully
+    Applied,
+    /// Conflict detected - needs resolution
+    Conflict {
+        existing_version: u64,
+        existing_timestamp: i64,
+        existing_node: String,
+        incoming_version: u64,
+        incoming_timestamp: i64,
+        incoming_node: String,
+    },
+}
+
 /// Node metrics for analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
