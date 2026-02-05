@@ -852,7 +852,9 @@ impl PriceCache {
                 let data = entry.value();
                 let price = data.last_aggregated?;
                 // Mock change for now (in real impl, track 24h ago price)
-                let change = (rand::random::<f64>() - 0.5) * 10.0; // -5% to +5%
+                // Use symbol hash to generate consistent but varied changes
+                let hash = symbol.bytes().map(|b| b as u64).sum::<u64>();
+                let change = ((hash % 1000) as f64 / 100.0) - 5.0; // -5% to +5%
                 Some((symbol, price, change))
             })
             .collect();

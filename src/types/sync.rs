@@ -72,6 +72,54 @@ impl EntityType {
                 | EntityType::PredictionHistory
         )
     }
+
+    /// Get the consistency model for this entity type.
+    pub fn consistency_model(&self) -> ConsistencyModel {
+        match self {
+            // Strong consistency for critical trading entities
+            EntityType::Order => ConsistencyModel::Strong,
+            EntityType::Position => ConsistencyModel::Strong,
+            EntityType::Portfolio => ConsistencyModel::Strong,
+            EntityType::OptionsPosition => ConsistencyModel::Strong,
+            EntityType::InsuranceFund => ConsistencyModel::Strong,
+            
+            // Eventual consistency for everything else
+            EntityType::Trade => ConsistencyModel::Eventual,
+            EntityType::Strategy => ConsistencyModel::Eventual,
+            EntityType::FundingPayment => ConsistencyModel::Eventual,
+            EntityType::Liquidation => ConsistencyModel::Eventual,
+            EntityType::MarginHistory => ConsistencyModel::Eventual,
+            EntityType::PortfolioSnapshot => ConsistencyModel::Eventual,
+            EntityType::Profile => ConsistencyModel::Eventual,
+            EntityType::PredictionHistory => ConsistencyModel::Eventual,
+        }
+    }
+
+    /// Get the conflict resolution strategy for this entity type.
+    pub fn conflict_strategy(&self) -> ConflictStrategy {
+        match self {
+            // Append-only entities use merge strategy
+            EntityType::Trade
+            | EntityType::FundingPayment
+            | EntityType::Liquidation
+            | EntityType::MarginHistory
+            | EntityType::PortfolioSnapshot
+            | EntityType::PredictionHistory => ConflictStrategy::Merge,
+            
+            // Critical entities use primary node for conflict resolution
+            EntityType::Order
+            | EntityType::Position
+            | EntityType::InsuranceFund => ConflictStrategy::PrimaryWins,
+            
+            // Portfolio and OptionsPosition use last-write-wins
+            EntityType::Portfolio
+            | EntityType::OptionsPosition => ConflictStrategy::LastWriteWins,
+            
+            // Lower priority entities use last-write-wins
+            EntityType::Strategy
+            | EntityType::Profile => ConflictStrategy::LastWriteWins,
+        }
+    }
 }
 
 /// Sync operation type.
@@ -81,6 +129,30 @@ pub enum SyncOperation {
     Insert,
     Update,
     Delete,
+}
+
+/// Consistency model for entity synchronization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistencyModel {
+    /// Strong consistency - updates must be applied in order with version checking
+    Strong,
+    /// Eventual consistency - updates can be applied out of order, conflicts resolved later
+    Eventual,
+}
+
+/// Conflict resolution strategy for entity type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictStrategy {
+    /// Primary node wins (Osaka decides)
+    PrimaryWins,
+    /// Last write wins based on timestamp
+    LastWriteWins,
+    /// Reject conflicting writes, keep existing
+    Reject,
+    /// Merge fields (for append-only entities)
+    Merge,
 }
 
 /// Sync messages exchanged between nodes.
@@ -218,6 +290,7 @@ pub struct SyncConflict {
     pub resolved_at: Option<i64>,
     pub resolution_strategy: Option<String>,
     pub winner_node: Option<String>,
+    pub resolution_reason: Option<String>,
 }
 
 /// Node metrics for analytics.
