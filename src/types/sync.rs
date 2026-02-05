@@ -243,6 +243,51 @@ pub enum SyncMessage {
         checksum: String,
         version: u64,
     },
+
+    /// Batch update - multiple entities in one message (Phase 3 optimization).
+    BatchUpdate {
+        updates: Vec<BatchUpdateItem>,
+        compression: Option<CompressionType>,
+    },
+
+    /// Delta update - only changed fields (Phase 3 optimization).
+    DeltaUpdate {
+        entity_type: EntityType,
+        entity_id: String,
+        version: u64,
+        timestamp: i64,
+        node_id: String,
+        changes: Vec<FieldChange>,
+    },
+}
+
+/// Single item in a batch update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchUpdateItem {
+    pub entity_type: EntityType,
+    pub entity_id: String,
+    pub version: u64,
+    pub timestamp: i64,
+    pub node_id: String,
+    pub checksum: String,
+    pub data: Vec<u8>,
+}
+
+/// Field change for delta sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldChange {
+    pub field: String,
+    pub old_value: Option<serde_json::Value>,
+    pub new_value: serde_json::Value,
+}
+
+/// Compression type for large payloads.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionType {
+    None,
+    Gzip,
+    Brotli,
 }
 
 /// Entity data for bulk sync.

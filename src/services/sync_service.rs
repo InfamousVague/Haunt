@@ -2,11 +2,15 @@
 
 use crate::services::{PeerMesh, SqliteStore};
 use crate::types::{
-    ConflictStrategy, EntityType, NodeMetrics, PeerMessage, SyncConflict, SyncMessage,
-    SyncOperation, SyncQueueItem, SyncState, SyncUpdateResult,
+    BatchUpdateItem, CompressionType, ConflictStrategy, EntityType, NodeMetrics, PeerMessage,
+    SyncConflict, SyncMessage, SyncOperation, SyncQueueItem, SyncState, SyncUpdateResult,
 };
 use dashmap::DashMap;
+use flate2::write::GzEncoder;
+use flate2::read::GzDecoder;
+use flate2::Compression;
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -154,8 +158,8 @@ impl SyncService {
         loop {
             interval.tick().await;
 
-            // Get pending sync items (limit 10 per batch)
-            let items = match self.sqlite_store.get_pending_sync_items(10) {
+            // Get pending sync items (limit 50 for batching - Phase 3 optimization)
+            let items = match self.sqlite_store.get_pending_sync_items(50) {
                 Ok(items) => items,
                 Err(e) => {
                     error!("Failed to get pending sync items: {}", e);
@@ -169,22 +173,126 @@ impl SyncService {
 
             debug!("Processing {} pending sync items", items.len());
 
-            for item in items {
-                if let Err(e) = self.process_sync_item(&item).await {
-                    error!(
-                        "Failed to process sync item {:?} {}: {}",
-                        item.entity_type, item.entity_id, e
-                    );
-
-                    // Update retry count
-                    let _ = self.sqlite_store.update_sync_queue_item_error(
-                        &item.id,
-                        &e,
-                        item.retry_count + 1,
-                    );
+            // Phase 3: Batch processing - collect items for batching
+            if items.len() > 5 {
+                // Use batch update for efficiency
+                if let Err(e) = self.process_sync_batch(&items).await {
+                    error!("Failed to process sync batch: {}", e);
+                    // Fall back to individual processing on error
+                    for item in items {
+                        if let Err(e) = self.process_sync_item(&item).await {
+                            error!(
+                                "Failed to process sync item {:?} {}: {}",
+                                item.entity_type, item.entity_id, e
+                            );
+                            let _ = self.sqlite_store.update_sync_queue_item_error(
+                                &item.id,
+                                &e,
+                                item.retry_count + 1,
+                            );
+                        }
+                    }
+                }
+            } else {
+                // Process individually for small batches
+                for item in items {
+                    if let Err(e) = self.process_sync_item(&item).await {
+                        error!(
+                            "Failed to process sync item {:?} {}: {}",
+                            item.entity_type, item.entity_id, e
+                        );
+                        let _ = self.sqlite_store.update_sync_queue_item_error(
+                            &item.id,
+                            &e,
+                            item.retry_count + 1,
+                        );
+                    }
                 }
             }
         }
+    }
+
+    /// Process multiple sync items as a batch (Phase 3 optimization).
+    async fn process_sync_batch(&self, items: &[SyncQueueItem]) -> Result<(), String> {
+        let mut batch_items = Vec::new();
+        let mut completed_ids = Vec::new();
+
+        for item in items {
+            // Get entity data
+            let data = match self
+                .sqlite_store
+                .get_entity_data(item.entity_type, &item.entity_id)
+            {
+                Ok(d) if !d.is_empty() => d,
+                _ => {
+                    // Skip missing entities
+                    if matches!(item.operation, SyncOperation::Delete) {
+                        completed_ids.push(item.id.clone());
+                    }
+                    continue;
+                }
+            };
+
+            // Get version and timestamp
+            let (version, timestamp) = self
+                .sqlite_store
+                .get_entity_version(item.entity_type, &item.entity_id)
+                .map_err(|e| format!("Failed to get entity version: {}", e))?
+                .unwrap_or((1u64, chrono::Utc::now().timestamp_millis()));
+
+            // Calculate checksum
+            let checksum = Self::calculate_checksum(&data);
+
+            batch_items.push(BatchUpdateItem {
+                entity_type: item.entity_type,
+                entity_id: item.entity_id.clone(),
+                version,
+                timestamp,
+                node_id: self.node_id.clone(),
+                checksum,
+                data,
+            });
+
+            completed_ids.push(item.id.clone());
+        }
+
+        if batch_items.is_empty() {
+            return Ok(());
+        }
+
+        // Determine if we should compress the batch
+        let total_size: usize = batch_items.iter().map(|item| item.data.len()).sum();
+        let compression = if total_size > 10240 {
+            // Compress if batch is > 10KB
+            Some(CompressionType::Gzip)
+        } else {
+            Some(CompressionType::None)
+        };
+
+        // Create batch update message
+        let sync_msg = SyncMessage::BatchUpdate {
+            updates: batch_items.clone(),
+            compression,
+        };
+
+        // Broadcast to all nodes
+        self.broadcast_sync_message(sync_msg, None).await?;
+
+        // Mark all as completed
+        for id in completed_ids {
+            self.sqlite_store
+                .complete_sync_queue_item(&id)
+                .map_err(|e| format!("Failed to complete sync item: {}", e))?;
+        }
+
+        // Update metrics
+        let mut metrics = self.metrics.write().await;
+        metrics.synced_entities_1m += batch_items.len() as u32;
+        metrics.last_sync_time = Some(chrono::Utc::now().timestamp_millis());
+
+        info!("Processed batch sync of {} entities", batch_items.len());
+
+        Ok(())
     }
 
     /// Process a single sync item.
@@ -389,6 +497,73 @@ impl SyncService {
                     node_id, sync_lag_ms, pending_syncs, error_count
                 );
             }
+            SyncMessage::BatchUpdate { updates, compression } => {
+                // Phase 3: Handle batch updates
+                info!("Received batch update with {} entities (compression: {:?})", updates.len(), compression);
+                
+                let mut successful = 0;
+                let mut failed = 0;
+
+                for item in updates {
+                    // Decompress if needed
+                    let data = if matches!(compression, Some(CompressionType::Gzip)) {
+                        match Self::decompress_gzip(&item.data) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                warn!("Failed to decompress data for {:?} {}: {}", item.entity_type, item.entity_id, e);
+                                failed += 1;
+                                continue;
+                            }
+                        }
+                    } else {
+                        item.data.clone()
+                    };
+
+                    // Verify checksum
+                    let calculated_checksum = Self::calculate_checksum(&data);
+                    if item.checksum != calculated_checksum {
+                        warn!("Checksum mismatch for {:?} {}", item.entity_type, item.entity_id);
+                        failed += 1;
+                        continue;
+                    }
+
+                    // Check version and apply update
+                    if let Ok(Some((local_version, _))) =
+                        self.sqlite_store.get_entity_version(item.entity_type, &item.entity_id)
+                    {
+                        if local_version >= item.version {
+                            // Skip outdated update
+                            debug!(
+                                "Skipping batch item {:?} {} (local {} >= remote {})",
+                                item.entity_type, item.entity_id, local_version, item.version
+                            );
+                            continue;
+                        }
+                    }
+
+                    // Apply update
+                    match self.apply_sync_update(
+                        item.entity_type,
+                        &item.entity_id,
+                        item.version,
+                        item.timestamp,
+                        &item.node_id,
+                        &data,
+                    ).await {
+                        Ok(_) => successful += 1,
+                        Err(e) => {
+                            warn!("Failed to apply batch update for {:?} {}: {}", item.entity_type, item.entity_id, e);
+                            failed += 1;
+                        }
+                    }
+                }
+
+                info!("Batch update complete: {} successful, {} failed", successful, failed);
+            }
+            SyncMessage::DeltaUpdate { .. } => {
+                // Phase 3: Delta updates (future optimization)
+                debug!("Delta update received (not yet implemented)");
+            }
             _ => {
                 debug!("Unhandled sync message type");
             }
@@ -568,6 +743,32 @@ impl SyncService {
                 ))
             }
         }
+    }
+
+    /// Compress data using gzip.
+    fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(data)
+            .map_err(|e| format!("Compression failed: {}", e))?;
+        encoder
+            .finish()
+            .map_err(|e| format!("Compression finalization failed: {}", e))
+    }
+
+    /// Decompress gzip data.
+    fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut decoder = GzDecoder::new(data);
+        let mut decompressed = Vec::new();
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| format!("Decompression failed: {}", e))?;
+        Ok(decompressed)
+    }
+
+    /// Determine if data should be compressed (> 1KB).
+    fn should_compress(data: &[u8]) -> bool {
+        data.len() > 1024
     }
 
     /// Calculate SHA256 checksum of data.

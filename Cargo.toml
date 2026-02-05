@@ -58,12 +58,16 @@ rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 
+# Compression for Phase 3 sync optimizations
+flate2 = "1.0"
+
 # Terminal UI
 ratatui = "0.26"
 crossterm = "0.27"
 
 [dev-dependencies]
 tokio-test = "0.4"
+serde_urlencoded = "0.7"
 
 [profile.release]
 lto = true
