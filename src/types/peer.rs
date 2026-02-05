@@ -142,6 +142,13 @@ pub enum PeerMessage {
     },
     /// Request peer list from a connected server (gossip protocol).
     RequestPeers,
+    /// Sync data message (distributed data synchronization).
+    SyncData {
+        /// Source node ID.
+        from_id: String,
+        /// Serialized sync message (JSON).
+        data: String,
+    },
 }
 
 #[cfg(test)]

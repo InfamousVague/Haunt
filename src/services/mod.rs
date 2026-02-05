@@ -18,6 +18,7 @@ pub mod redis_store;
 pub mod signals;
 pub mod sqlite_store;
 pub mod strategy_engine;
+pub mod sync_service;
 pub mod trading;
 
 pub use asset_service::AssetService;
@@ -38,6 +39,7 @@ pub use liquidation::{LiquidationEngine, LiquidationError};
 pub use signals::{AccuracyStore, PredictionStore, SignalStore};
 pub use sqlite_store::SqliteStore;
 pub use strategy_engine::{IndicatorSnapshot, StrategyEngine, StrategyError};
+pub use sync_service::SyncService;
 pub use backtester::{BacktestRunner, BacktestError};
 pub use liquidity_sim::{LiquiditySimulator, LiquiditySimConfig, MarketOrderSimulation, LimitOrderSimulation};
 pub use trading::{TradingError, TradingService};

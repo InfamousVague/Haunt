@@ -6,6 +6,7 @@ pub mod orderbook;
 pub mod peer;
 pub mod price;
 pub mod signals;
+pub mod sync;
 pub mod trading;
 pub mod ws;
 
@@ -17,5 +18,6 @@ pub use orderbook::*;
 pub use peer::*;
 pub use price::*;
 pub use signals::*;
+pub use sync::*;
 pub use trading::*;
 pub use ws::*;

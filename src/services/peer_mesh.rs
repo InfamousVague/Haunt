@@ -860,6 +860,11 @@ impl PeerMesh {
                 debug!("Received peer request from {}", peer_id);
                 // Response will be sent via the write channel
             }
+            PeerMessage::SyncData { from_id, data } => {
+                debug!("Received sync data from {} ({} bytes)", from_id, data.len());
+                // TODO: Forward to SyncService for processing
+                // For now, just log - actual handling will be implemented when SyncService is fully integrated
+            }
         }
     }
 }

@@ -510,7 +510,202 @@ impl SqliteStore {
             [],
         )?;
 
-        info!("SQLite schema initialized");
+        // ========== Data Sync Tables ==========
+
+        // Sync versions tracking table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_versions (
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                checksum TEXT NOT NULL,
+                PRIMARY KEY (entity_type, entity_id, node_id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_versions_entity ON sync_versions(entity_type, entity_id)",
+            [],
+        )?;
+
+        // Sync state table (single row)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_full_sync_at INTEGER NOT NULL DEFAULT 0,
+                last_incremental_sync_at INTEGER NOT NULL DEFAULT 0,
+                sync_cursor_position INTEGER NOT NULL DEFAULT 0,
+                pending_sync_count INTEGER NOT NULL DEFAULT 0,
+                failed_sync_count INTEGER NOT NULL DEFAULT 0,
+                total_synced_entities INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 1
+            )",
+            [],
+        )?;
+
+        // Initialize sync state if not exists
+        conn.execute(
+            "INSERT OR IGNORE INTO sync_state (id, last_full_sync_at, last_incremental_sync_at)
+             VALUES (1, 0, 0)",
+            [],
+        )?;
+
+        // Sync queue table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_queue (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 5,
+                target_nodes TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                scheduled_at INTEGER NOT NULL,
+                attempted_at INTEGER,
+                completed_at INTEGER,
+                error TEXT
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_queue_scheduled ON sync_queue(scheduled_at)
+             WHERE completed_at IS NULL",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_queue_priority ON sync_queue(priority DESC, scheduled_at)
+             WHERE completed_at IS NULL",
+            [],
+        )?;
+
+        // Sync conflicts table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_conflicts (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                node_a TEXT NOT NULL,
+                version_a INTEGER NOT NULL,
+                data_a BLOB NOT NULL,
+                timestamp_a INTEGER NOT NULL,
+                node_b TEXT NOT NULL,
+                version_b INTEGER NOT NULL,
+                data_b BLOB NOT NULL,
+                timestamp_b INTEGER NOT NULL,
+                detected_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                resolution_strategy TEXT,
+                winner_node TEXT
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_entity ON sync_conflicts(entity_type, entity_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved ON sync_conflicts(detected_at)
+             WHERE resolved_at IS NULL",
+            [],
+        )?;
+
+        // Node metrics table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS node_metrics (
+                id TEXT PRIMARY KEY,
+                node_id TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                sync_lag_ms INTEGER NOT NULL,
+                pending_sync_count INTEGER NOT NULL,
+                synced_entities_1m INTEGER NOT NULL,
+                sync_errors_1m INTEGER NOT NULL,
+                sync_throughput_mbps REAL NOT NULL,
+                db_size_mb REAL NOT NULL,
+                db_row_count INTEGER NOT NULL,
+                db_write_rate REAL NOT NULL,
+                db_read_rate REAL NOT NULL,
+                cpu_usage_pct REAL,
+                memory_usage_mb REAL,
+                disk_usage_pct REAL,
+                network_rx_mbps REAL,
+                network_tx_mbps REAL,
+                active_users INTEGER NOT NULL,
+                active_portfolios INTEGER NOT NULL,
+                open_orders INTEGER NOT NULL,
+                open_positions INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_node_metrics_node_time ON node_metrics(node_id, timestamp DESC)",
+            [],
+        )?;
+
+        // ========== Add Sync Columns to Existing Tables ==========
+
+        // Add version tracking columns (migrations for existing databases)
+        // These may fail if columns already exist, which is fine
+        
+        let _ = conn.execute("ALTER TABLE profiles ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE profiles ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE profiles ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE portfolios ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE portfolios ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE portfolios ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE orders ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE orders ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE orders ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE positions ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE positions ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE positions ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE trades ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE trades ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE trades ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE options_positions ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE options_positions ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE options_positions ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE strategies ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE strategies ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE strategies ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE funding_payments ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE funding_payments ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE funding_payments ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE liquidations ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE liquidations ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE liquidations ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE margin_history ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE margin_history ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE margin_history ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE portfolio_snapshots ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE portfolio_snapshots ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE portfolio_snapshots ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        let _ = conn.execute("ALTER TABLE insurance_fund ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE insurance_fund ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE insurance_fund ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT 'osaka'", []);
+
+        let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN version INTEGER NOT NULL DEFAULT 1", []);
+        let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN last_modified_at INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE prediction_history ADD COLUMN last_modified_by TEXT NOT NULL DEFAULT ''", []);
+
+        info!("SQLite schema initialized with sync tables");
         Ok(())
     }
 
@@ -2797,6 +2992,319 @@ impl SqliteStore {
             _ => None,
         }
     }
+
+    // ========== Data Sync Methods ==========
+
+    /// Get sync state.
+    pub fn get_sync_state(&self) -> Option<crate::types::SyncState> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.query_row(
+            "SELECT last_full_sync_at, last_incremental_sync_at, sync_cursor_position,
+                    pending_sync_count, failed_sync_count, total_synced_entities, sync_enabled
+             FROM sync_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(crate::types::SyncState {
+                    last_full_sync_at: row.get(0)?,
+                    last_incremental_sync_at: row.get(1)?,
+                    sync_cursor_position: row.get(2)?,
+                    pending_sync_count: row.get(3)?,
+                    failed_sync_count: row.get(4)?,
+                    total_synced_entities: row.get(5)?,
+                    sync_enabled: row.get::<_, i64>(6)? != 0,
+                })
+            },
+        ).ok()
+    }
+
+    /// Update sync state.
+    pub fn update_sync_state(&self, state: &crate::types::SyncState) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.execute(
+            "UPDATE sync_state SET
+                last_full_sync_at = ?1,
+                last_incremental_sync_at = ?2,
+                sync_cursor_position = ?3,
+                pending_sync_count = ?4,
+                failed_sync_count = ?5,
+                total_synced_entities = ?6,
+                sync_enabled = ?7
+             WHERE id = 1",
+            params![
+                state.last_full_sync_at,
+                state.last_incremental_sync_at,
+                state.sync_cursor_position,
+                state.pending_sync_count,
+                state.failed_sync_count,
+                state.total_synced_entities,
+                if state.sync_enabled { 1 } else { 0 },
+            ],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Insert sync queue item.
+    pub fn insert_sync_queue_item(&self, item: &crate::types::SyncQueueItem) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        let target_nodes_json = item.target_nodes.as_ref()
+            .map(|nodes| serde_json::to_string(nodes).unwrap_or_default());
+        
+        conn.execute(
+            "INSERT INTO sync_queue (
+                id, entity_type, entity_id, operation, priority, target_nodes,
+                retry_count, created_at, scheduled_at, attempted_at, completed_at, error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                item.id,
+                format!("{:?}", item.entity_type).to_lowercase(),
+                item.entity_id,
+                format!("{:?}", item.operation).to_lowercase(),
+                item.priority,
+                target_nodes_json,
+                item.retry_count,
+                item.created_at,
+                item.scheduled_at,
+                item.attempted_at,
+                item.completed_at,
+                item.error,
+            ],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Get pending sync queue items.
+    pub fn get_pending_sync_items(&self, limit: u32) -> Result<Vec<crate::types::SyncQueueItem>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, entity_type, entity_id, operation, priority, target_nodes,
+                    retry_count, created_at, scheduled_at, attempted_at, completed_at, error
+             FROM sync_queue
+             WHERE completed_at IS NULL AND retry_count < 5
+             ORDER BY priority ASC, scheduled_at ASC
+             LIMIT ?1"
+        )?;
+        
+        let items = stmt.query_map(params![limit], |row| {
+            let entity_type_str: String = row.get(1)?;
+            let operation_str: String = row.get(3)?;
+            let target_nodes_json: Option<String> = row.get(5)?;
+            
+            let entity_type = parse_entity_type(&entity_type_str);
+            let operation = parse_sync_operation(&operation_str);
+            let target_nodes = target_nodes_json.and_then(|json| serde_json::from_str(&json).ok());
+            
+            Ok(crate::types::SyncQueueItem {
+                id: row.get(0)?,
+                entity_type,
+                entity_id: row.get(2)?,
+                operation,
+                priority: row.get(4)?,
+                target_nodes,
+                retry_count: row.get(6)?,
+                created_at: row.get(7)?,
+                scheduled_at: row.get(8)?,
+                attempted_at: row.get(9)?,
+                completed_at: row.get(10)?,
+                error: row.get(11)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+        
+        Ok(items)
+    }
+
+    /// Complete sync queue item.
+    pub fn complete_sync_queue_item(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.execute(
+            "UPDATE sync_queue SET completed_at = ?1 WHERE id = ?2",
+            params![chrono::Utc::now().timestamp_millis(), id],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Update sync queue item error.
+    pub fn update_sync_queue_item_error(&self, id: &str, error: &str, retry_count: u32) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.execute(
+            "UPDATE sync_queue SET error = ?1, retry_count = ?2, attempted_at = ?3 WHERE id = ?4",
+            params![error, retry_count, chrono::Utc::now().timestamp_millis(), id],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Record sync version.
+    pub fn record_sync_version(
+        &self,
+        entity_type: crate::types::EntityType,
+        entity_id: &str,
+        node_id: &str,
+        version: u64,
+        timestamp: i64,
+        checksum: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_versions (entity_type, entity_id, node_id, version, timestamp, checksum)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                format!("{:?}", entity_type).to_lowercase(),
+                entity_id,
+                node_id,
+                version as i64,
+                timestamp,
+                checksum,
+            ],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Get entity version and timestamp.
+    pub fn get_entity_version(&self, entity_type: crate::types::EntityType, entity_id: &str) -> Result<Option<(u64, i64)>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let table = entity_type.table_name();
+        
+        let query = format!("SELECT version, last_modified_at FROM {} WHERE id = ?1", table);
+        
+        match conn.query_row(&query, params![entity_id], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
+        }) {
+            Ok(version) => Ok(Some(version)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get entity data as JSON bytes.
+    pub fn get_entity_data(&self, entity_type: crate::types::EntityType, entity_id: &str) -> Result<Vec<u8>, rusqlite::Error> {
+        // For now, return empty vec - in production this would serialize the actual entity
+        // TODO: Implement proper entity serialization for each type
+        Ok(Vec::new())
+    }
+
+    /// Update entity from sync data.
+    pub fn update_entity_from_sync(
+        &self,
+        _entity_type: crate::types::EntityType,
+        _entity_id: &str,
+        _data: &[u8],
+        _version: u64,
+        _timestamp: i64,
+        _node_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        // TODO: Implement proper entity deserialization and update for each type
+        Ok(())
+    }
+
+    /// Insert node metrics.
+    pub fn insert_node_metrics(&self, metrics: &crate::types::NodeMetrics) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        conn.execute(
+            "INSERT INTO node_metrics (
+                id, node_id, timestamp, sync_lag_ms, pending_sync_count,
+                synced_entities_1m, sync_errors_1m, sync_throughput_mbps,
+                db_size_mb, db_row_count, db_write_rate, db_read_rate,
+                cpu_usage_pct, memory_usage_mb, disk_usage_pct,
+                network_rx_mbps, network_tx_mbps,
+                active_users, active_portfolios, open_orders, open_positions
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            params![
+                metrics.id,
+                metrics.node_id,
+                metrics.timestamp,
+                metrics.sync_lag_ms,
+                metrics.pending_sync_count,
+                metrics.synced_entities_1m,
+                metrics.sync_errors_1m,
+                metrics.sync_throughput_mbps,
+                metrics.db_size_mb,
+                metrics.db_row_count,
+                metrics.db_write_rate,
+                metrics.db_read_rate,
+                metrics.cpu_usage_pct,
+                metrics.memory_usage_mb,
+                metrics.disk_usage_pct,
+                metrics.network_rx_mbps,
+                metrics.network_tx_mbps,
+                metrics.active_users,
+                metrics.active_portfolios,
+                metrics.open_orders,
+                metrics.open_positions,
+            ],
+        )?;
+        
+        Ok(())
+    }
+
+    /// Get database stats.
+    pub fn get_database_stats(&self) -> Result<(f64, u32), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        // Get page count and page size to calculate DB size
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        let db_size_mb = (page_count * page_size) as f64 / (1024.0 * 1024.0);
+        
+        // Count total rows across all tables
+        let mut row_count = 0u32;
+        let tables = vec![
+            "profiles", "portfolios", "orders", "positions", "trades",
+            "options_positions", "strategies", "funding_payments", "liquidations",
+            "margin_history", "portfolio_snapshots", "prediction_history"
+        ];
+        
+        for table in tables {
+            let count: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM {}", table),
+                [],
+                |row| row.get(0)
+            ).unwrap_or(0);
+            row_count += count as u32;
+        }
+        
+        Ok((db_size_mb, row_count))
+    }
+
+    /// Get active counts (portfolios, orders, positions).
+    pub fn get_active_counts(&self) -> Result<(u32, u32, u32), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        let active_portfolios: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM portfolios",
+            [],
+            |row| row.get(0)
+        )?;
+        
+        let open_orders: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'open', 'partially_filled')",
+            [],
+            |row| row.get(0)
+        )?;
+        
+        let open_positions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM positions WHERE closed_at IS NULL",
+            [],
+            |row| row.get(0)
+        )?;
+        
+        Ok((
+            active_portfolios as u32,
+            open_orders as u32,
+            open_positions as u32,
+        ))
+    }
 }
 
 // ========== Parsing Helpers for Trading Types ==========
@@ -2928,6 +3436,34 @@ fn parse_backtest_status(s: &str) -> crate::types::BacktestStatus {
         "failed" => crate::types::BacktestStatus::Failed,
         "cancelled" => crate::types::BacktestStatus::Cancelled,
         _ => crate::types::BacktestStatus::Pending,
+    }
+}
+
+fn parse_entity_type(s: &str) -> crate::types::EntityType {
+    match s {
+        "profile" => crate::types::EntityType::Profile,
+        "portfolio" => crate::types::EntityType::Portfolio,
+        "order" => crate::types::EntityType::Order,
+        "position" => crate::types::EntityType::Position,
+        "trade" => crate::types::EntityType::Trade,
+        "optionsposition" | "options_position" => crate::types::EntityType::OptionsPosition,
+        "strategy" => crate::types::EntityType::Strategy,
+        "fundingpayment" | "funding_payment" => crate::types::EntityType::FundingPayment,
+        "liquidation" => crate::types::EntityType::Liquidation,
+        "marginhistory" | "margin_history" => crate::types::EntityType::MarginHistory,
+        "portfoliosnapshot" | "portfolio_snapshot" => crate::types::EntityType::PortfolioSnapshot,
+        "insurancefund" | "insurance_fund" => crate::types::EntityType::InsuranceFund,
+        "predictionhistory" | "prediction_history" => crate::types::EntityType::PredictionHistory,
+        _ => crate::types::EntityType::Portfolio, // Default fallback
+    }
+}
+
+fn parse_sync_operation(s: &str) -> crate::types::SyncOperation {
+    match s {
+        "insert" => crate::types::SyncOperation::Insert,
+        "update" => crate::types::SyncOperation::Update,
+        "delete" => crate::types::SyncOperation::Delete,
+        _ => crate::types::SyncOperation::Update, // Default fallback
     }
 }
 
