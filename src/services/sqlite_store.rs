@@ -1367,6 +1367,29 @@ impl SqliteStore {
             .unwrap_or_default()
     }
 
+    /// Get all portfolios (for leaderboard).
+    pub fn get_all_portfolios(&self) -> Vec<Portfolio> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, user_id, name, description, base_currency, starting_balance,
+                    cash_balance, margin_used, margin_available, unrealized_pnl, realized_pnl,
+                    total_value, cost_basis_method, risk_settings_json, is_competition,
+                    competition_id, created_at, updated_at, total_trades, winning_trades
+             FROM portfolios ORDER BY total_value DESC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing portfolio query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map(params![], |row| Self::row_to_portfolio(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
     /// Update a portfolio.
     pub fn update_portfolio(&self, portfolio: &Portfolio) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();

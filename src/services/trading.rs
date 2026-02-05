@@ -401,20 +401,21 @@ impl TradingService {
     ///
     /// Returns portfolios sorted by total return percentage, descending.
     /// Only includes portfolios where the user has opted in to the leaderboard.
+    /// Queries the database directly to ensure all portfolios are included.
     pub fn get_leaderboard(&self, limit: usize) -> Vec<LeaderboardEntry> {
-        let mut entries: Vec<LeaderboardEntry> = self
-            .portfolios
+        // Query all portfolios from database (not just in-memory cache)
+        let all_portfolios = self.sqlite.get_all_portfolios();
+
+        let mut entries: Vec<LeaderboardEntry> = all_portfolios
             .iter()
-            .filter(|r| {
-                let p = r.value();
+            .filter(|p| {
                 // Check if user has opted in to the leaderboard
                 self.sqlite
                     .get_profile(&p.user_id)
                     .map(|profile| profile.show_on_leaderboard)
                     .unwrap_or(false)
             })
-            .map(|r| {
-                let p = r.value();
+            .map(|p| {
                 let open_positions = self.sqlite.position_count(&p.id) as u32;
                 // Get display name from profile if available
                 let display_name = self.sqlite
