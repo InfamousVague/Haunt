@@ -376,9 +376,12 @@ async fn main() -> anyhow::Result<()> {
         sqlite_store,
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
-        trading_service,
+        trading_service: trading_service.clone(),
         bot_runner: bot_runner.clone(),
     };
+
+    // Keep a reference for the market simulation engine
+    let trading_service_for_sim = trading_service;
 
     // Start the price sources
     coordinator.start().await;
@@ -489,6 +492,47 @@ async fn main() -> anyhow::Result<()> {
                     debug!(
                         "Checked {} symbols - no predictions ready for validation",
                         symbol_count
+                    );
+                }
+            }
+        });
+    }
+
+    // Start market simulation engine - processes orders and updates positions
+    {
+        let trading_service = trading_service_for_sim.clone();
+        let chart_store = chart_store.clone();
+
+        tokio::spawn(async move {
+            // Initial delay to let system stabilize
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            info!("Market simulation engine started");
+
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(5));
+
+            loop {
+                ticker.tick().await;
+
+                // First, auto-fill any pending market orders that weren't executed
+                let filled = trading_service.auto_fill_pending_market_orders(|symbol| {
+                    chart_store.get_current_price(symbol)
+                });
+
+                if filled > 0 {
+                    info!("Auto-filled {} pending market orders", filled);
+                }
+
+                // Then process all active symbols for limit/stop orders and position updates
+                let (positions_updated, orders_triggered, positions_closed) =
+                    trading_service.process_all_market_ticks(|symbol| {
+                        chart_store.get_current_price(symbol)
+                    });
+
+                // Log activity only if something happened
+                if orders_triggered > 0 || positions_closed > 0 {
+                    info!(
+                        "Market tick: {} positions updated, {} orders triggered, {} positions closed",
+                        positions_updated, orders_triggered, positions_closed
                     );
                 }
             }

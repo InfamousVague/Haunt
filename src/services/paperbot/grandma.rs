@@ -345,6 +345,14 @@ impl TradingBot for GrandmaBot {
         ctx: &'a DecisionContext,
     ) -> Pin<Box<dyn Future<Output = Result<TradeDecision, AppError>> + Send + 'a>> {
         Box::pin(async move {
+            // Debug: Log what data is available for decision making
+            debug!(
+                "Grandma analyzing {}: price={:.2}, {}",
+                ctx.symbol,
+                ctx.current_price,
+                ctx.debug_data_availability()
+            );
+
             // Determine the decision first
             let decision: TradeDecision = if ctx.has_position() {
                 // Check if we have a position - analyze sell signals
@@ -360,8 +368,8 @@ impl TradingBot for GrandmaBot {
                 if !bearish_signals.is_empty() {
                     let confidence = self.calculate_confidence(&bearish_signals);
 
-                    // Grandma needs strong conviction to sell
-                    if confidence >= 0.5 || sell_reason == Some(SellReason::StopLoss) {
+                    // More aggressive: Lower sell confidence from 0.5 to 0.35
+                    if confidence >= 0.35 || sell_reason == Some(SellReason::StopLoss) {
                         let quantity = ctx.current_position.unwrap_or(0.0).abs();
 
                         info!(
@@ -379,6 +387,57 @@ impl TradingBot for GrandmaBot {
                             confidence,
                             signals: bearish_signals,
                             reason: sell_reason.unwrap_or(SellReason::Signal),
+                        }
+                    } else {
+                        debug!(
+                            "Grandma: {} bearish signals but confidence too low ({:.1}%)",
+                            ctx.symbol, confidence * 100.0
+                        );
+                        TradeDecision::Hold {
+                            symbol: ctx.symbol.clone(),
+                            reason: "Waiting patiently for better exit".to_string(),
+                        }
+                    }
+                }
+                // MOMENTUM FALLBACK for selling: Check momentum when we have a position but no indicators
+                else if !ctx.has_indicators() {
+                    let momentum = ctx.momentum_score();
+                    let pnl_pct = ctx.position_pnl_pct().unwrap_or(0.0);
+
+                    debug!(
+                        "Grandma: Position in {} with no indicators, momentum: {:.2}, PnL: {:.1}%",
+                        ctx.symbol, momentum, pnl_pct * 100.0
+                    );
+
+                    // Sell on strong bearish momentum OR when near 24h high with profit
+                    if momentum < -0.3 || (ctx.is_near_24h_high() && pnl_pct > 0.02) {
+                        let quantity = ctx.current_position.unwrap_or(0.0).abs();
+                        let confidence = (momentum.abs() * 0.5 + 0.3).min(0.7);
+
+                        let reason = if ctx.is_near_24h_high() && pnl_pct > 0.0 {
+                            SellReason::TakeProfit
+                        } else {
+                            SellReason::Signal
+                        };
+
+                        let signal = TradeSignal::bearish(
+                            SignalStrength::Moderate,
+                            confidence,
+                            "Momentum",
+                            &format!("Bearish momentum: {:.2}", momentum),
+                        );
+
+                        info!(
+                            "Grandma: SELL {} {} @ {:.2} (momentum fallback, reason: {:?})",
+                            quantity, ctx.symbol, ctx.current_price, reason
+                        );
+
+                        TradeDecision::Sell {
+                            symbol: ctx.symbol.clone(),
+                            quantity,
+                            confidence,
+                            signals: vec![signal],
+                            reason,
                         }
                     } else {
                         TradeDecision::Hold {
@@ -411,11 +470,12 @@ impl TradingBot for GrandmaBot {
 
                 let has_bearish_warning = signals.iter().any(|s| s.direction < 0.0);
 
+                // Check for traditional indicator-based signals
                 if !bullish_signals.is_empty() && !has_bearish_warning {
                     let confidence = self.calculate_confidence(&bullish_signals);
 
-                    // Grandma needs strong conviction to buy
-                    // Require at least golden cross or oversold + uptrend
+                    // More aggressive: Lower confidence threshold from 0.4 to 0.25
+                    // Also allow any bullish signal combination, not just golden cross
                     let has_golden_cross = bullish_signals
                         .iter()
                         .any(|s| s.source == "SMA Crossover" && s.strength.as_f64() >= 0.8);
@@ -425,7 +485,9 @@ impl TradingBot for GrandmaBot {
                         .any(|s| s.source == "RSI" && s.reason.contains("Oversold"))
                         && ctx.is_above_sma_long();
 
-                    if confidence >= 0.4 && (has_golden_cross || has_oversold_uptrend) {
+                    // More aggressive: Accept any bullish signals with confidence >= 0.25
+                    // OR the traditional golden cross / oversold conditions
+                    if confidence >= 0.25 || has_golden_cross || has_oversold_uptrend {
                         let quantity = self.calculate_position_size(ctx);
 
                         if quantity > 0.0 {
@@ -434,11 +496,12 @@ impl TradingBot for GrandmaBot {
                                 Some(ctx.current_price * (1.0 + self.config.take_profit_pct));
 
                             info!(
-                                "Grandma: BUY {} {} @ {:.2} (confidence: {:.1}%)",
+                                "Grandma: BUY {} {} @ {:.2} (confidence: {:.1}%, signals: {})",
                                 quantity,
                                 ctx.symbol,
                                 ctx.current_price,
-                                confidence * 100.0
+                                confidence * 100.0,
+                                bullish_signals.iter().map(|s| s.source.as_str()).collect::<Vec<_>>().join(", ")
                             );
 
                             TradeDecision::Buy {
@@ -450,18 +513,92 @@ impl TradingBot for GrandmaBot {
                                 take_profit,
                             }
                         } else {
+                            debug!("Grandma: Would buy {} but position size is 0", ctx.symbol);
                             TradeDecision::Hold {
                                 symbol: ctx.symbol.clone(),
                                 reason: "Grandma says: 'Patience is a virtue, dear.'".to_string(),
                             }
                         }
                     } else {
+                        debug!(
+                            "Grandma: {} bullish signals but confidence too low ({:.1}%)",
+                            ctx.symbol,
+                            confidence * 100.0
+                        );
+                        TradeDecision::Hold {
+                            symbol: ctx.symbol.clone(),
+                            reason: "Grandma says: 'Patience is a virtue, dear.'".to_string(),
+                        }
+                    }
+                }
+                // MOMENTUM FALLBACK: When indicators aren't available, use momentum-based trading
+                else if !ctx.has_indicators() {
+                    let momentum = ctx.momentum_score();
+                    debug!(
+                        "Grandma: No indicators for {}, using momentum fallback (score: {:.2})",
+                        ctx.symbol, momentum
+                    );
+
+                    // Buy on positive momentum when near 24h low
+                    if momentum > 0.2 || ctx.is_near_24h_low() {
+                        let confidence = (momentum.abs() * 0.5 + 0.3).min(0.7);
+                        let quantity = self.calculate_position_size(ctx);
+
+                        if quantity > 0.0 {
+                            let reason = if ctx.is_near_24h_low() {
+                                format!("Near 24h low with momentum {:.2}", momentum)
+                            } else {
+                                format!("Positive momentum: {:.2}", momentum)
+                            };
+
+                            let signal = TradeSignal::bullish(
+                                SignalStrength::Moderate,
+                                confidence,
+                                "Momentum",
+                                &reason,
+                            );
+
+                            let stop_loss = Some(ctx.current_price * (1.0 - self.config.stop_loss_pct));
+                            let take_profit =
+                                Some(ctx.current_price * (1.0 + self.config.take_profit_pct));
+
+                            info!(
+                                "Grandma: BUY {} {} @ {:.2} (momentum fallback, confidence: {:.1}%)",
+                                quantity,
+                                ctx.symbol,
+                                ctx.current_price,
+                                confidence * 100.0
+                            );
+
+                            TradeDecision::Buy {
+                                symbol: ctx.symbol.clone(),
+                                quantity,
+                                confidence,
+                                signals: vec![signal],
+                                stop_loss,
+                                take_profit,
+                            }
+                        } else {
+                            TradeDecision::Hold {
+                                symbol: ctx.symbol.clone(),
+                                reason: "Grandma says: 'Patience is a virtue, dear.'".to_string(),
+                            }
+                        }
+                    } else {
+                        debug!(
+                            "Grandma: {} momentum {:.2} not strong enough to buy",
+                            ctx.symbol, momentum
+                        );
                         TradeDecision::Hold {
                             symbol: ctx.symbol.clone(),
                             reason: "Grandma says: 'Patience is a virtue, dear.'".to_string(),
                         }
                     }
                 } else {
+                    debug!(
+                        "Grandma: No buy signals for {} (bearish warning: {})",
+                        ctx.symbol, has_bearish_warning
+                    );
                     TradeDecision::Hold {
                         symbol: ctx.symbol.clone(),
                         reason: "Grandma says: 'Patience is a virtue, dear.'".to_string(),
@@ -549,16 +686,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_grandma_hold_on_neutral() {
+    async fn test_grandma_hold_on_bearish() {
         let bot = GrandmaBot::new();
-        let ctx = create_test_context("BTC", 50000.0);
+
+        // Create a bearish scenario where Grandma should hold (not buy)
+        let mut ctx = create_test_context("BTC", 50000.0);
+        ctx.sma_short = Some(48000.0); // Death cross - short below long
+        ctx.sma_long = Some(52000.0);
+        ctx.rsi = Some(75.0);          // Overbought - bearish warning
+        ctx.macd_histogram = Some(-50.0); // Negative MACD
+        ctx.price_change_24h_pct = Some(-3.0); // Negative momentum
 
         // First call to set up SMA state
         let _ = bot.analyze(&ctx).await;
 
-        // Second call should hold since no crossover happened
+        // Second call should hold since signals are bearish
         let decision = bot.analyze(&ctx).await.unwrap();
-        assert!(decision.is_hold());
+        assert!(decision.is_hold(), "Expected hold on bearish signals, got {:?}", decision);
     }
 
     #[tokio::test]

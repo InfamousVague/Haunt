@@ -30,36 +30,36 @@ impl AssetClass {
     /// Get the maximum allowed leverage for this asset class.
     pub fn max_leverage(&self) -> f64 {
         match self {
-            AssetClass::CryptoSpot => 10.0,
+            AssetClass::CryptoSpot => 100.0,
             AssetClass::Stock => 4.0,
             AssetClass::Etf => 4.0,
             AssetClass::Perp => 100.0,
             AssetClass::Option => 1.0, // Premium-based, no leverage
-            AssetClass::Forex => 50.0,
+            AssetClass::Forex => 100.0,
         }
     }
 
     /// Get the initial margin requirement as a decimal (e.g., 0.1 = 10%).
     pub fn initial_margin(&self) -> f64 {
         match self {
-            AssetClass::CryptoSpot => 0.10,  // 10%
+            AssetClass::CryptoSpot => 0.01,  // 1% (100x max leverage)
             AssetClass::Stock => 0.25,       // 25%
             AssetClass::Etf => 0.25,         // 25%
             AssetClass::Perp => 0.01,        // 1% at max leverage
             AssetClass::Option => 1.0,       // 100% (premium)
-            AssetClass::Forex => 0.02,       // 2%
+            AssetClass::Forex => 0.01,       // 1% (100x max leverage)
         }
     }
 
     /// Get the maintenance margin requirement as a decimal.
     pub fn maintenance_margin(&self) -> f64 {
         match self {
-            AssetClass::CryptoSpot => 0.05,  // 5%
+            AssetClass::CryptoSpot => 0.005, // 0.5% (for 100x leverage)
             AssetClass::Stock => 0.25,       // 25%
             AssetClass::Etf => 0.25,         // 25%
             AssetClass::Perp => 0.005,       // 0.5%
             AssetClass::Option => 0.0,       // N/A
-            AssetClass::Forex => 0.01,       // 1%
+            AssetClass::Forex => 0.005,      // 0.5% (for 100x leverage)
         }
     }
 }
@@ -3551,16 +3551,16 @@ mod tests {
 
     #[test]
     fn test_asset_class_max_leverage() {
-        assert_eq!(AssetClass::CryptoSpot.max_leverage(), 10.0);
+        assert_eq!(AssetClass::CryptoSpot.max_leverage(), 100.0);
         assert_eq!(AssetClass::Stock.max_leverage(), 4.0);
         assert_eq!(AssetClass::Perp.max_leverage(), 100.0);
-        assert_eq!(AssetClass::Forex.max_leverage(), 50.0);
+        assert_eq!(AssetClass::Forex.max_leverage(), 100.0);
     }
 
     #[test]
     fn test_asset_class_margins() {
-        assert_eq!(AssetClass::CryptoSpot.initial_margin(), 0.10);
-        assert_eq!(AssetClass::CryptoSpot.maintenance_margin(), 0.05);
+        assert_eq!(AssetClass::CryptoSpot.initial_margin(), 0.01);
+        assert_eq!(AssetClass::CryptoSpot.maintenance_margin(), 0.005);
         assert_eq!(AssetClass::Perp.initial_margin(), 0.01);
         assert_eq!(AssetClass::Perp.maintenance_margin(), 0.005);
     }

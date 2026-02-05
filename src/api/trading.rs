@@ -10,6 +10,7 @@
 //! - POST /api/trading/portfolios - Create a new portfolio
 //! - GET /api/trading/portfolios/:id - Get portfolio details
 //! - GET /api/trading/portfolios/:id/summary - Get portfolio summary with metrics
+//! - GET /api/trading/portfolios/:id/history - Get portfolio equity history for charting
 //! - PUT /api/trading/portfolios/:id - Update portfolio settings
 //! - POST /api/trading/portfolios/:id/reset - Reset portfolio to starting balance
 //! - DELETE /api/trading/portfolios/:id - Delete a portfolio
@@ -41,8 +42,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::auth::Authenticated;
 use crate::services::TradingError;
 use crate::types::{
-    LeaderboardEntry, ModifyPositionRequest, Order, OrderType, PlaceOrderRequest, Portfolio,
-    Position, PortfolioSummary, RiskSettings, Trade,
+    EquityPoint, LeaderboardEntry, ModifyPositionRequest, Order, OrderType, PlaceOrderRequest,
+    Portfolio, Position, PortfolioSummary, RiskSettings, Trade,
 };
 use crate::AppState;
 
@@ -56,6 +57,7 @@ pub fn router() -> Router<AppState> {
         .route("/portfolios", post(create_portfolio))
         .route("/portfolios/:id", get(get_portfolio))
         .route("/portfolios/:id/summary", get(get_portfolio_summary))
+        .route("/portfolios/:id/history", get(get_portfolio_history))
         .route("/portfolios/:id", put(update_portfolio))
         .route("/portfolios/:id/reset", post(reset_portfolio))
         .route("/portfolios/:id", delete(delete_portfolio))
@@ -228,6 +230,29 @@ async fn get_portfolio_summary(
 ) -> Result<Json<ApiResponse<PortfolioSummary>>, TradingError> {
     let summary = state.trading_service.get_portfolio_summary(&id)?;
     Ok(Json(ApiResponse { data: summary }))
+}
+
+/// Query parameters for portfolio history.
+#[derive(Debug, Deserialize)]
+pub struct PortfolioHistoryQuery {
+    /// Filter snapshots since this timestamp (ms)
+    pub since: Option<i64>,
+    /// Maximum number of points to return
+    pub limit: Option<usize>,
+}
+
+/// GET /api/trading/portfolios/:id/history
+///
+/// Get portfolio equity history for charting (equity curve).
+async fn get_portfolio_history(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<PortfolioHistoryQuery>,
+) -> Result<Json<ApiResponse<Vec<EquityPoint>>>, TradingError> {
+    let history = state
+        .trading_service
+        .get_portfolio_history(&id, query.since, query.limit)?;
+    Ok(Json(ApiResponse { data: history }))
 }
 
 /// PUT /api/trading/portfolios/:id

@@ -1235,6 +1235,72 @@ impl SqliteStore {
             .unwrap_or_default()
     }
 
+    /// Get ALL open orders across all portfolios.
+    /// Used by the market simulation engine to check for triggered orders.
+    pub fn get_all_open_orders(&self) -> Vec<Order> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+                    filled_quantity, price, stop_price, trail_amount, trail_percent,
+                    time_in_force, status, linked_order_id, bracket_id, leverage,
+                    fills_json, avg_fill_price, total_fees, client_order_id,
+                    created_at, updated_at, expires_at, trail_high_price, trail_low_price, bracket_role
+             FROM orders
+             WHERE status IN ('pending', 'open', 'partially_filled')
+             ORDER BY created_at ASC",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing all open orders query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map([], |row| Self::row_to_order(row))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all unique symbols that have open positions.
+    /// Used by the market simulation engine to update position prices.
+    pub fn get_symbols_with_positions(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT symbol FROM positions WHERE closed_at IS NULL",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing symbols query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map([], |row| row.get(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get all unique symbols that have open orders.
+    pub fn get_symbols_with_orders(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT symbol FROM orders WHERE status IN ('pending', 'open', 'partially_filled')",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                error!("Error preparing order symbols query: {}", e);
+                return Vec::new();
+            }
+        };
+
+        stmt.query_map([], |row| row.get(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
     /// Update an order.
     pub fn update_order(&self, order: &Order) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();

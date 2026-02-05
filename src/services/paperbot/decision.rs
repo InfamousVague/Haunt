@@ -363,4 +363,117 @@ impl DecisionContext {
             }
         })
     }
+
+    // =========================================================================
+    // Momentum Fallback Methods (used when technical indicators aren't available)
+    // =========================================================================
+
+    /// Check if we have basic technical indicators (RSI, SMA)
+    pub fn has_indicators(&self) -> bool {
+        self.rsi.is_some() || self.sma_short.is_some() || self.macd_histogram.is_some()
+    }
+
+    /// Check if 24h price change shows bullish momentum
+    pub fn is_momentum_bullish(&self) -> bool {
+        self.price_change_24h_pct.map(|pct| pct > 2.0).unwrap_or(false)
+    }
+
+    /// Check if 24h price change shows bearish momentum
+    pub fn is_momentum_bearish(&self) -> bool {
+        self.price_change_24h_pct.map(|pct| pct < -2.0).unwrap_or(false)
+    }
+
+    /// Check if 24h price change shows strong bullish momentum (>5%)
+    pub fn is_strong_momentum_bullish(&self) -> bool {
+        self.price_change_24h_pct.map(|pct| pct > 5.0).unwrap_or(false)
+    }
+
+    /// Check if 24h price change shows strong bearish momentum (<-5%)
+    pub fn is_strong_momentum_bearish(&self) -> bool {
+        self.price_change_24h_pct.map(|pct| pct < -5.0).unwrap_or(false)
+    }
+
+    /// Check if price is near 24h low (potential buy opportunity)
+    pub fn is_near_24h_low(&self) -> bool {
+        match (self.high_24h, self.low_24h) {
+            (Some(high), Some(low)) if high > low => {
+                let range = high - low;
+                let position_in_range = (self.current_price - low) / range;
+                position_in_range < 0.2 // Bottom 20% of range
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if price is near 24h high (potential sell opportunity)
+    pub fn is_near_24h_high(&self) -> bool {
+        match (self.high_24h, self.low_24h) {
+            (Some(high), Some(low)) if high > low => {
+                let range = high - low;
+                let position_in_range = (self.current_price - low) / range;
+                position_in_range > 0.8 // Top 20% of range
+            }
+            _ => false,
+        }
+    }
+
+    /// Get momentum score (-1.0 to 1.0) based on available data
+    /// Positive = bullish, Negative = bearish
+    pub fn momentum_score(&self) -> f64 {
+        let mut score = 0.0;
+        let mut factors = 0;
+
+        // 24h price change
+        if let Some(pct) = self.price_change_24h_pct {
+            score += (pct / 10.0).clamp(-1.0, 1.0); // 10% = full score
+            factors += 1;
+        }
+
+        // RSI if available
+        if let Some(rsi) = self.rsi {
+            // RSI 30 = +1, RSI 70 = -1, RSI 50 = 0
+            score += ((50.0 - rsi) / 20.0).clamp(-1.0, 1.0);
+            factors += 1;
+        }
+
+        // MACD if available
+        if let Some(macd) = self.macd_histogram {
+            score += macd.signum() * 0.5; // Simple direction
+            factors += 1;
+        }
+
+        // Order book imbalance
+        if let Some(imbalance) = self.orderbook_imbalance() {
+            score += imbalance * 0.5;
+            factors += 1;
+        }
+
+        if factors > 0 {
+            score / factors as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Debug string showing what data is available
+    pub fn debug_data_availability(&self) -> String {
+        let mut available = Vec::new();
+        let mut missing = Vec::new();
+
+        if self.rsi.is_some() { available.push("RSI"); } else { missing.push("RSI"); }
+        if self.sma_short.is_some() { available.push("SMA_short"); } else { missing.push("SMA_short"); }
+        if self.sma_long.is_some() { available.push("SMA_long"); } else { missing.push("SMA_long"); }
+        if self.macd_histogram.is_some() { available.push("MACD"); } else { missing.push("MACD"); }
+        if self.bb_upper.is_some() { available.push("BB"); } else { missing.push("BB"); }
+        if self.atr.is_some() { available.push("ATR"); } else { missing.push("ATR"); }
+        if self.price_change_24h_pct.is_some() { available.push("24h_pct"); } else { missing.push("24h_pct"); }
+        if self.high_24h.is_some() { available.push("24h_HL"); } else { missing.push("24h_HL"); }
+        if self.orderbook.is_some() { available.push("orderbook"); } else { missing.push("orderbook"); }
+
+        format!(
+            "Available: [{}] | Missing: [{}]",
+            available.join(", "),
+            missing.join(", ")
+        )
+    }
 }

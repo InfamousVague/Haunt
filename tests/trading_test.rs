@@ -332,17 +332,17 @@ mod asset_class_tests {
 
     #[test]
     fn test_asset_class_max_leverage() {
-        assert_eq!(AssetClass::CryptoSpot.max_leverage(), 10.0);
+        assert_eq!(AssetClass::CryptoSpot.max_leverage(), 100.0);
         assert_eq!(AssetClass::Stock.max_leverage(), 4.0);
         assert_eq!(AssetClass::Etf.max_leverage(), 4.0);
         assert_eq!(AssetClass::Perp.max_leverage(), 100.0);
         assert_eq!(AssetClass::Option.max_leverage(), 1.0);
-        assert_eq!(AssetClass::Forex.max_leverage(), 50.0);
+        assert_eq!(AssetClass::Forex.max_leverage(), 100.0);
     }
 
     #[test]
     fn test_asset_class_initial_margin() {
-        assert_eq!(AssetClass::CryptoSpot.initial_margin(), 0.10);
+        assert_eq!(AssetClass::CryptoSpot.initial_margin(), 0.01);
         assert_eq!(AssetClass::Stock.initial_margin(), 0.25);
         assert_eq!(AssetClass::Perp.initial_margin(), 0.01);
     }

@@ -345,6 +345,14 @@ impl TradingBot for ScalperBot {
         ctx: &'a DecisionContext,
     ) -> Pin<Box<dyn Future<Output = Result<TradeDecision, AppError>> + Send + 'a>> {
         Box::pin(async move {
+            // Debug: Log what data is available
+            debug!(
+                "Scalper analyzing {}: price={:.2}, {}",
+                ctx.symbol,
+                ctx.current_price,
+                ctx.debug_data_availability()
+            );
+
             // Check for exit if we have a position
             if ctx.has_position() {
                 let (signals, exit_reason) = self.analyze_exit_signals(ctx);
@@ -357,8 +365,8 @@ impl TradingBot for ScalperBot {
                 if !bearish.is_empty() {
                     let confidence = self.calculate_confidence(&bearish);
 
-                    // Scalper exits quickly
-                    if confidence >= 0.3 || exit_reason == Some(SellReason::StopLoss) || exit_reason == Some(SellReason::TakeProfit) {
+                    // More aggressive exit: confidence >= 0.2
+                    if confidence >= 0.2 || exit_reason == Some(SellReason::StopLoss) || exit_reason == Some(SellReason::TakeProfit) {
                         let quantity = ctx.current_position.unwrap_or(0.0).abs();
 
                         info!(
@@ -372,6 +380,57 @@ impl TradingBot for ScalperBot {
                             confidence,
                             signals: bearish,
                             reason: exit_reason.unwrap_or(SellReason::Signal),
+                        });
+                    }
+                }
+
+                // MOMENTUM FALLBACK for exit: when no indicators
+                if !ctx.has_indicators() {
+                    let momentum = ctx.momentum_score();
+                    let pnl_pct = ctx.position_pnl_pct().unwrap_or(0.0);
+
+                    debug!(
+                        "Scalper: Position in {} with no indicators, momentum: {:.2}, PnL: {:.1}%",
+                        ctx.symbol, momentum, pnl_pct * 100.0
+                    );
+
+                    // Scalper exits fast - any profit near 24h high or negative momentum
+                    if momentum < -0.15 || (ctx.is_near_24h_high() && pnl_pct > 0.01) || ctx.is_momentum_bearish() {
+                        let quantity = ctx.current_position.unwrap_or(0.0).abs();
+                        let confidence = (momentum.abs() * 0.5 + 0.4).min(0.8);
+
+                        let reason = if pnl_pct > 0.0 {
+                            SellReason::TakeProfit
+                        } else {
+                            SellReason::Signal
+                        };
+
+                        let reason_text = if ctx.is_near_24h_high() {
+                            "Near 24h high - quick exit!"
+                        } else if ctx.is_momentum_bearish() {
+                            "24h momentum bearish - get out!"
+                        } else {
+                            "Negative momentum - cut it!"
+                        };
+
+                        let signal = TradeSignal::bearish(
+                            SignalStrength::Moderate,
+                            confidence,
+                            "Scalp:Momentum",
+                            reason_text,
+                        );
+
+                        info!(
+                            "Scalper: SELL {} {} @ {:.2} (momentum exit)",
+                            quantity, ctx.symbol, ctx.current_price
+                        );
+
+                        return Ok(TradeDecision::Sell {
+                            symbol: ctx.symbol.clone(),
+                            quantity,
+                            confidence,
+                            signals: vec![signal],
+                            reason,
                         });
                     }
                 }
@@ -400,7 +459,7 @@ impl TradingBot for ScalperBot {
             if !bullish.is_empty() {
                 let confidence = self.calculate_confidence(&bullish);
 
-                // Scalper enters with lower threshold - needs just 1 strong or 2 moderate signals
+                // More aggressive: any signal with confidence >= 0.2
                 let strong = bullish.iter()
                     .filter(|s| matches!(s.strength, SignalStrength::Strong | SignalStrength::VeryStrong))
                     .count();
@@ -408,7 +467,8 @@ impl TradingBot for ScalperBot {
                     .filter(|s| matches!(s.strength, SignalStrength::Moderate))
                     .count();
 
-                if confidence >= 0.25 && (strong >= 1 || moderate >= 2) {
+                // Even more aggressive: confidence >= 0.2 OR any strong/moderate signal
+                if confidence >= 0.2 || strong >= 1 || moderate >= 1 {
                     let quantity = self.calculate_position_size(ctx);
 
                     if quantity > 0.0 {
@@ -416,8 +476,9 @@ impl TradingBot for ScalperBot {
                         let take_profit = Some(ctx.current_price * (1.0 + self.config.take_profit_pct));
 
                         info!(
-                            "Scalper: BUY {} {} @ {:.2} (conf: {:.0}%)",
-                            quantity, ctx.symbol, ctx.current_price, confidence * 100.0
+                            "Scalper: BUY {} {} @ {:.2} (conf: {:.0}%, signals: {})",
+                            quantity, ctx.symbol, ctx.current_price, confidence * 100.0,
+                            bullish.iter().map(|s| s.source.as_str()).collect::<Vec<_>>().join(", ")
                         );
 
                         return Ok(TradeDecision::Buy {
@@ -432,6 +493,56 @@ impl TradingBot for ScalperBot {
                 }
             }
 
+            // MOMENTUM FALLBACK: When no indicators, scalp based on pure momentum
+            if !ctx.has_indicators() {
+                let momentum = ctx.momentum_score();
+                debug!(
+                    "Scalper: No indicators for {}, using momentum (score: {:.2})",
+                    ctx.symbol, momentum
+                );
+
+                // Scalper is very aggressive - any positive momentum or near 24h low
+                if momentum > 0.1 || ctx.is_near_24h_low() || ctx.is_momentum_bullish() {
+                    let confidence = (momentum.abs() * 0.5 + 0.4).min(0.8);
+                    let quantity = self.calculate_position_size(ctx);
+
+                    if quantity > 0.0 {
+                        let reason = if ctx.is_near_24h_low() {
+                            "Near 24h low - bounce scalp!"
+                        } else if ctx.is_momentum_bullish() {
+                            "24h momentum positive - ride it!"
+                        } else {
+                            "Positive momentum - quick scalp!"
+                        };
+
+                        let signal = TradeSignal::bullish(
+                            SignalStrength::Moderate,
+                            confidence,
+                            "Scalp:Momentum",
+                            reason,
+                        );
+
+                        let stop_loss = Some(ctx.current_price * (1.0 - self.config.stop_loss_pct));
+                        let take_profit = Some(ctx.current_price * (1.0 + self.config.take_profit_pct));
+
+                        info!(
+                            "Scalper: BUY {} {} @ {:.2} (momentum scalp, conf: {:.0}%)",
+                            quantity, ctx.symbol, ctx.current_price, confidence * 100.0
+                        );
+
+                        return Ok(TradeDecision::Buy {
+                            symbol: ctx.symbol.clone(),
+                            quantity,
+                            confidence,
+                            signals: vec![signal],
+                            stop_loss,
+                            take_profit,
+                        });
+                    }
+                }
+            }
+
+            debug!("Scalper: No scalp opportunity for {}", ctx.symbol);
             Ok(TradeDecision::Hold {
                 symbol: ctx.symbol.clone(),
                 reason: "Scalper: Waiting for setup".to_string(),

@@ -345,8 +345,12 @@ mod tests {
         let profile = Profile {
             id: "id123".to_string(),
             public_key: "pk".to_string(),
+            username: "TestUser".to_string(),
             created_at: 1704067200000,
             last_seen: 1704067200000,
+            show_on_leaderboard: false,
+            leaderboard_signature: None,
+            leaderboard_consent_at: None,
             settings: ProfileSettings::default(),
         };
 
@@ -422,8 +426,12 @@ mod tests {
             profile: Profile {
                 id: "id".to_string(),
                 public_key: "pk".to_string(),
+                username: "TestUser".to_string(),
                 created_at: 1704067200000,
                 last_seen: 1704067200000,
+                show_on_leaderboard: false,
+                leaderboard_signature: None,
+                leaderboard_consent_at: None,
                 settings: ProfileSettings::default(),
             },
         };

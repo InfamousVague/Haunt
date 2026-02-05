@@ -474,11 +474,19 @@ impl TradingBot for QuantBot {
         ctx: &'a DecisionContext,
     ) -> Pin<Box<dyn Future<Output = Result<TradeDecision, AppError>> + Send + 'a>> {
         Box::pin(async move {
+            // Debug: Log what data is available
+            debug!(
+                "Quant analyzing {}: price={:.2}, {}",
+                ctx.symbol,
+                ctx.current_price,
+                ctx.debug_data_availability()
+            );
+
             let features = self.extract_features(ctx);
             let signal = self.calculate_signal(&features);
 
             debug!(
-                "Quant analyzing {}: signal={:.3}, features={:?}",
+                "Quant {}: signal={:.3}, features={:?}",
                 ctx.symbol, signal, features
             );
 
@@ -540,8 +548,8 @@ impl TradingBot for QuantBot {
                     }
                 }
 
-                // Signal reversal (strong bearish signal)
-                if signal < -0.35 {
+                // More aggressive: Lower bearish signal threshold from -0.35 to -0.25
+                if signal < -0.25 {
                     let signals = self.create_signals_from_features(&features, -1.0);
                     let quantity = ctx.current_position.unwrap_or(0.0).abs();
 
@@ -564,6 +572,54 @@ impl TradingBot for QuantBot {
                     });
                 }
 
+                // MOMENTUM FALLBACK for selling: when no indicators and holding
+                if !ctx.has_indicators() && features.is_empty() {
+                    let momentum = ctx.momentum_score();
+                    let pnl_pct = ctx.position_pnl_pct().unwrap_or(0.0);
+
+                    debug!(
+                        "Quant: Position in {} with no indicators, momentum: {:.2}, PnL: {:.1}%",
+                        ctx.symbol, momentum, pnl_pct * 100.0
+                    );
+
+                    // Exit on bearish momentum or near 24h high with profit
+                    if momentum < -0.25 || (ctx.is_near_24h_high() && pnl_pct > 0.03) {
+                        let quantity = ctx.current_position.unwrap_or(0.0).abs();
+                        let confidence = (momentum.abs() * 0.6 + 0.3).min(0.7);
+
+                        let reason = if ctx.is_near_24h_high() && pnl_pct > 0.0 {
+                            SellReason::TakeProfit
+                        } else {
+                            SellReason::Signal
+                        };
+
+                        let signal = TradeSignal::bearish(
+                            SignalStrength::Moderate,
+                            confidence,
+                            "Quant:Momentum",
+                            &format!("Bearish momentum: {:.2}", momentum),
+                        );
+
+                        // Learn from this exit
+                        if let Some(entry) = ctx.position_entry_price {
+                            self.process_trade_outcomes(&ctx.symbol, ctx.current_price, entry);
+                        }
+
+                        info!(
+                            "Quant: SELL {} {} @ {:.2} (momentum exit, reason: {:?})",
+                            quantity, ctx.symbol, ctx.current_price, reason
+                        );
+
+                        return Ok(TradeDecision::Sell {
+                            symbol: ctx.symbol.clone(),
+                            quantity,
+                            confidence,
+                            signals: vec![signal],
+                            reason,
+                        });
+                    }
+                }
+
                 return Ok(TradeDecision::Hold {
                     symbol: ctx.symbol.clone(),
                     reason: format!("Quant: Holding position (signal: {:.2})", signal),
@@ -578,8 +634,8 @@ impl TradingBot for QuantBot {
                 });
             }
 
-            // Need strong positive signal (>0.35) to enter
-            if signal > 0.35 {
+            // More aggressive: Lower signal threshold from 0.35 to 0.25
+            if signal > 0.25 {
                 let position_size = self.calculate_position_size(ctx, signal);
                 let signals = self.create_signals_from_features(&features, 1.0);
 
@@ -606,6 +662,65 @@ impl TradingBot for QuantBot {
                 }
             }
 
+            // MOMENTUM FALLBACK: When no indicators available, use momentum-based analysis
+            if !ctx.has_indicators() && features.is_empty() {
+                let momentum = ctx.momentum_score();
+                debug!(
+                    "Quant: No indicators for {}, using momentum fallback (score: {:.2})",
+                    ctx.symbol, momentum
+                );
+
+                // Quant requires stronger momentum signal (more conservative than CryptoBro)
+                if momentum > 0.25 || (ctx.is_near_24h_low() && momentum > 0.0) {
+                    let confidence = (momentum.abs() * 0.7 + 0.2).min(0.7);
+                    let position_size = self.calculate_position_size(ctx, confidence);
+
+                    if position_size > 0.0 {
+                        let reason = if ctx.is_near_24h_low() {
+                            format!("Near 24h low, momentum: {:.2}", momentum)
+                        } else {
+                            format!("Positive momentum: {:.2}", momentum)
+                        };
+
+                        let signal = TradeSignal::bullish(
+                            SignalStrength::Moderate,
+                            confidence,
+                            "Quant:Momentum",
+                            &reason,
+                        );
+
+                        // Record for learning with momentum feature
+                        let mut momentum_features = HashMap::new();
+                        momentum_features.insert("momentum".to_string(), momentum);
+                        if let Some(pct) = ctx.price_change_24h_pct {
+                            momentum_features.insert("price_change".to_string(), pct / 10.0);
+                        }
+                        self.record_pending_trade(ctx, &momentum_features, 1.0);
+
+                        let stop_loss = Some(ctx.current_price * (1.0 - self.config.stop_loss_pct));
+                        let take_profit = Some(ctx.current_price * (1.0 + self.config.take_profit_pct));
+
+                        info!(
+                            "Quant: BUY {} {} @ {:.2} (momentum fallback, confidence: {:.1}%)",
+                            position_size,
+                            ctx.symbol,
+                            ctx.current_price,
+                            confidence * 100.0
+                        );
+
+                        return Ok(TradeDecision::Buy {
+                            symbol: ctx.symbol.clone(),
+                            quantity: position_size,
+                            confidence,
+                            signals: vec![signal],
+                            stop_loss,
+                            take_profit,
+                        });
+                    }
+                }
+            }
+
+            debug!("Quant: No buy opportunity for {} (signal: {:.2})", ctx.symbol, signal);
             Ok(TradeDecision::Hold {
                 symbol: ctx.symbol.clone(),
                 reason: format!("Quant: Signal insufficient ({:.2})", signal),
