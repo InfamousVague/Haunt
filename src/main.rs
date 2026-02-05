@@ -11,7 +11,7 @@ use config::Config;
 use services::{
     AccuracyStore, AssetService, AuthService, BotRunner, ChartStore, CryptoBroBot, GrandmaBot,
     HistoricalDataService, MultiSourceCoordinator, OrderBookService, PeerConfig, PeerMesh,
-    PredictionStore, QuantBot, ScalperBot, SignalStore, SqliteStore,
+    PredictionStore, QuantBot, ScalperBot, SignalStore, SqliteStore, SyncService,
 };
 use sources::{AlpacaWs, CoinCapClient, CoinMarketCapClient, FinnhubClient};
 // FinnhubWs requires paid tier for US stocks - use Tiingo or Alpaca instead
@@ -42,6 +42,7 @@ pub struct AppState {
     pub sqlite_store: Arc<SqliteStore>,
     pub orderbook_service: Arc<OrderBookService>,
     pub peer_mesh: Option<Arc<PeerMesh>>,
+    pub sync_service: Option<Arc<SyncService>>,
     pub trading_service: Arc<services::TradingService>,
     pub bot_runner: Option<Arc<BotRunner>>,
 }
@@ -335,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
     let bot_runner = {
         let runner = BotRunner::new(
             price_cache.clone(),
+            chart_store.clone(),
             signal_store.clone(),
             trading_service.clone(),
             sqlite_store.clone(),
@@ -360,6 +362,21 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::new(runner))
     };
 
+    // Create sync service if peer mesh is enabled
+    let sync_service = if let Some(ref mesh) = peer_mesh {
+        let is_primary = config.server_id == "osaka";
+        let service = SyncService::new(
+            sqlite_store.clone(),
+            mesh.clone(),
+            config.server_id.clone(),
+            is_primary,
+        );
+        info!("Sync service created (primary: {})", is_primary);
+        Some(service)
+    } else {
+        None
+    };
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -376,6 +393,7 @@ async fn main() -> anyhow::Result<()> {
         sqlite_store,
         orderbook_service,
         peer_mesh: peer_mesh.clone(),
+        sync_service: sync_service.clone(),
         trading_service: trading_service.clone(),
         bot_runner: bot_runner.clone(),
     };
@@ -390,6 +408,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref mesh) = peer_mesh {
         info!("Starting peer mesh connections...");
         mesh.clone().start();
+
+        // Start sync service
+        if let Some(ref sync) = sync_service {
+            info!("Starting sync service...");
+            sync.clone().start();
+        }
 
         // Spawn peer status broadcast task to connected WebSocket clients
         let mesh_for_broadcast = mesh.clone();

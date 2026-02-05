@@ -1835,6 +1835,19 @@ impl SqliteStore {
             .unwrap_or_default()
     }
 
+    /// Get a single trade by ID.
+    pub fn get_trade(&self, id: &str) -> Option<Trade> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT id, order_id, portfolio_id, position_id, symbol, asset_class,
+                    side, quantity, price, fee, slippage, realized_pnl, executed_at
+             FROM trades WHERE id = ?1",
+            params![id],
+            Self::row_to_trade,
+        ).ok()
+    }
+
     /// Helper to convert a row to a Trade.
     fn row_to_trade(row: &rusqlite::Row) -> Result<Trade, rusqlite::Error> {
         Ok(Trade {
@@ -3188,23 +3201,237 @@ impl SqliteStore {
 
     /// Get entity data as JSON bytes.
     pub fn get_entity_data(&self, entity_type: crate::types::EntityType, entity_id: &str) -> Result<Vec<u8>, rusqlite::Error> {
-        // For now, return empty vec - in production this would serialize the actual entity
-        // TODO: Implement proper entity serialization for each type
-        Ok(Vec::new())
+        use crate::types::EntityType;
+        
+        match entity_type {
+            EntityType::Portfolio => {
+                if let Some(portfolio) = self.get_portfolio(entity_id) {
+                    serde_json::to_vec(&portfolio)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::Order => {
+                if let Some(order) = self.get_order(entity_id) {
+                    serde_json::to_vec(&order)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::Position => {
+                if let Some(position) = self.get_position(entity_id) {
+                    serde_json::to_vec(&position)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::Trade => {
+                if let Some(trade) = self.get_trade(entity_id) {
+                    serde_json::to_vec(&trade)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            EntityType::Profile => {
+                // Get profile by ID (need to query by ID not public key)
+                let conn = self.conn.lock().unwrap();
+                let result = conn.query_row(
+                    "SELECT public_key FROM profiles WHERE id = ?1",
+                    params![entity_id],
+                    |row| row.get::<_, String>(0),
+                );
+                
+                if let Ok(public_key) = result {
+                    if let Some(profile) = self.get_profile(&public_key) {
+                        return serde_json::to_vec(&profile)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)));
+                    }
+                }
+                Ok(Vec::new())
+            }
+            // For other entity types, return empty for now
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// Update entity from sync data.
     pub fn update_entity_from_sync(
         &self,
-        _entity_type: crate::types::EntityType,
-        _entity_id: &str,
-        _data: &[u8],
-        _version: u64,
-        _timestamp: i64,
-        _node_id: &str,
+        entity_type: crate::types::EntityType,
+        entity_id: &str,
+        data: &[u8],
+        version: u64,
+        timestamp: i64,
+        node_id: &str,
     ) -> Result<(), rusqlite::Error> {
-        // TODO: Implement proper entity deserialization and update for each type
-        Ok(())
+        use crate::types::EntityType;
+        
+        let conn = self.conn.lock().unwrap();
+        
+        match entity_type {
+            EntityType::Portfolio => {
+                let portfolio: crate::types::Portfolio = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+                
+                // Update portfolio with version tracking
+                conn.execute(
+                    "INSERT OR REPLACE INTO portfolios (
+                        id, user_id, name, description, base_currency,
+                        starting_balance, cash_balance, margin_used, margin_available,
+                        unrealized_pnl, realized_pnl, total_value,
+                        cost_basis_method, risk_settings_json,
+                        is_competition, competition_id,
+                        created_at, updated_at,
+                        total_trades, winning_trades,
+                        version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                    params![
+                        portfolio.id,
+                        portfolio.user_id,
+                        portfolio.name,
+                        portfolio.description,
+                        portfolio.base_currency,
+                        portfolio.starting_balance,
+                        portfolio.cash_balance,
+                        portfolio.margin_used,
+                        portfolio.margin_available,
+                        portfolio.unrealized_pnl,
+                        portfolio.realized_pnl,
+                        portfolio.total_value,
+                        format!("{:?}", portfolio.cost_basis_method).to_lowercase(),
+                        serde_json::to_string(&portfolio.risk_settings).unwrap_or_default(),
+                        if portfolio.is_competition { 1 } else { 0 },
+                        portfolio.competition_id,
+                        portfolio.created_at,
+                        portfolio.updated_at,
+                        portfolio.total_trades,
+                        portfolio.winning_trades,
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(())
+            }
+            EntityType::Order => {
+                let order: crate::types::Order = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+                
+                // Update order with version tracking
+                conn.execute(
+                    "INSERT OR REPLACE INTO orders (
+                        id, portfolio_id, symbol, asset_class, side, order_type,
+                        quantity, filled_quantity, price, stop_price, trail_amount, trail_percent,
+                        time_in_force, status, linked_order_id, bracket_id, leverage,
+                        fills_json, avg_fill_price, total_fees, client_order_id,
+                        created_at, updated_at, expires_at,
+                        trail_high_price, trail_low_price, bracket_role,
+                        version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                    params![
+                        order.id,
+                        order.portfolio_id,
+                        order.symbol,
+                        format!("{:?}", order.asset_class).to_lowercase().replace("_", "_"),
+                        format!("{:?}", order.side).to_lowercase(),
+                        format!("{:?}", order.order_type).to_lowercase().replace("_", "_"),
+                        order.quantity,
+                        order.filled_quantity,
+                        order.price,
+                        order.stop_price,
+                        order.trail_amount,
+                        order.trail_percent,
+                        format!("{:?}", order.time_in_force).to_lowercase(),
+                        format!("{:?}", order.status).to_lowercase().replace("_", "_"),
+                        order.linked_order_id,
+                        order.bracket_id,
+                        order.leverage,
+                        serde_json::to_string(&order.fills).unwrap_or_default(),
+                        order.avg_fill_price,
+                        order.total_fees,
+                        order.client_order_id,
+                        order.created_at,
+                        order.updated_at,
+                        order.expires_at,
+                        order.trail_high_price,
+                        order.trail_low_price,
+                        order.bracket_role.as_ref().map(|r| format!("{:?}", r).to_lowercase().replace("_", "_")),
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(())
+            }
+            EntityType::Trade => {
+                let trade: crate::types::Trade = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+                
+                // Insert trade (trades are append-only)
+                conn.execute(
+                    "INSERT OR IGNORE INTO trades (
+                        id, order_id, portfolio_id, position_id,
+                        symbol, asset_class, side, quantity, price, fee, slippage,
+                        realized_pnl, executed_at,
+                        version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    params![
+                        trade.id,
+                        trade.order_id,
+                        trade.portfolio_id,
+                        trade.position_id,
+                        trade.symbol,
+                        format!("{:?}", trade.asset_class).to_lowercase().replace("_", "_"),
+                        format!("{:?}", trade.side).to_lowercase(),
+                        trade.quantity,
+                        trade.price,
+                        trade.fee,
+                        trade.slippage,
+                        trade.realized_pnl,
+                        trade.executed_at,
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(())
+            }
+            // For other entity types, do nothing for now
+            _ => Ok(()),
+        }
+    }
+
+    /// Increment entity version (call after any entity modification).
+    pub fn increment_entity_version(
+        &self,
+        entity_type: crate::types::EntityType,
+        entity_id: &str,
+        node_id: &str,
+    ) -> Result<u64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let table = entity_type.table_name();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        
+        // Get current version
+        let query = format!("SELECT version FROM {} WHERE id = ?1", table);
+        let current_version: i64 = conn.query_row(&query, params![entity_id], |row| row.get(0))
+            .unwrap_or(0);
+        
+        let new_version = current_version + 1;
+        
+        // Update version and metadata
+        let update_query = format!(
+            "UPDATE {} SET version = ?1, last_modified_at = ?2, last_modified_by = ?3 WHERE id = ?4",
+            table
+        );
+        
+        conn.execute(&update_query, params![new_version, timestamp, node_id, entity_id])?;
+        
+        Ok(new_version as u64)
     }
 
     /// Insert node metrics.
