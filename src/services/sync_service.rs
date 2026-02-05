@@ -110,16 +110,26 @@ impl SyncService {
     pub fn start(self: Arc<Self>) {
         info!("Starting sync service for node {}", self.node_id);
 
+        // CRITICAL: Subscribe to sync messages BEFORE starting the peer listener
+        // to avoid race condition where messages arrive before subscription
+        let message_rx = self.sync_tx.subscribe();
+
+        // Spawn sync message handler with pre-subscribed receiver
+        let service = self.clone();
+        tokio::spawn(async move {
+            service.handle_sync_messages_with_rx(message_rx).await;
+        });
+
+        // NOW safe to spawn peer sync data listener (handler is already subscribed)
+        let service = self.clone();
+        tokio::spawn(async move {
+            service.listen_for_peer_sync_data().await;
+        });
+
         // Spawn sync queue processor
         let service = self.clone();
         tokio::spawn(async move {
             service.process_sync_queue().await;
-        });
-
-        // Spawn sync message handler
-        let service = self.clone();
-        tokio::spawn(async move {
-            service.handle_sync_messages().await;
         });
 
         // Spawn metrics collector
@@ -132,12 +142,6 @@ impl SyncService {
         let service = self.clone();
         tokio::spawn(async move {
             service.periodic_reconciliation().await;
-        });
-
-        // Spawn peer sync data listener
-        let service = self.clone();
-        tokio::spawn(async move {
-            service.listen_for_peer_sync_data().await;
         });
     }
 
@@ -473,9 +477,10 @@ impl SyncService {
         Ok(())
     }
 
-    /// Handle incoming sync messages from peers.
-    async fn handle_sync_messages(&self) {
-        let mut rx = self.subscribe();
+    /// Handle incoming sync messages from peers (with pre-subscribed receiver).
+    /// This version accepts the receiver to avoid race conditions during startup.
+    async fn handle_sync_messages_with_rx(&self, mut rx: broadcast::Receiver<SyncMessage>) {
+        info!("Sync message handler started for node {}", self.node_id);
 
         loop {
             match rx.recv().await {
@@ -486,12 +491,22 @@ impl SyncService {
                         metrics.sync_errors_1m += 1;
                     }
                 }
-                Err(e) => {
-                    error!("Sync message channel error: {}", e);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("Sync message handler lagged by {} messages", n);
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    error!("Sync message channel closed");
+                    break;
                 }
             }
         }
+    }
+
+    /// Handle incoming sync messages from peers (legacy - subscribes internally).
+    #[allow(dead_code)]
+    async fn handle_sync_messages(&self) {
+        let rx = self.subscribe();
+        self.handle_sync_messages_with_rx(rx).await;
     }
 
     /// Handle a single sync message.
@@ -653,8 +668,12 @@ impl SyncService {
                 resume_from_checkpoint,
             } => {
                 info!(
-                    "Historical sync request from {} for session {} ({} entity types)",
-                    from_node_id, session_id, entity_types.len()
+                    "PRIMARY received HistoricalSyncRequest from '{}' for session {} ({} entity types, batch_size={})",
+                    from_node_id, session_id, entity_types.len(), batch_size
+                );
+                debug!(
+                    "Entity types requested: {:?}, resume_from: {:?}",
+                    entity_types, resume_from_checkpoint
                 );
 
                 // Only primary node can provide historical sync
@@ -794,9 +813,9 @@ impl SyncService {
                 checksum,
                 checkpoint_id,
             } => {
-                debug!(
-                    "Received historical batch {}/{} for session {} ({} entities)",
-                    batch_number, total_batches, session_id, entities.len()
+                info!(
+                    "Received historical batch {}/{} for session {} ({} {:?} entities, compression={:?})",
+                    batch_number, total_batches, session_id, entities.len(), entity_type, compression
                 );
 
                 let mut items_applied = 0u32;
@@ -1385,9 +1404,13 @@ impl SyncService {
             resume_from_checkpoint: None,
         };
 
+        info!(
+            "Sending HistoricalSyncRequest to primary (osaka) for session {}",
+            session_id
+        );
         self.broadcast_sync_message(request, Some(vec!["osaka".to_string()])).await?;
 
-        info!("Requested historical sync with session {}", session_id);
+        info!("Successfully sent historical sync request for session {}", session_id);
         Ok(session_id)
     }
 
@@ -1624,7 +1647,26 @@ impl SyncServiceTask {
                     data: json,
                 };
 
-                self.peer_mesh.send_to_peers(peer_msg, &[target_node.to_string()]).await;
+                // CRITICAL: Check if send succeeded - if no peer connection, fail the session
+                let sent_count = self.peer_mesh.send_to_peers(peer_msg, &[target_node.to_string()]).await;
+                if sent_count == 0 {
+                    error!(
+                        "Failed to send batch {} to {}: no active connection",
+                        batch_number, target_node
+                    );
+                    if let Some(mut session) = self.active_sessions.get_mut(session_id) {
+                        session.status = HistoricalSyncStatus::Failed;
+                        session.error = Some(format!("No connection to target node {}", target_node));
+                        session.updated_at = chrono::Utc::now().timestamp_millis();
+                        let _ = self.sqlite_store.update_historical_sync_session(&session);
+                    }
+                    return Err(format!("No connection to target node {}", target_node));
+                }
+
+                info!(
+                    "Sent batch {}/{} ({} entities, {} bytes) to {}",
+                    batch_number, total_batches, entities.len(), compressed_size, target_node
+                );
 
                 // Update progress
                 total_bytes_transferred += compressed_size as u64;
@@ -1706,7 +1748,13 @@ impl SyncServiceTask {
             data: json,
         };
 
-        self.peer_mesh.send_to_peers(peer_msg, &[target_node.to_string()]).await;
+        let sent_count = self.peer_mesh.send_to_peers(peer_msg, &[target_node.to_string()]).await;
+        if sent_count == 0 {
+            warn!(
+                "Failed to send completion message to {}, but all batches were sent successfully",
+                target_node
+            );
+        }
 
         // Update session as completed
         if let Some(mut session) = self.active_sessions.get_mut(session_id) {

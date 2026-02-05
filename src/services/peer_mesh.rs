@@ -299,6 +299,7 @@ impl PeerMesh {
 
     /// Send a message to specific peers.
     /// Returns the number of peers the message was sent to.
+    /// Peer IDs are normalized to lowercase for consistent lookup.
     pub async fn send_to_peers(&self, message: PeerMessage, peer_ids: &[String]) -> usize {
         let json = match serde_json::to_string(&message) {
             Ok(j) => j,
@@ -310,16 +311,28 @@ impl PeerMesh {
 
         let mut sent_count = 0;
         for peer_id in peer_ids {
-            if let Some(sender) = self.peer_senders.get(peer_id) {
+            // Normalize peer ID to lowercase for consistent lookup
+            let normalized_id = peer_id.to_lowercase();
+            if let Some(sender) = self.peer_senders.get(&normalized_id) {
                 match sender.try_send(json.clone()) {
                     Ok(_) => {
-                        debug!("Sent message to peer {}", peer_id);
+                        debug!("Sent message to peer {} (normalized: {})", peer_id, normalized_id);
                         sent_count += 1;
                     }
                     Err(e) => {
                         warn!("Failed to send to peer {}: {}", peer_id, e);
                     }
                 }
+            } else {
+                // Log available peers to help debug connection issues
+                let available_peers: Vec<String> = self.peer_senders
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect();
+                warn!(
+                    "No sender found for peer '{}' (normalized: '{}'). Available peers: {:?}",
+                    peer_id, normalized_id, available_peers
+                );
             }
         }
 
@@ -771,8 +784,11 @@ impl PeerMesh {
         let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<String>(256);
 
         // Store the sender for this peer so other services can send messages
-        self.peer_senders.insert(peer_id.to_string(), msg_tx.clone());
-        let cleanup_peer_id = peer_id.to_string();
+        // CRITICAL: Normalize peer ID to lowercase for consistent lookup across send_to_peers()
+        let normalized_peer_id = peer_id.to_lowercase();
+        self.peer_senders.insert(normalized_peer_id.clone(), msg_tx.clone());
+        info!("Registered sender for peer '{}' (normalized: '{}')", peer_id, normalized_peer_id);
+        let cleanup_peer_id = normalized_peer_id.clone();
         let cleanup_mesh = self.clone();
 
         // Spawn ping task (every 1 second for real-time latency)
