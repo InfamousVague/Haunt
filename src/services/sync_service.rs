@@ -1542,13 +1542,21 @@ impl SyncServiceTask {
                     }
                 }
 
-                // Get batch of entities
+                // Get batch of entities - use spawn_blocking to avoid blocking Tokio runtime
                 debug!(
                     "Fetching batch for {:?}, after_rowid={}, batch_size={}",
                     entity_type, after_rowid, batch_size
                 );
-                let entities = self.sqlite_store.get_entities_for_sync(entity_type, after_rowid, batch_size)
-                    .map_err(|e| format!("Failed to get entities: {}", e))?;
+                let store = self.sqlite_store.clone();
+                let et = entity_type;
+                let ar = after_rowid;
+                let bs = batch_size;
+                let entities = tokio::task::spawn_blocking(move || {
+                    store.get_entities_for_sync(et, ar, bs)
+                })
+                .await
+                .map_err(|e| format!("Task panicked: {}", e))?
+                .map_err(|e| format!("Failed to get entities: {}", e))?;
 
                 debug!(
                     "Got {} entities for {:?} (after_rowid={})",
@@ -1563,31 +1571,45 @@ impl SyncServiceTask {
                 let last_rowid = entities.last().map(|(rowid, _, _)| *rowid).unwrap_or(after_rowid);
                 batch_number += 1;
 
-                // Convert to SyncEntity format
-                let mut sync_entities = Vec::with_capacity(entities.len());
-                let mut uncompressed_size = 0usize;
+                // Process entities and prepare batch - do version lookups in blocking task
+                let store = self.sqlite_store.clone();
+                let entities_clone = entities.clone();
+                let et = entity_type;
+                let sess_id = session_id.to_string();
+                let bn = batch_number;
 
-                for (_, entity_id, data) in &entities {
-                    let version = self.sqlite_store.get_entity_version(entity_type, entity_id)
-                        .ok()
-                        .flatten()
-                        .map(|(v, _)| v)
-                        .unwrap_or(1);
+                let (sync_entities, uncompressed_size, total_count) = tokio::task::spawn_blocking(move || {
+                    let mut sync_entities = Vec::with_capacity(entities_clone.len());
+                    let mut uncompressed_size = 0usize;
 
-                    let checksum = Self::calculate_checksum(data);
+                    for (_, entity_id, data) in &entities_clone {
+                        let version = store.get_entity_version(et, entity_id)
+                            .ok()
+                            .flatten()
+                            .map(|(v, _)| v)
+                            .unwrap_or(1);
 
-                    sync_entities.push(SyncEntity {
-                        entity_id: entity_id.clone(),
-                        version,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                        checksum,
-                        data: data.clone(),
-                    });
+                        let checksum = SyncServiceTask::calculate_checksum(data);
 
-                    uncompressed_size += data.len();
-                }
+                        sync_entities.push(SyncEntity {
+                            entity_id: entity_id.clone(),
+                            version,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            checksum,
+                            data: data.clone(),
+                        });
 
-                // Determine compression
+                        uncompressed_size += data.len();
+                    }
+
+                    let total_count = store.get_entity_count(et).unwrap_or(0);
+
+                    (sync_entities, uncompressed_size, total_count)
+                })
+                .await
+                .map_err(|e| format!("Task panicked during entity processing: {}", e))?;
+
+                // Determine compression (CPU-bound, can stay on async task)
                 let (compression, batch_data) = if uncompressed_size > 10240 {
                     // Compress each entity's data
                     let mut compressed_entities = sync_entities.clone();
@@ -1612,7 +1634,7 @@ impl SyncServiceTask {
                 }
                 let batch_checksum_str = format!("{:x}", batch_checksum.finalize());
 
-                // Create checkpoint
+                // Create checkpoint - save in blocking task
                 let checkpoint_id = uuid::Uuid::new_v4().to_string();
                 let checkpoint = SyncCheckpoint {
                     id: checkpoint_id.clone(),
@@ -1629,10 +1651,11 @@ impl SyncServiceTask {
                     created_at: chrono::Utc::now().timestamp_millis(),
                     acked_at: None,
                 };
-                let _ = self.sqlite_store.save_sync_checkpoint(&checkpoint);
+                let store = self.sqlite_store.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    store.save_sync_checkpoint(&checkpoint)
+                }).await;
 
-                // Get total batches estimate
-                let total_count = self.sqlite_store.get_entity_count(entity_type).unwrap_or(0);
                 let total_batches = ((total_count as f64) / (batch_size as f64)).ceil() as u32;
 
                 // Send batch
@@ -1668,7 +1691,11 @@ impl SyncServiceTask {
                         session.status = HistoricalSyncStatus::Failed;
                         session.error = Some(format!("No connection to target node {}", target_node));
                         session.updated_at = chrono::Utc::now().timestamp_millis();
-                        let _ = self.sqlite_store.update_historical_sync_session(&session);
+                        let store = self.sqlite_store.clone();
+                        let sess = session.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            store.update_historical_sync_session(&sess)
+                        }).await;
                     }
                     return Err(format!("No connection to target node {}", target_node));
                 }
@@ -1694,7 +1721,6 @@ impl SyncServiceTask {
                         0.0
                     };
                     session.updated_at = chrono::Utc::now().timestamp_millis();
-                    let _ = self.sqlite_store.update_historical_sync_session(&session);
 
                     // Broadcast progress
                     let elapsed = start_time.elapsed().as_secs_f64();
@@ -1728,8 +1754,18 @@ impl SyncServiceTask {
                         timestamp: session.updated_at,
                     };
 
-                    let _ = self.progress_tx.send(progress.clone());
-                    let _ = self.sqlite_store.record_sync_progress(&progress);
+                    // Save session and progress in background (non-blocking)
+                    let store = self.sqlite_store.clone();
+                    let sess = session.clone();
+                    let prog = progress.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let _ = store.update_historical_sync_session(&sess);
+                            let _ = store.record_sync_progress(&prog);
+                        }).await;
+                    });
+
+                    let _ = self.progress_tx.send(progress);
                 }
 
                 // Small delay to prevent overwhelming the network
