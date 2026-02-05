@@ -3404,6 +3404,51 @@ impl SqliteStore {
                 )?;
                 Ok(())
             }
+            EntityType::Position => {
+                let position: crate::types::Position = serde_json::from_slice(data)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e)))?;
+                
+                // Update position with version tracking
+                conn.execute(
+                    "INSERT OR REPLACE INTO positions (
+                        id, portfolio_id, symbol, asset_class, side,
+                        quantity, entry_price, current_price,
+                        unrealized_pnl, unrealized_pnl_pct, realized_pnl,
+                        margin_used, leverage, margin_mode,
+                        liquidation_price, stop_loss, take_profit,
+                        cost_basis_json, funding_payments,
+                        created_at, updated_at,
+                        version, last_modified_at, last_modified_by
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                    params![
+                        position.id,
+                        position.portfolio_id,
+                        position.symbol,
+                        format!("{:?}", position.asset_class).to_lowercase().replace("_", "_"),
+                        format!("{:?}", position.side).to_lowercase(),
+                        position.quantity,
+                        position.entry_price,
+                        position.current_price,
+                        position.unrealized_pnl,
+                        position.unrealized_pnl_pct,
+                        position.realized_pnl,
+                        position.margin_used,
+                        position.leverage,
+                        format!("{:?}", position.margin_mode).to_lowercase(),
+                        position.liquidation_price,
+                        position.stop_loss,
+                        position.take_profit,
+                        serde_json::to_string(&position.cost_basis).unwrap_or_default(),
+                        position.funding_payments,
+                        position.created_at,
+                        position.updated_at,
+                        version as i64,
+                        timestamp,
+                        node_id,
+                    ],
+                )?;
+                Ok(())
+            }
             // For other entity types, do nothing for now
             _ => Ok(()),
         }
