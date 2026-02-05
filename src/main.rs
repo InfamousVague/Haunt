@@ -57,18 +57,33 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "haunt=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // Initialize tracing (disable console output in TUI mode)
+    if launch_tui {
+        // In TUI mode, we'll suppress console logging to avoid interfering with the UI
+        // Logs can still be viewed in the Logs tab
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "error".into()), // Only show errors
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    } else {
+        // Normal server mode with full logging
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "haunt=debug,tower_http=debug".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     // Load configuration
     let config = Arc::new(Config::from_env());
-    info!("Starting Haunt server on {}:{}", config.host, config.port);
+    if !launch_tui {
+        info!("Starting Haunt server on {}:{}", config.host, config.port);
+    }
 
     // Create the multi-source coordinator
     let (coordinator, _price_rx) = MultiSourceCoordinator::new(&config);
@@ -410,7 +425,8 @@ async fn main() -> anyhow::Result<()> {
 
     // If TUI mode requested, launch TUI instead of server
     if launch_tui {
-        info!("Launching Terminal UI...");
+        eprintln!("🚀 Launching Haunt Terminal UI...");
+        eprintln!("   Initializing services...");
         
         // Start the price sources in the background
         coordinator.start().await;
@@ -427,6 +443,11 @@ async fn main() -> anyhow::Result<()> {
         if let Some(ref runner) = bot_runner {
             runner.clone().start().await;
         }
+        
+        eprintln!("   Services started. Launching UI...\n");
+        
+        // Brief delay to let services initialize
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         
         // Launch TUI
         let state_arc = Arc::new(state);
