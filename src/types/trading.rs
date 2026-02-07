@@ -2504,6 +2504,87 @@ pub struct PortfolioSummary {
     pub open_orders: u32,
 }
 
+// =============================================================================
+// Holdings and Performance Types
+// =============================================================================
+
+/// A single holding in a portfolio (aggregated from positions and trades).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Holding {
+    /// Unique holding ID (symbol-based)
+    pub id: String,
+    /// Symbol (e.g., "BTC", "ETH")
+    pub symbol: String,
+    /// Human-readable name
+    pub name: String,
+    /// Optional image URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Total quantity held
+    pub quantity: f64,
+    /// Average cost basis price
+    pub avg_price: f64,
+    /// Current market price
+    pub current_price: f64,
+    /// Current value (quantity * current_price)
+    pub value: f64,
+    /// Allocation percentage of total portfolio (0-100)
+    pub allocation: f64,
+    /// Unrealized P&L in USD
+    pub pnl: f64,
+    /// Unrealized P&L as percentage
+    pub pnl_percent: f64,
+}
+
+/// Response containing all holdings for a portfolio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldingsResponse {
+    /// List of holdings
+    pub holdings: Vec<Holding>,
+    /// Total value of all holdings
+    pub total_value: f64,
+    /// Total unrealized P&L
+    pub total_pnl: f64,
+    /// Timestamp of the response (ms)
+    pub timestamp: i64,
+}
+
+/// A single point in the performance history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformancePoint {
+    /// Timestamp (ms)
+    pub timestamp: i64,
+    /// Portfolio value at this point
+    pub value: f64,
+    /// P&L at this point (value - starting_balance)
+    pub pnl: f64,
+    /// P&L as percentage
+    pub pnl_percent: f64,
+}
+
+/// Response containing portfolio performance over time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceResponse {
+    /// Time range requested (e.g., "1d", "1w", "1m")
+    pub range: String,
+    /// Performance data points
+    pub data: Vec<PerformancePoint>,
+    /// Starting value for the range
+    pub start_value: f64,
+    /// Ending value (current)
+    pub end_value: f64,
+    /// Total P&L over the range
+    pub total_pnl: f64,
+    /// Total P&L as percentage
+    pub total_pnl_percent: f64,
+    /// Timestamp of the response (ms)
+    pub timestamp: i64,
+}
+
 /// Leaderboard entry for portfolio rankings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -326,6 +326,50 @@ impl TradingService {
     }
 
     // ==========================================================================
+    // Gridline Trading Integration
+    // ==========================================================================
+
+    /// Debit gridline trade margin from portfolio cash balance.
+    pub fn debit_gridline_trade(&self, portfolio_id: &str, amount: f64) -> Result<(), TradingError> {
+        let mut portfolio = self
+            .get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))?;
+
+        if portfolio.cash_balance < amount {
+            return Err(TradingError::InsufficientFunds {
+                needed: amount,
+                available: portfolio.cash_balance,
+            });
+        }
+
+        portfolio.cash_balance -= amount;
+        portfolio.recalculate();
+        self.sqlite.update_portfolio(&portfolio)?;
+        self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
+        self.broadcast_portfolio_update(&portfolio, PortfolioUpdateType::BalanceChanged);
+
+        debug!("Gridline trade debit: ${:.2} from portfolio {}", amount, portfolio_id);
+        Ok(())
+    }
+
+    /// Credit gridline trading payout to portfolio cash balance (winnings or refund).
+    pub fn credit_gridline_payout(&self, portfolio_id: &str, amount: f64) -> Result<(), TradingError> {
+        let mut portfolio = self
+            .get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))?;
+
+        portfolio.cash_balance += amount;
+        portfolio.realized_pnl += amount;
+        portfolio.recalculate();
+        self.sqlite.update_portfolio(&portfolio)?;
+        self.portfolios.insert(portfolio.id.clone(), portfolio.clone());
+        self.broadcast_portfolio_update(&portfolio, PortfolioUpdateType::BalanceChanged);
+
+        debug!("Gridline payout credit: ${:.2} to portfolio {}", amount, portfolio_id);
+        Ok(())
+    }
+
+    // ==========================================================================
     // Portfolio Management
     // ==========================================================================
 
@@ -608,6 +652,160 @@ impl TradingService {
         days_to_keep: i64,
     ) -> Result<usize, TradingError> {
         Ok(self.sqlite.cleanup_old_snapshots(portfolio_id, days_to_keep)?)
+    }
+
+    /// Get holdings for a portfolio (aggregated from positions).
+    /// Holdings shows the allocation breakdown by asset.
+    pub fn get_holdings(
+        &self,
+        portfolio_id: &str,
+    ) -> Result<crate::types::HoldingsResponse, TradingError> {
+        use std::collections::HashMap;
+
+        let portfolio = self
+            .get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))?;
+
+        // Get all open positions for this portfolio
+        let positions = self.get_positions(portfolio_id);
+
+        // Aggregate positions by symbol
+        let mut holdings_map: HashMap<String, crate::types::Holding> = HashMap::new();
+
+        for pos in positions {
+            let entry = holdings_map.entry(pos.symbol.clone()).or_insert_with(|| {
+                crate::types::Holding {
+                    id: format!("holding-{}", pos.symbol.to_lowercase()),
+                    symbol: pos.symbol.clone(),
+                    name: pos.symbol.clone(), // Could be enhanced with asset metadata
+                    image: None,
+                    quantity: 0.0,
+                    avg_price: 0.0,
+                    current_price: pos.current_price,
+                    value: 0.0,
+                    allocation: 0.0,
+                    pnl: 0.0,
+                    pnl_percent: 0.0,
+                }
+            });
+
+            // Aggregate based on position side
+            match pos.side {
+                PositionSide::Long => {
+                    // Calculate weighted average price
+                    let total_cost = entry.quantity * entry.avg_price + pos.quantity * pos.entry_price;
+                    entry.quantity += pos.quantity;
+                    if entry.quantity > 0.0 {
+                        entry.avg_price = total_cost / entry.quantity;
+                    }
+                }
+                PositionSide::Short => {
+                    // Short positions reduce the holding
+                    let total_cost = entry.quantity * entry.avg_price - pos.quantity * pos.entry_price;
+                    entry.quantity -= pos.quantity;
+                    if entry.quantity.abs() > 0.0 {
+                        entry.avg_price = (total_cost / entry.quantity).abs();
+                    }
+                }
+            }
+
+            // Update current price (use latest)
+            entry.current_price = pos.current_price;
+            entry.pnl += pos.unrealized_pnl;
+        }
+
+        // Calculate values and allocations
+        let mut holdings: Vec<crate::types::Holding> = holdings_map.into_values().collect();
+        let total_value: f64 = holdings.iter().map(|h| h.quantity.abs() * h.current_price).sum();
+        let mut total_pnl = 0.0;
+
+        for holding in &mut holdings {
+            holding.value = holding.quantity.abs() * holding.current_price;
+            if total_value > 0.0 {
+                holding.allocation = (holding.value / total_value) * 100.0;
+            }
+            if holding.avg_price > 0.0 && holding.quantity.abs() > 0.0 {
+                let cost_basis = holding.quantity.abs() * holding.avg_price;
+                holding.pnl = holding.value - cost_basis;
+                holding.pnl_percent = (holding.pnl / cost_basis) * 100.0;
+            }
+            total_pnl += holding.pnl;
+        }
+
+        // Sort by value descending
+        holdings.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(crate::types::HoldingsResponse {
+            holdings,
+            total_value,
+            total_pnl,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        })
+    }
+
+    /// Get portfolio performance data for charting.
+    /// Transforms equity history into performance metrics.
+    pub fn get_performance(
+        &self,
+        portfolio_id: &str,
+        range: &str,
+    ) -> Result<crate::types::PerformanceResponse, TradingError> {
+        let portfolio = self
+            .get_portfolio(portfolio_id)
+            .ok_or_else(|| TradingError::PortfolioNotFound(portfolio_id.to_string()))?;
+
+        // Calculate the since timestamp based on range
+        let now = chrono::Utc::now().timestamp_millis();
+        let since = match range {
+            "1d" => now - 24 * 60 * 60 * 1000,           // 1 day
+            "1w" => now - 7 * 24 * 60 * 60 * 1000,      // 1 week
+            "1m" => now - 30 * 24 * 60 * 60 * 1000,     // 1 month
+            "3m" => now - 90 * 24 * 60 * 60 * 1000,     // 3 months
+            "1y" => now - 365 * 24 * 60 * 60 * 1000,    // 1 year
+            "all" | _ => 0,                              // All time
+        };
+
+        let since_opt = if since > 0 { Some(since) } else { None };
+        let history = self.get_portfolio_history(portfolio_id, since_opt, None)?;
+
+        // Convert EquityPoint to PerformancePoint
+        let starting_balance = portfolio.starting_balance;
+        let data: Vec<crate::types::PerformancePoint> = history
+            .iter()
+            .map(|eq| {
+                let pnl = eq.equity - starting_balance;
+                let pnl_percent = if starting_balance > 0.0 {
+                    (pnl / starting_balance) * 100.0
+                } else {
+                    0.0
+                };
+                crate::types::PerformancePoint {
+                    timestamp: eq.timestamp,
+                    value: eq.equity,
+                    pnl,
+                    pnl_percent,
+                }
+            })
+            .collect();
+
+        let start_value = data.first().map(|p| p.value).unwrap_or(starting_balance);
+        let end_value = data.last().map(|p| p.value).unwrap_or(portfolio.total_value);
+        let total_pnl = end_value - start_value;
+        let total_pnl_percent = if start_value > 0.0 {
+            (total_pnl / start_value) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(crate::types::PerformanceResponse {
+            range: range.to_string(),
+            data,
+            start_value,
+            end_value,
+            total_pnl,
+            total_pnl_percent,
+            timestamp: now,
+        })
     }
 
     // ==========================================================================
@@ -989,6 +1187,14 @@ impl TradingService {
         );
 
         let position_id = if let Some(mut position) = existing {
+            // Check margin availability before averaging in
+            if margin_required > portfolio.margin_available {
+                return Err(TradingError::InsufficientMargin {
+                    needed: margin_required,
+                    available: portfolio.margin_available,
+                });
+            }
+
             // Add to existing position (average in)
             let total_qty = position.quantity + order.quantity;
             let total_cost =
@@ -996,6 +1202,10 @@ impl TradingService {
             position.entry_price = total_cost / total_qty;
             position.quantity = total_qty;
             position.margin_used += margin_required;
+
+            // Update portfolio margin tracking (was missing — caused balance inflation)
+            portfolio.cash_balance -= margin_required;
+            portfolio.margin_used += margin_required;
 
             // Add cost basis entry
             position.cost_basis.push(CostBasisEntry {

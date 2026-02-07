@@ -251,6 +251,33 @@ async fn handle_message(state: &AppState, client_id: Uuid, text: &str) {
                 send_error(state, client_id, &format!("Not subscribed to portfolio {}", portfolio_id));
             }
         }
+        // Gridline subscriptions
+        ClientMessage::SubscribeGridline { symbol, portfolio_id } => {
+            let symbol_upper = symbol.to_uppercase();
+            let subscribed = state.room_manager.subscribe_gridline(client_id, &symbol_upper);
+            if subscribed {
+                // Also subscribe to trading updates for the portfolio if provided
+                if let Some(ref pid) = portfolio_id {
+                    state.room_manager.subscribe_trading(client_id, pid).await;
+                }
+                debug!("Client {} subscribed to gridline for {}", client_id, symbol_upper);
+                let response = ServerMessage::GridlineSubscribed {
+                    symbol: symbol_upper,
+                };
+                send_message(state, client_id, &response);
+            } else {
+                send_error(state, client_id, &format!("Failed to subscribe to gridline {}", symbol));
+            }
+        }
+        ClientMessage::UnsubscribeGridline { symbol } => {
+            let symbol_upper = symbol.to_uppercase();
+            state.room_manager.unsubscribe_gridline(client_id, &symbol_upper);
+            debug!("Client {} unsubscribed from gridline for {}", client_id, symbol_upper);
+            let response = ServerMessage::GridlineUnsubscribed {
+                symbol: symbol_upper,
+            };
+            send_message(state, client_id, &response);
+        }
     }
 }
 

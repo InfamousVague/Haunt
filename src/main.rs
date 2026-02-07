@@ -46,6 +46,7 @@ pub struct AppState {
     pub sync_service: Option<Arc<SyncService>>,
     pub storage_manager: Option<Arc<StorageManager>>,
     pub trading_service: Arc<services::TradingService>,
+    pub gridline_service: Arc<services::GridlineService>,
     pub rat_service: Arc<RatService>,
     pub exchange_metrics: Arc<ExchangeMetricsService>,
     pub username_filter: Arc<UsernameFilterService>,
@@ -337,6 +338,12 @@ async fn main() -> anyhow::Result<()> {
         room_manager.clone(),
     ));
 
+    // Create gridline trading service for real-time prediction trading
+    let gridline_service = Arc::new(services::GridlineService::new(
+        sqlite_store.clone(),
+        Some(room_manager.clone()),
+    ));
+
     // Create sync service if peer mesh is enabled
     let sync_service = if let Some(ref mesh) = peer_mesh {
         let is_primary = config.server_id == "osaka";
@@ -400,6 +407,7 @@ async fn main() -> anyhow::Result<()> {
         sync_service: sync_service.clone(),
         storage_manager: Some(storage_manager.clone()),
         trading_service: trading_service.clone(),
+        gridline_service: gridline_service.clone(),
         rat_service: rat_service.clone(),
         exchange_metrics: exchange_metrics.clone(),
         username_filter,
@@ -573,6 +581,139 @@ async fn main() -> anyhow::Result<()> {
                     info!(
                         "Market tick: {} positions updated, {} orders triggered, {} positions closed",
                         positions_updated, orders_triggered, positions_closed
+                    );
+                }
+            }
+        });
+    }
+
+    // Start gridline trading resolution engine — listens to price updates
+    {
+        let gridline = gridline_service.clone();
+        let trading_svc = state.trading_service.clone();
+        let mut price_rx = price_cache.subscribe();
+
+        tokio::spawn(async move {
+            info!("Gridline trading resolution engine started");
+            loop {
+                match price_rx.recv().await {
+                    Ok(price_update) => {
+                        let symbol = price_update.symbol.to_uppercase();
+                        let price = price_update.price;
+                        let timestamp = price_update.timestamp;
+
+                        // Process gridline trade resolutions
+                        let resolutions = gridline.on_price_update(&symbol, price, timestamp);
+
+                        // Credit/debit portfolio balances for each resolution
+                        for resolution in &resolutions {
+                            if resolution.won {
+                                if let Some(payout) = resolution.payout {
+                                    let _ = trading_svc.credit_gridline_payout(
+                                        &resolution.position.portfolio_id,
+                                        payout,
+                                    );
+                                }
+                            }
+
+                            // Update stats
+                            let _ = gridline.update_stats_after_resolution(
+                                &resolution.position.portfolio_id,
+                                &resolution.position.symbol,
+                                resolution,
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("Gridline resolution engine lagged by {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("Gridline resolution engine: price channel closed");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    // Start periodic gridline multiplier broadcast (~1Hz)
+    // Computes multipliers for each symbol with active gridline subscribers
+    // and broadcasts the full matrix over WebSocket.
+    //
+    // The grid config (price_high/price_low) is cached per-symbol and only
+    // re-centered when the price drifts near the edge (within 15% of the range).
+    // This prevents the "jerk-back" visual bug where the grid coordinate system
+    // shifts every second, causing the sparkline dot to jump.
+    {
+        let gridline = gridline_service.clone();
+        let room_mgr = room_manager.clone();
+        let price_cache_gl = price_cache.clone();
+
+        tokio::spawn(async move {
+            // Short initial delay
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            info!("Gridline multiplier broadcast engine started");
+
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(1000));
+
+            // Cached configs per symbol — only re-center when price nears grid edge
+            let mut cached_configs: std::collections::HashMap<String, crate::types::GridConfig> =
+                std::collections::HashMap::new();
+
+            loop {
+                ticker.tick().await;
+
+                // Get all symbols with active gridline subscribers
+                let symbols = room_mgr.active_gridline_symbols();
+                if symbols.is_empty() {
+                    continue;
+                }
+
+                for symbol in &symbols {
+                    // Get current price
+                    let current_price = price_cache_gl
+                        .get_price(symbol)
+                        .unwrap_or(0.0);
+
+                    if current_price <= 0.0 {
+                        continue;
+                    }
+
+                    // Record price tick in the gridline buffer for volatility
+                    let now = chrono::Utc::now().timestamp_millis();
+                    gridline.record_price_tick(symbol, current_price, now);
+
+                    // Get or build config — only re-center if price near edge
+                    let config = {
+                        let needs_rebuild = if let Some(cached) = cached_configs.get(symbol.as_str()) {
+                            let range = cached.price_high - cached.price_low;
+                            let margin = range * 0.15;
+                            current_price > cached.price_high - margin
+                                || current_price < cached.price_low + margin
+                        } else {
+                            true
+                        };
+
+                        if needs_rebuild {
+                            let new_config =
+                                gridline.build_config(symbol, current_price, Some(36), Some(12));
+                            cached_configs.insert(symbol.clone(), new_config.clone());
+                            new_config
+                        } else {
+                            cached_configs.get(symbol.as_str()).unwrap().clone()
+                        }
+                    };
+
+                    // Calculate multipliers with current price against the stable config
+                    let multipliers =
+                        gridline.calculate_multipliers(symbol, current_price, &config);
+
+                    // Broadcast to all gridline subscribers
+                    gridline.broadcast_multiplier_update(
+                        symbol,
+                        current_price,
+                        &multipliers,
+                        &config,
                     );
                 }
             }

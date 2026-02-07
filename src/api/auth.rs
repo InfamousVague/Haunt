@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/verify", post(verify))
         .route("/me", get(get_me))
         .route("/profile", put(update_profile))
+        .route("/profile/username", put(update_username))
         .route("/profile/leaderboard", post(update_leaderboard_visibility))
         .route("/logout", post(logout))
 }
@@ -98,6 +99,54 @@ async fn update_profile(
     Ok(Json(ApiResponse { data: updated }))
 }
 
+/// PUT /api/auth/profile/username
+///
+/// Update the authenticated user's username.
+/// Validates username using the username filter service (profanity, availability, rate limits).
+async fn update_username(
+    State(state): State<AppState>,
+    auth: Authenticated,
+    Json(request): Json<UpdateUsernameRequest>,
+) -> Result<Json<ApiResponse<Profile>>, AuthError> {
+    let new_username = request.username.trim();
+
+    // Validate username with rate limiting
+    let validation = state.username_filter.validate_with_rate_limit(new_username, &auth.user.profile.id);
+    
+    if !validation.is_valid {
+        return Err(AuthError::InvalidInput(
+            validation.error.unwrap_or_else(|| "Invalid username".to_string())
+        ));
+    }
+
+    let mut profile = auth.user.profile.clone();
+    let old_username = profile.username.clone();
+
+    // Unregister old username if it exists
+    if !old_username.is_empty() {
+        state.username_filter.unregister_username(&old_username);
+    }
+
+    // Register new username as taken
+    state.username_filter.register_username(new_username);
+
+    // Update profile
+    profile.username = new_username.to_string();
+    let updated = state.auth_service.update_profile(profile).await?;
+
+    // Broadcast profile update to all peers for bidirectional sync
+    if let Some(ref sync_service) = state.sync_service {
+        if let Err(e) = sync_service
+            .broadcast_entity_update(crate::types::EntityType::Profile, &updated.id)
+            .await
+        {
+            tracing::warn!("Failed to broadcast profile update: {}", e);
+        }
+    }
+
+    Ok(Json(ApiResponse { data: updated }))
+}
+
 /// POST /api/auth/profile/leaderboard
 ///
 /// Opt in or out of the public leaderboard.
@@ -129,7 +178,7 @@ async fn update_leaderboard_visibility(
             &profile.public_key,
             &expected_message,
             signature,
-        )?;
+        )?;;
 
         if !is_valid {
             return Err(AuthError::InvalidSignature);
@@ -173,6 +222,14 @@ async fn logout(_auth: Authenticated) -> Json<ApiResponse<LogoutResponse>> {
     Json(ApiResponse {
         data: LogoutResponse { success: true },
     })
+}
+
+/// Request to update username.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUsernameRequest {
+    /// New username
+    pub username: String,
 }
 
 /// Request to update leaderboard visibility.

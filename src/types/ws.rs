@@ -1,6 +1,7 @@
 use super::{
-    AggregatedPrice, GlobalMetrics, Order, OrderStatus, PeerStatus, Portfolio, Position,
-    PriceSource, RatConfig, RatStats, RatStatus, SignalDirection, Trade, TradeDirection,
+    AggregatedPrice, GlobalMetrics, GridConfig, GridlinePosition, Order, OrderStatus, PeerStatus,
+    Portfolio, Position, PriceSource, RatConfig, RatStats, RatStatus, SignalDirection, Trade,
+    TradeDirection,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +61,16 @@ pub enum ClientMessage {
     /// Unsubscribe from trading updates
     UnsubscribeTrading {
         portfolio_id: String,
+    },
+    /// Subscribe to gridline trading updates for a symbol
+    SubscribeGridline {
+        symbol: String,
+        #[serde(default)]
+        portfolio_id: Option<String>,
+    },
+    /// Unsubscribe from gridline trading updates
+    UnsubscribeGridline {
+        symbol: String,
     },
 }
 
@@ -146,6 +157,30 @@ pub enum ServerMessage {
     /// RAT (Random Auto Trader) status update
     RatStatusUpdate {
         data: RatStatusUpdateData,
+    },
+    /// Gridline trade placed notification
+    GridlineTradePlaced {
+        data: GridlineTradePlacedData,
+    },
+    /// Gridline trade resolved (won or lost)
+    GridlineTradeResolved {
+        data: GridlineTradeResolvedData,
+    },
+    /// Grid multiplier matrix update
+    GridMultiplierUpdate {
+        data: GridMultiplierUpdateData,
+    },
+    /// Grid column expired with batch results
+    GridColumnExpired {
+        data: GridColumnExpiredData,
+    },
+    /// Confirmation of gridline subscription
+    GridlineSubscribed {
+        symbol: String,
+    },
+    /// Confirmation of gridline unsubscription
+    GridlineUnsubscribed {
+        symbol: String,
     },
 }
 
@@ -411,6 +446,68 @@ pub struct RatStatusUpdateData {
     /// Current number of open positions.
     pub open_positions: u32,
     /// Timestamp of update.
+    pub timestamp: i64,
+}
+
+// =============================================================================
+// Gridline Trading WebSocket Data
+// =============================================================================
+
+/// Gridline trade placed notification data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridlineTradePlacedData {
+    /// The placed gridline position
+    pub position: GridlinePosition,
+    /// Timestamp of placement
+    pub timestamp: i64,
+}
+
+/// Gridline trade resolved notification data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridlineTradeResolvedData {
+    /// The resolved gridline position
+    pub position: GridlinePosition,
+    /// Whether the position was won
+    pub won: bool,
+    /// Payout amount (if won, None if lost)
+    pub payout: Option<f64>,
+    /// Net P&L
+    pub pnl: f64,
+    /// Timestamp of resolution
+    pub timestamp: i64,
+}
+
+/// Grid multiplier matrix update data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridMultiplierUpdateData {
+    /// Trading symbol
+    pub symbol: String,
+    /// Multiplier matrix [row][col]
+    pub multipliers: Vec<Vec<f64>>,
+    /// Current grid configuration
+    pub config: GridConfig,
+    /// Current price of the asset
+    pub current_price: f64,
+    /// Timestamp of update
+    pub timestamp: i64,
+}
+
+/// Grid column expired data with batch resolution results.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridColumnExpiredData {
+    /// Trading symbol
+    pub symbol: String,
+    /// Column index that expired
+    pub col_index: i32,
+    /// Column end timestamp
+    pub time_end: i64,
+    /// All resolution results for positions in this column
+    pub results: Vec<GridlineTradeResolvedData>,
+    /// Timestamp of expiration
     pub timestamp: i64,
 }
 

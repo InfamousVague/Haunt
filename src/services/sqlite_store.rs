@@ -10,6 +10,7 @@
 
 use crate::types::{
     AssetClass, BracketRole, CostBasisMethod, EquityPoint, Fill, FundingPayment, Greeks,
+    GridlinePosition, GridlineStatus, GridStats,
     InsuranceFund, Liquidation, MarginChangeType, MarginHistory, MarginMode, OptionPosition,
     OptionStyle, OptionType, Order, OrderSide, OrderStatus, OrderType, Position, PositionSide,
     Portfolio, PredictionOutcome, Profile, ProfileSettings, RiskSettings, SignalPrediction,
@@ -875,6 +876,62 @@ impl SqliteStore {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rat_stats_portfolio ON rat_stats(portfolio_id)",
+            [],
+        )?;
+
+        // ========== Grid Bets Tables ==========
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS grid_bets (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                amount REAL NOT NULL,
+                leverage REAL NOT NULL DEFAULT 1.0,
+                effective_amount REAL NOT NULL,
+                multiplier REAL NOT NULL,
+                potential_payout REAL NOT NULL,
+                price_low REAL NOT NULL,
+                price_high REAL NOT NULL,
+                time_start INTEGER NOT NULL,
+                time_end INTEGER NOT NULL,
+                row_index INTEGER NOT NULL,
+                col_index INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                result_pnl REAL,
+                resolved_at INTEGER,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grid_bets_portfolio ON grid_bets(portfolio_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grid_bets_portfolio_status ON grid_bets(portfolio_id, status)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_grid_bets_symbol_time ON grid_bets(symbol, time_end)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS grid_stats (
+                portfolio_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                total_bets INTEGER NOT NULL DEFAULT 0,
+                total_won INTEGER NOT NULL DEFAULT 0,
+                total_lost INTEGER NOT NULL DEFAULT 0,
+                total_wagered REAL NOT NULL DEFAULT 0,
+                total_payout REAL NOT NULL DEFAULT 0,
+                net_pnl REAL NOT NULL DEFAULT 0,
+                best_multiplier_hit REAL NOT NULL DEFAULT 0,
+                max_leverage_used REAL NOT NULL DEFAULT 1.0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(portfolio_id, symbol)
+            )",
             [],
         )?;
 
@@ -4951,6 +5008,54 @@ impl SqliteStore {
         }
     }
 
+    /// Get all RAT configurations (enabled or not).
+    pub fn get_all_rat_configs(&self) -> Vec<RatConfig> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT id, portfolio_id, enabled, trade_interval_secs, max_open_positions,
+                    symbols_json, min_hold_time_secs, size_range_min_pct, size_range_max_pct,
+                    stop_loss_probability, take_profit_probability,
+                    stop_loss_range_min_pct, stop_loss_range_max_pct,
+                    take_profit_range_min_pct, take_profit_range_max_pct,
+                    created_at, updated_at
+             FROM rat_configs",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Error preparing RAT configs query: {}", e);
+                return vec![];
+            }
+        };
+
+        let configs = stmt
+            .query_map([], |row| {
+                let symbols_json: String = row.get(5)?;
+                let symbols: Vec<String> = serde_json::from_str(&symbols_json).unwrap_or_default();
+
+                Ok(RatConfig {
+                    id: row.get(0)?,
+                    portfolio_id: row.get(1)?,
+                    enabled: row.get::<_, i64>(2)? != 0,
+                    trade_interval_secs: row.get::<_, i64>(3)? as u64,
+                    max_open_positions: row.get::<_, i64>(4)? as u32,
+                    symbols,
+                    min_hold_time_secs: row.get::<_, i64>(6)? as u64,
+                    size_range_pct: (row.get(7)?, row.get(8)?),
+                    stop_loss_probability: row.get(9)?,
+                    take_profit_probability: row.get(10)?,
+                    stop_loss_range_pct: (row.get(11)?, row.get(12)?),
+                    take_profit_range_pct: (row.get(13)?, row.get(14)?),
+                    created_at: row.get(15)?,
+                    updated_at: row.get(16)?,
+                })
+            })
+            .ok()
+            .map(|iter| iter.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        configs
+    }
+
     /// Get all enabled RAT configurations.
     pub fn get_enabled_rat_configs(&self) -> Vec<RatConfig> {
         let conn = self.conn.lock().unwrap();
@@ -5088,6 +5193,225 @@ impl SqliteStore {
             params![portfolio_id],
         )?;
         Ok(())
+    }
+
+    // ========== Gridline Position Methods ==========
+
+    /// Create a new gridline position.
+    pub fn create_gridline_position(&self, bet: &GridlinePosition) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO grid_bets (id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                bet.id, bet.portfolio_id, bet.symbol, bet.amount, bet.leverage,
+                bet.effective_amount, bet.multiplier, bet.potential_payout,
+                bet.price_low, bet.price_high, bet.time_start, bet.time_end,
+                bet.row_index, bet.col_index, bet.status.to_string(),
+                bet.result_pnl, bet.resolved_at, bet.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get a gridline position by ID.
+    pub fn get_gridline_position(&self, id: &str) -> Option<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE id = ?1",
+            params![id],
+            |row| Ok(Self::row_to_gridline_position(row)),
+        ).ok()
+    }
+
+    /// Get all active gridline positions for a portfolio.
+    pub fn get_active_gridline_positions(&self, portfolio_id: &str) -> Vec<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE portfolio_id = ?1 AND status = 'active'
+             ORDER BY created_at DESC"
+        ).unwrap();
+
+        stmt.query_map(params![portfolio_id], |row| Ok(Self::row_to_gridline_position(row)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Get active gridline positions for a portfolio + symbol.
+    pub fn get_active_gridline_positions_for_portfolio_symbol(&self, portfolio_id: &str, symbol: &str) -> Vec<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE portfolio_id = ?1 AND symbol = ?2 AND status = 'active'
+             ORDER BY created_at DESC"
+        ).unwrap();
+
+        stmt.query_map(params![portfolio_id, symbol], |row| Ok(Self::row_to_gridline_position(row)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Get active gridline positions for a specific symbol (used by resolution engine).
+    pub fn get_active_gridline_positions_for_symbol(&self, symbol: &str) -> Vec<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE symbol = ?1 AND status = 'active'
+             ORDER BY time_end ASC"
+        ).unwrap();
+
+        stmt.query_map(params![symbol], |row| Ok(Self::row_to_gridline_position(row)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Get expired unresolved positions (time_end < now, still active).
+    pub fn get_expired_unresolved_positions(&self, symbol: &str, now: i64) -> Vec<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE symbol = ?1 AND status = 'active' AND time_end < ?2"
+        ).unwrap();
+
+        stmt.query_map(params![symbol, now], |row| Ok(Self::row_to_gridline_position(row)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Resolve a gridline position (set status, pnl, resolved_at).
+    pub fn resolve_gridline_position(&self, id: &str, status: GridlineStatus, pnl: f64) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE grid_bets SET status = ?1, result_pnl = ?2, resolved_at = ?3 WHERE id = ?4",
+            params![status.to_string(), pnl, now, id],
+        )?;
+        Ok(())
+    }
+
+    /// Cancel an active gridline position.
+    pub fn cancel_gridline_position(&self, id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE grid_bets SET status = 'cancelled', resolved_at = ?1 WHERE id = ?2 AND status = 'active'",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
+    /// Count active gridline positions for a portfolio.
+    pub fn count_active_gridline_positions(&self, portfolio_id: &str) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM grid_bets WHERE portfolio_id = ?1 AND status = 'active'",
+            params![portfolio_id],
+            |row| row.get(0),
+        ).unwrap_or(0)
+    }
+
+    /// Get gridline position history (paginated).
+    pub fn get_gridline_history(&self, portfolio_id: &str, limit: i64, offset: i64) -> Vec<GridlinePosition> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, portfolio_id, symbol, amount, leverage, effective_amount,
+             multiplier, potential_payout, price_low, price_high, time_start, time_end,
+             row_index, col_index, status, result_pnl, resolved_at, created_at
+             FROM grid_bets WHERE portfolio_id = ?1
+             ORDER BY created_at DESC LIMIT ?2 OFFSET ?3"
+        ).unwrap();
+
+        stmt.query_map(params![portfolio_id, limit, offset], |row| Ok(Self::row_to_gridline_position(row)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    /// Get gridline stats for a portfolio + symbol.
+    pub fn get_gridline_stats(&self, portfolio_id: &str, symbol: &str) -> Option<GridStats> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT portfolio_id, symbol, total_bets, total_won, total_lost,
+             total_wagered, total_payout, net_pnl, best_multiplier_hit, max_leverage_used, updated_at
+             FROM grid_stats WHERE portfolio_id = ?1 AND symbol = ?2",
+            params![portfolio_id, symbol],
+            |row| Ok(GridStats {
+                portfolio_id: row.get(0)?,
+                symbol: row.get(1)?,
+                total_trades: row.get(2)?,
+                total_won: row.get(3)?,
+                total_lost: row.get(4)?,
+                total_wagered: row.get(5)?,
+                total_payout: row.get(6)?,
+                net_pnl: row.get(7)?,
+                best_multiplier_hit: row.get(8)?,
+                max_leverage_used: row.get(9)?,
+                updated_at: row.get(10)?,
+            }),
+        ).ok()
+    }
+
+    /// Update gridline stats (upsert).
+    pub fn update_gridline_stats(&self, stats: &GridStats) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO grid_stats (portfolio_id, symbol, total_bets, total_won, total_lost,
+             total_wagered, total_payout, net_pnl, best_multiplier_hit, max_leverage_used, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(portfolio_id, symbol) DO UPDATE SET
+             total_bets = ?3, total_won = ?4, total_lost = ?5,
+             total_wagered = ?6, total_payout = ?7, net_pnl = ?8,
+             best_multiplier_hit = ?9, max_leverage_used = ?10, updated_at = ?11",
+            params![
+                stats.portfolio_id, stats.symbol, stats.total_trades, stats.total_won,
+                stats.total_lost, stats.total_wagered, stats.total_payout, stats.net_pnl,
+                stats.best_multiplier_hit, stats.max_leverage_used, stats.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Helper to convert a row to GridlinePosition.
+    fn row_to_gridline_position(row: &rusqlite::Row) -> GridlinePosition {
+        let status_str: String = row.get(14).unwrap_or_default();
+        GridlinePosition {
+            id: row.get(0).unwrap_or_default(),
+            portfolio_id: row.get(1).unwrap_or_default(),
+            symbol: row.get(2).unwrap_or_default(),
+            amount: row.get(3).unwrap_or(0.0),
+            leverage: row.get(4).unwrap_or(1.0),
+            effective_amount: row.get(5).unwrap_or(0.0),
+            multiplier: row.get(6).unwrap_or(0.0),
+            potential_payout: row.get(7).unwrap_or(0.0),
+            price_low: row.get(8).unwrap_or(0.0),
+            price_high: row.get(9).unwrap_or(0.0),
+            time_start: row.get(10).unwrap_or(0),
+            time_end: row.get(11).unwrap_or(0),
+            row_index: row.get(12).unwrap_or(0),
+            col_index: row.get(13).unwrap_or(0),
+            status: GridlineStatus::from_str(&status_str),
+            result_pnl: row.get(15).ok(),
+            resolved_at: row.get(16).ok(),
+            created_at: row.get(17).unwrap_or(0),
+        }
     }
 }
 

@@ -4,6 +4,7 @@ pub mod backtester;
 pub mod cache;
 pub mod chart_store;
 pub mod exchange_metrics;
+pub mod gridline;
 pub mod file_cache;
 pub mod historical;
 pub mod liquidation;
@@ -52,5 +53,6 @@ pub use backtester::{BacktestRunner, BacktestError};
 #[allow(unused_imports)]
 pub use liquidity_sim::{LiquiditySimulator, LiquiditySimConfig, MarketOrderSimulation, LimitOrderSimulation};
 pub use trading::{TradingError, TradingService};
+pub use gridline::GridlineService;
 pub use rat::{RatService, RatError};
 pub use username_filter::{UsernameFilterService, UsernameFilterConfig, ValidationResult, UsernameErrorCode};

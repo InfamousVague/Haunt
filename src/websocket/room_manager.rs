@@ -32,6 +32,8 @@ pub struct RoomManager {
     rooms: DashMap<String, HashSet<Uuid>>,
     /// Trading rooms: portfolio_id -> set of client IDs.
     trading_rooms: DashMap<String, HashSet<Uuid>>,
+    /// Gridline rooms: symbol -> set of client IDs (for multiplier broadcasts).
+    gridline_rooms: DashMap<String, HashSet<Uuid>>,
 }
 
 impl RoomManager {
@@ -41,6 +43,7 @@ impl RoomManager {
             clients: DashMap::new(),
             rooms: DashMap::new(),
             trading_rooms: DashMap::new(),
+            gridline_rooms: DashMap::new(),
         })
     }
 
@@ -161,6 +164,67 @@ impl RoomManager {
         }
     }
 
+    // =========================================================================
+    // Gridline Rooms (symbol-based, for multiplier broadcasts)
+    // =========================================================================
+
+    /// Subscribe a client to gridline updates for a symbol.
+    pub fn subscribe_gridline(&self, client_id: Uuid, symbol: &str) -> bool {
+        if self.clients.get(&client_id).is_some() {
+            let symbol_upper = symbol.to_uppercase();
+            self.gridline_rooms
+                .entry(symbol_upper)
+                .or_default()
+                .insert(client_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Unsubscribe a client from gridline updates for a symbol.
+    pub fn unsubscribe_gridline(&self, client_id: Uuid, symbol: &str) -> bool {
+        let symbol_upper = symbol.to_uppercase();
+        if let Some(mut room) = self.gridline_rooms.get_mut(&symbol_upper) {
+            room.remove(&client_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get all clients subscribed to gridline updates for a symbol.
+    pub fn get_gridline_subscribers(&self, symbol: &str) -> Vec<mpsc::UnboundedSender<String>> {
+        let symbol_upper = symbol.to_uppercase();
+        let client_ids: Vec<Uuid> = self
+            .gridline_rooms
+            .get(&symbol_upper)
+            .map(|room| room.iter().copied().collect())
+            .unwrap_or_default();
+
+        client_ids
+            .iter()
+            .filter_map(|id| self.clients.get(id).map(|c| c.tx.clone()))
+            .collect()
+    }
+
+    /// Broadcast a gridline update to all clients subscribed to a symbol.
+    pub fn broadcast_gridline(&self, symbol: &str, message: &str) {
+        let senders = self.get_gridline_subscribers(symbol);
+        for tx in senders {
+            let _ = tx.send(message.to_string());
+        }
+    }
+
+    /// Get all symbols that have at least one gridline subscriber.
+    pub fn active_gridline_symbols(&self) -> Vec<String> {
+        self.gridline_rooms
+            .iter()
+            .filter(|r| !r.is_empty())
+            .map(|r| r.key().clone())
+            .collect()
+    }
+
     /// Set throttle interval for a client.
     pub fn set_throttle(&self, client_id: Uuid, throttle_ms: u64) {
         if let Some(client) = self.clients.get(&client_id) {
@@ -223,6 +287,10 @@ impl RoomManager {
             }
             // Remove from trading rooms - iterate through all since we can't await
             for mut room in self.trading_rooms.iter_mut() {
+                room.remove(&client_id);
+            }
+            // Remove from gridline rooms
+            for mut room in self.gridline_rooms.iter_mut() {
                 room.remove(&client_id);
             }
         }
@@ -325,6 +393,7 @@ impl Default for RoomManager {
             clients: DashMap::new(),
             rooms: DashMap::new(),
             trading_rooms: DashMap::new(),
+            gridline_rooms: DashMap::new(),
         }
     }
 }

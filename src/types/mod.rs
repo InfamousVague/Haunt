@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod auth;
 pub mod chart;
+pub mod gridline;
 pub mod market;
 pub mod orderbook;
 pub mod peer;
@@ -14,6 +15,7 @@ pub mod ws;
 pub use asset::*;
 pub use auth::*;
 pub use chart::*;
+pub use gridline::*;
 pub use market::*;
 pub use orderbook::*;
 pub use peer::*;

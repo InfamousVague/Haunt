@@ -454,33 +454,39 @@ pub enum AuthError {
 
     #[error("Unauthorized")]
     Unauthorized,
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 impl axum::response::IntoResponse for AuthError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
             AuthError::InvalidChallenge => {
-                (axum::http::StatusCode::BAD_REQUEST, "Invalid challenge")
+                (axum::http::StatusCode::BAD_REQUEST, "Invalid challenge".to_string())
             }
             AuthError::ExpiredChallenge => {
-                (axum::http::StatusCode::BAD_REQUEST, "Challenge expired")
+                (axum::http::StatusCode::BAD_REQUEST, "Challenge expired".to_string())
             }
             AuthError::InvalidSignature => {
-                (axum::http::StatusCode::UNAUTHORIZED, "Invalid signature")
+                (axum::http::StatusCode::UNAUTHORIZED, "Invalid signature".to_string())
             }
             AuthError::InvalidSignatureFormat => (
                 axum::http::StatusCode::BAD_REQUEST,
-                "Invalid signature format",
+                "Invalid signature format".to_string(),
             ),
             AuthError::InvalidPublicKeyFormat => (
                 axum::http::StatusCode::BAD_REQUEST,
-                "Invalid public key format",
+                "Invalid public key format".to_string(),
             ),
             AuthError::SessionNotFound => {
-                (axum::http::StatusCode::UNAUTHORIZED, "Session not found")
+                (axum::http::StatusCode::UNAUTHORIZED, "Session not found".to_string())
             }
-            AuthError::ProfileNotFound => (axum::http::StatusCode::NOT_FOUND, "Profile not found"),
-            AuthError::Unauthorized => (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized"),
+            AuthError::ProfileNotFound => (axum::http::StatusCode::NOT_FOUND, "Profile not found".to_string()),
+            AuthError::Unauthorized => (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            AuthError::InvalidInput(msg) => {
+                (axum::http::StatusCode::BAD_REQUEST, msg)
+            }
         };
 
         let body = serde_json::json!({

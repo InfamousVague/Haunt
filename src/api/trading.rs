@@ -11,6 +11,8 @@
 //! - GET /api/trading/portfolios/:id - Get portfolio details
 //! - GET /api/trading/portfolios/:id/summary - Get portfolio summary with metrics
 //! - GET /api/trading/portfolios/:id/history - Get portfolio equity history for charting
+//! - GET /api/trading/portfolios/:id/holdings - Get portfolio holdings breakdown
+//! - GET /api/trading/portfolios/:id/performance - Get portfolio performance metrics
 //! - PUT /api/trading/portfolios/:id - Update portfolio settings
 //! - POST /api/trading/portfolios/:id/reset - Reset portfolio to starting balance
 //! - DELETE /api/trading/portfolios/:id - Delete a portfolio
@@ -42,8 +44,9 @@ use serde::{Deserialize, Serialize};
 use crate::api::auth::Authenticated;
 use crate::services::TradingError;
 use crate::types::{
-    EquityPoint, LeaderboardEntry, ModifyPositionRequest, Order, OrderType, PlaceOrderRequest,
-    Portfolio, Position, PortfolioSummary, RiskSettings, Trade,
+    EquityPoint, HoldingsResponse, LeaderboardEntry, ModifyPositionRequest, Order, OrderType,
+    PerformanceResponse, PlaceOrderRequest, Portfolio, Position, PortfolioSummary, RiskSettings,
+    Trade,
 };
 use crate::AppState;
 
@@ -58,6 +61,8 @@ pub fn router() -> Router<AppState> {
         .route("/portfolios/:id", get(get_portfolio))
         .route("/portfolios/:id/summary", get(get_portfolio_summary))
         .route("/portfolios/:id/history", get(get_portfolio_history))
+        .route("/portfolios/:id/holdings", get(get_portfolio_holdings))
+        .route("/portfolios/:id/performance", get(get_portfolio_performance))
         .route("/portfolios/:id", put(update_portfolio))
         .route("/portfolios/:id/reset", post(reset_portfolio))
         .route("/portfolios/:id", delete(delete_portfolio))
@@ -263,6 +268,69 @@ async fn get_portfolio_history(
         .trading_service
         .get_portfolio_history(&id, query.since, query.limit)?;
     Ok(Json(ApiResponse { data: history }))
+}
+
+/// GET /api/trading/portfolios/:id/holdings
+///
+/// Get portfolio holdings breakdown (aggregated from positions).
+/// Requires authentication.
+async fn get_portfolio_holdings(
+    auth: Authenticated,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<HoldingsResponse>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
+    let holdings = state.trading_service.get_holdings(&id)?;
+    Ok(Json(ApiResponse { data: holdings }))
+}
+
+/// Query parameters for portfolio performance.
+#[derive(Debug, Deserialize)]
+pub struct PortfolioPerformanceQuery {
+    /// Time range: "1d", "1w", "1m", "3m", "1y", "all"
+    #[serde(default = "default_performance_range")]
+    pub range: String,
+}
+
+fn default_performance_range() -> String {
+    "1m".to_string()
+}
+
+/// GET /api/trading/portfolios/:id/performance
+///
+/// Get portfolio performance metrics over time.
+/// Requires authentication.
+async fn get_portfolio_performance(
+    auth: Authenticated,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<PortfolioPerformanceQuery>,
+) -> Result<Json<ApiResponse<PerformanceResponse>>, TradingError> {
+    // Verify user owns the portfolio
+    let portfolio = state
+        .trading_service
+        .get_portfolio(&id)
+        .ok_or_else(|| TradingError::PortfolioNotFound(id.clone()))?;
+
+    if portfolio.user_id != auth.user.public_key {
+        return Err(TradingError::Unauthorized(
+            "You do not own this portfolio".to_string(),
+        ));
+    }
+
+    let performance = state.trading_service.get_performance(&id, &query.range)?;
+    Ok(Json(ApiResponse { data: performance }))
 }
 
 /// PUT /api/trading/portfolios/:id

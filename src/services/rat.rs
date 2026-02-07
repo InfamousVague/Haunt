@@ -109,9 +109,9 @@ impl RatService {
     pub fn load_from_database(self: &Arc<Self>) {
         info!("Loading RAT configs from database");
 
-        // Load all configs (enabled or not)
-        let enabled_configs = self.sqlite.get_enabled_rat_configs();
-        for config in enabled_configs {
+        // Load ALL configs (enabled or not) so settings are preserved across restarts
+        let all_configs = self.sqlite.get_all_rat_configs();
+        for config in all_configs {
             let portfolio_id = config.portfolio_id.clone();
 
             // Load associated stats
@@ -168,10 +168,17 @@ impl RatService {
         // Get current open positions count from trading service
         let open_positions = self.trading.get_positions(portfolio_id).len() as u32;
 
+        // Extract error message if status is Error
+        let error_message = match &status {
+            RatStatus::Error(msg) => Some(msg.clone()),
+            _ => None,
+        };
+
         Some(RatState {
             config,
             stats,
             status,
+            error_message,
             open_positions,
         })
     }
@@ -258,6 +265,7 @@ impl RatService {
             config,
             stats,
             status: RatStatus::Active,
+            error_message: None,
             open_positions,
         })
     }

@@ -142,15 +142,16 @@ impl RatStats {
 }
 
 /// RAT operational status.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+/// Note: Serialized as simple lowercase strings ("idle", "active", "error", "stopping")
+/// to match the frontend TypeScript type.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RatStatus {
     /// RAT is not running.
     Idle,
     /// RAT is actively trading.
     Active,
-    /// RAT encountered an error.
-    Error { message: String },
+    /// RAT encountered an error (message stored separately).
+    Error(String),
     /// RAT is in the process of stopping.
     Stopping,
 }
@@ -158,6 +159,39 @@ pub enum RatStatus {
 impl Default for RatStatus {
     fn default() -> Self {
         Self::Idle
+    }
+}
+
+// Custom serialization to always serialize as simple strings
+impl serde::Serialize for RatStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            RatStatus::Idle => "idle",
+            RatStatus::Active => "active",
+            RatStatus::Error(_) => "error",
+            RatStatus::Stopping => "stopping",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+// Custom deserialization to handle simple strings
+impl<'de> serde::Deserialize<'de> for RatStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "idle" => Ok(RatStatus::Idle),
+            "active" => Ok(RatStatus::Active),
+            "error" => Ok(RatStatus::Error(String::new())),
+            "stopping" => Ok(RatStatus::Stopping),
+            _ => Err(serde::de::Error::unknown_variant(&s, &["idle", "active", "error", "stopping"])),
+        }
     }
 }
 
@@ -171,6 +205,9 @@ pub struct RatState {
     pub stats: RatStats,
     /// Current operational status.
     pub status: RatStatus,
+    /// Error message (if status is "error").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
     /// Current number of open positions.
     pub open_positions: u32,
 }

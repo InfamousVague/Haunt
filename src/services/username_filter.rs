@@ -68,7 +68,7 @@ impl Default for UsernameFilterConfig {
     fn default() -> Self {
         Self {
             min_length: 3,
-            max_length: 20,
+            max_length: 30,
             allowed_special_chars: vec!['_', '-', '.'],
             rate_limit_window: Duration::from_secs(24 * 60 * 60), // 24 hours
             max_changes_per_window: 3,

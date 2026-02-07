@@ -125,7 +125,6 @@ async fn get_rat_status(
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRatConfigRequest {
     pub portfolio_id: String,
-    #[serde(flatten)]
     pub config: RatConfigUpdate,
 }
 
