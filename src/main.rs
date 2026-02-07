@@ -591,6 +591,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let gridline = gridline_service.clone();
         let trading_svc = state.trading_service.clone();
+        let sqlite_for_notif = state.sqlite_store.clone();
         let mut price_rx = price_cache.subscribe();
 
         tokio::spawn(async move {
@@ -622,6 +623,47 @@ async fn main() -> anyhow::Result<()> {
                                 &resolution.position.symbol,
                                 resolution,
                             );
+
+                            // Create notification for the trade resolution
+                            if let Some(portfolio) = trading_svc.get_portfolio(
+                                &resolution.position.portfolio_id,
+                            ) {
+                                let (notif_type, title, message) = if resolution.won {
+                                    let payout = resolution.payout.unwrap_or(0.0);
+                                    (
+                                        types::NotificationType::Success,
+                                        format!("{} trade won!", resolution.position.symbol),
+                                        Some(format!(
+                                            "+${:.2} ({:.1}x) on ${:.2} bet",
+                                            resolution.pnl,
+                                            resolution.position.multiplier,
+                                            resolution.position.amount,
+                                        )),
+                                    )
+                                } else {
+                                    (
+                                        types::NotificationType::Error,
+                                        format!("{} trade lost", resolution.position.symbol),
+                                        Some(format!(
+                                            "-${:.2} on ${:.2} bet",
+                                            resolution.position.amount,
+                                            resolution.position.amount,
+                                        )),
+                                    )
+                                };
+
+                                let notification = types::Notification {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    user_id: portfolio.user_id.clone(),
+                                    notification_type: notif_type,
+                                    title,
+                                    message,
+                                    read: false,
+                                    timestamp: chrono::Utc::now().timestamp_millis(),
+                                };
+
+                                sqlite_for_notif.create_notification(&notification);
+                            }
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

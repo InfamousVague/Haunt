@@ -5,6 +5,7 @@ pub mod exchange_metrics;
 pub mod gridline;
 pub mod health;
 pub mod market;
+pub mod notifications;
 pub mod orderbook;
 pub mod peers;
 pub mod signals;
@@ -32,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .nest("/api/trading", trading::router())
         .nest("/api/grid", gridline::router())
         .nest("/api/exchange-metrics", exchange_metrics::router())
+        .nest("/api/notifications", notifications::router())
         .nest("/api/username", username::router())
         .nest("/api/developer", developer::router())
 }

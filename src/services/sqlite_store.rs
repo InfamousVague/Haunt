@@ -935,6 +935,29 @@ impl SqliteStore {
             [],
         )?;
 
+        // ========== Notifications Table ==========
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'info',
+                title TEXT NOT NULL,
+                message TEXT,
+                read INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_time ON notifications(user_id, timestamp DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read)",
+            [],
+        )?;
+
         info!("SQLite schema initialized with sync tables");
         Ok(())
     }
@@ -5411,6 +5434,160 @@ impl SqliteStore {
             result_pnl: row.get(15).ok(),
             resolved_at: row.get(16).ok(),
             created_at: row.get(17).unwrap_or(0),
+        }
+    }
+    // ========== Notification Methods ==========
+
+    /// Create a new notification.
+    pub fn create_notification(&self, notification: &crate::types::Notification) {
+        let conn = self.conn.lock().unwrap();
+        let type_str = notification.notification_type.as_str();
+        let result = conn.execute(
+            "INSERT INTO notifications (id, user_id, type, title, message, read, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                notification.id,
+                notification.user_id,
+                type_str,
+                notification.title,
+                notification.message,
+                notification.read as i32,
+                notification.timestamp,
+            ],
+        );
+        if let Err(e) = result {
+            error!("Error creating notification: {}", e);
+        }
+    }
+
+    /// Get paginated notifications for a user.
+    /// Returns (notifications, total_count).
+    pub fn get_notifications(
+        &self,
+        user_id: &str,
+        page: i64,
+        page_size: i64,
+        unread_only: bool,
+    ) -> (Vec<crate::types::Notification>, i64) {
+        let conn = self.conn.lock().unwrap();
+
+        // Get total count
+        let count_sql = if unread_only {
+            "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND read = 0"
+        } else {
+            "SELECT COUNT(*) FROM notifications WHERE user_id = ?1"
+        };
+        let total: i64 = conn
+            .query_row(count_sql, params![user_id], |row| row.get(0))
+            .unwrap_or(0);
+
+        // Get paginated results
+        let offset = (page - 1) * page_size;
+        let query_sql = if unread_only {
+            "SELECT id, user_id, type, title, message, read, timestamp
+             FROM notifications WHERE user_id = ?1 AND read = 0
+             ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3"
+        } else {
+            "SELECT id, user_id, type, title, message, read, timestamp
+             FROM notifications WHERE user_id = ?1
+             ORDER BY timestamp DESC LIMIT ?2 OFFSET ?3"
+        };
+
+        let mut stmt = match conn.prepare(query_sql) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Error preparing notification query: {}", e);
+                return (Vec::new(), total);
+            }
+        };
+
+        let notifications = stmt
+            .query_map(params![user_id, page_size, offset], |row| {
+                let type_str: String = row.get(2)?;
+                let read_int: i32 = row.get(5)?;
+                Ok(crate::types::Notification {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    notification_type: crate::types::NotificationType::from_str(&type_str),
+                    title: row.get(3)?,
+                    message: row.get(4)?,
+                    read: read_int != 0,
+                    timestamp: row.get(6)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        (notifications, total)
+    }
+
+    /// Get the count of unread notifications for a user.
+    pub fn get_unread_notification_count(&self, user_id: &str) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM notifications WHERE user_id = ?1 AND read = 0",
+            params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// Mark specific notifications as read. Returns the number of rows affected.
+    pub fn mark_notifications_read(&self, user_id: &str, ids: &[String]) -> i64 {
+        if ids.is_empty() {
+            return 0;
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "UPDATE notifications SET read = 1 WHERE user_id = ?1 AND id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params_vec.push(Box::new(user_id.to_string()));
+        for id in ids {
+            params_vec.push(Box::new(id.clone()));
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+        match conn.execute(&sql, param_refs.as_slice()) {
+            Ok(count) => count as i64,
+            Err(e) => {
+                error!("Error marking notifications read: {}", e);
+                0
+            }
+        }
+    }
+
+    /// Mark all notifications as read for a user. Returns the number of rows affected.
+    pub fn mark_all_notifications_read(&self, user_id: &str) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        match conn.execute(
+            "UPDATE notifications SET read = 1 WHERE user_id = ?1 AND read = 0",
+            params![user_id],
+        ) {
+            Ok(count) => count as i64,
+            Err(e) => {
+                error!("Error marking all notifications read: {}", e);
+                0
+            }
+        }
+    }
+
+    /// Clear all notifications for a user. Returns the number of rows deleted.
+    pub fn clear_notifications(&self, user_id: &str) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        match conn.execute(
+            "DELETE FROM notifications WHERE user_id = ?1",
+            params![user_id],
+        ) {
+            Ok(count) => count as i64,
+            Err(e) => {
+                error!("Error clearing notifications: {}", e);
+                0
+            }
         }
     }
 }
