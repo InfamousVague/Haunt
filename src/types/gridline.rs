@@ -268,6 +268,9 @@ pub enum GridlineError {
 
     #[error("Trading error: {0}")]
     TradingError(String),
+
+    #[error("Rate limited: too many trades per second")]
+    RateLimited,
 }
 
 impl From<rusqlite::Error> for GridlineError {
@@ -294,6 +297,7 @@ impl axum::response::IntoResponse for GridlineError {
             GridlineError::PortfolioNotFound(_) => (StatusCode::NOT_FOUND, "PORTFOLIO_NOT_FOUND"),
             GridlineError::DatabaseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR"),
             GridlineError::TradingError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "TRADING_ERROR"),
+            GridlineError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
         };
 
         let body = Json(serde_json::json!({

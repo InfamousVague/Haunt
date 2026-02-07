@@ -59,6 +59,19 @@ const MAX_LEVERAGE: f64 = 10.0;
 /// Minimum leverage multiplier
 const MIN_LEVERAGE: f64 = 1.0;
 
+/// Allowed bet size presets (USD)
+const ALLOWED_BET_SIZES: &[f64] = &[1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0];
+
+/// Allowed leverage presets
+const ALLOWED_LEVERAGES: &[f64] = &[1.0, 2.0, 3.0, 5.0, 10.0];
+
+/// Maximum trades per second per portfolio (rate limiting)
+const MAX_TRADES_PER_SECOND: usize = 5;
+
+/// Minimum columns from the dot (bubble zone — hard lock)
+/// Columns 0 and 1 are completely blocked from trading.
+const BUBBLE_HARD_LOCK_COLS: i32 = 2;
+
 // =============================================================================
 // Price Tick Buffer (for volatility)
 // =============================================================================
@@ -178,6 +191,8 @@ pub struct GridlineService {
     room_manager: Option<Arc<RoomManager>>,
     /// Per-symbol rolling price buffers for volatility calculation
     price_buffers: Mutex<std::collections::HashMap<String, PriceBuffer>>,
+    /// Rate limiter: tracks recent trade timestamps per portfolio
+    rate_limiter: Mutex<std::collections::HashMap<String, VecDeque<i64>>>,
 }
 
 impl GridlineService {
@@ -188,7 +203,27 @@ impl GridlineService {
             sqlite,
             room_manager,
             price_buffers: Mutex::new(std::collections::HashMap::new()),
+            rate_limiter: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Check rate limit for a portfolio. Returns Err if rate exceeded.
+    fn check_rate_limit(&self, portfolio_id: &str, now: i64) -> Result<(), GridlineError> {
+        let mut limiter = self.rate_limiter.lock().unwrap();
+        let timestamps = limiter.entry(portfolio_id.to_string()).or_insert_with(VecDeque::new);
+
+        // Remove timestamps older than 1 second
+        let cutoff = now - 1000;
+        while timestamps.front().map_or(false, |&t| t < cutoff) {
+            timestamps.pop_front();
+        }
+
+        if timestamps.len() >= MAX_TRADES_PER_SECOND {
+            return Err(GridlineError::RateLimited);
+        }
+
+        timestamps.push_back(now);
+        Ok(())
     }
 
     // =========================================================================
@@ -209,14 +244,30 @@ impl GridlineService {
         // Normalize symbol to uppercase for consistent matching with resolution engine
         req.symbol = req.symbol.to_uppercase();
 
-        // Validate amount
+        // Rate limit check (max 5 trades/second per portfolio)
+        self.check_rate_limit(&req.portfolio_id, now)?;
+
+        // Validate amount against allowed presets
         if req.amount <= 0.0 || req.amount < MIN_TRADE_AMOUNT {
             return Err(GridlineError::InvalidAmount(req.amount));
         }
+        let amount_valid = ALLOWED_BET_SIZES.iter().any(|&preset| (req.amount - preset).abs() < 0.01);
+        if !amount_valid {
+            return Err(GridlineError::InvalidAmount(req.amount));
+        }
 
-        // Validate leverage
+        // Validate leverage against allowed presets
         if req.leverage < MIN_LEVERAGE || req.leverage > MAX_LEVERAGE {
             return Err(GridlineError::InvalidLeverage(req.leverage));
+        }
+        let leverage_valid = ALLOWED_LEVERAGES.iter().any(|&preset| (req.leverage - preset).abs() < 0.01);
+        if !leverage_valid {
+            return Err(GridlineError::InvalidLeverage(req.leverage));
+        }
+
+        // Reject trades in the bubble zone (columns 0-1 are too close to the dot)
+        if req.col_index < BUBBLE_HARD_LOCK_COLS {
+            return Err(GridlineError::ColumnExpired); // Reuse existing error for locked columns
         }
 
         // Calculate effective amount (margin x leverage)
